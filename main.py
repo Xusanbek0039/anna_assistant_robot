@@ -9,6 +9,7 @@ import control_bot
 import storage
 import userbot
 from bio_updater import BioUpdater, validate_settings
+from presence import keep_online
 from tg_client import create_user_client, login, setup_logging
 
 log = logging.getLogger("main")
@@ -49,6 +50,8 @@ async def main() -> None:
         tasks.append(BioUpdater(user).run())
     else:
         log.info("Avtomatik bio o'chirilgan (BIO_ENABLED=false)")
+    if config.KEEP_ONLINE:
+        tasks.append(keep_online(user))
 
     log.info("Ishlayapti. To'xtatish: Ctrl+C")
     await asyncio.gather(*tasks)

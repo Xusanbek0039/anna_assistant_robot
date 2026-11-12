@@ -117,6 +117,18 @@ Soat har doim `TIMEZONE` (standart `Asia/Tashkent`) bo'yicha ko'rsatiladi, kompy
 | `WEATHER_MAX_AGE_SECONDS` | `10800` | Eski ob-havo qancha vaqt ishlatiladi |
 | `BIO_MAX_LENGTH` | `0` | 0 = avtomatik: oddiy akkaunt 70, Premium 140 |
 
+**Iqtibos.** Bio oxiriga qisqa iqtibos qo'shiladi:
+
+```
+Full Stack Developer | 🕒 14:35 | 🌤️ 7°C | “Ilm — saodat kaliti”
+```
+
+- Iqtiboslar `quotes.txt` faylida turadi (har qatorda bittasi). Ular har kuni almashadi (Toshkent vaqti bilan).
+- Bitta doimiy iqtibos kerak bo'lsa: `.env` da `BIO_QUOTE=Sizning iqtibosingiz`.
+- O'chirish: `BIO_QUOTE_ENABLED=false`.
+- Oddiy akkauntda bio 70 belgi, shuning uchun iqtibos ~22 belgidan oshmasin. Joy yetmasa sig'adigan iqtibos
+  tanlanadi, hech biri sig'masa iqtibossiz chiqadi. Telegram Premium'da (140 belgi) uzunroq iqtibos ham sig'adi.
+
 **Ob-havo belgilari** (WMO kodlari): ☀️ ochiq (0), 🌤️ asosan ochiq (1), ⛅ qisman bulutli (2), ☁️ bulutli (3),
 🌫️ tuman (45, 48), 🌧️ shivalama/yomg'ir/jala (51–67, 80–82), ❄️ qor (71–77, 85, 86), ⛈️ momaqaldiroq (95–99).
 Harorat butun songa yaxlitlanadi (°C).
@@ -161,7 +173,21 @@ python main.py
 
 Xulosa xabariga **reply** qilib yozsangiz yoki "✍️ Javob berish" tugmasini bossangiz — matn o'sha odamga sizning nomingizdan ketadi.
 
-## 5. Ishga tushirish va to'xtatish
+## 5. Online holat
+
+Dastur ishlab turganda akkauntingiz Telegram'da **"online"** ko'rinadi: har 60 soniyada online signali yuboriladi.
+Dastur to'xtatilganda (Ctrl+C) akkaunt "offline" holatiga qaytariladi.
+
+| Sozlama | Standart | Izoh |
+|---|---|---|
+| `KEEP_ONLINE` | `true` | `false` — o'chirish |
+| `ONLINE_INTERVAL_SECONDS` | `60` | Signal oralig'i (min. 30) |
+
+> ⚠️ Akkaunt online turganda Telegram **telefoningizga push-bildirishnoma yubormasligi mumkin**, chunki u sizni
+> boshqa qurilmada "o'tiribdi" deb hisoblaydi. Muhim xabarlar baribir nazorat boti orqali keladi (bot
+> bildirishnomalari alohida ishlaydi).
+
+## 6. Ishga tushirish va to'xtatish
 
 | Nima | Buyruq |
 |---|---|

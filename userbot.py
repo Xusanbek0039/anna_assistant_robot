@@ -69,6 +69,18 @@ async def _report_ai_error(e: Exception) -> None:
                                 "Kalitni yangilagach, dasturni qayta ishga tushiring.")
 
 
+_last_call: dict[int, float] = {}
+CALL_COOLDOWN_SECONDS = 10 * 60  # bitta odam 10 daqiqada ko'pi bilan bir marta "chaqirish" xabari yuboradi
+
+
+def _call_allowed(chat_id: int) -> bool:
+    now = time.time()
+    if now - _last_call.get(chat_id, 0) < CALL_COOLDOWN_SECONDS:
+        return False
+    _last_call[chat_id] = now
+    return True
+
+
 def _rate_ok(chat_id: int) -> bool:
     q, now = _sent_times[chat_id], time.time()
     while q and now - q[0] > 60:
@@ -139,7 +151,7 @@ def setup(user: TelegramClient, me_id: int) -> None:
                 await _report_ai_error(e)
                 already = any(h["role"] == "assistant" for h in history)
                 result = {"reply": None if already else FALLBACK_TEXT,
-                          "summary": "", "urgent": False}
+                          "summary": "", "urgent": False, "call_owner": False}
 
             reply = result["reply"]
             if reply:
@@ -150,9 +162,16 @@ def setup(user: TelegramClient, me_id: int) -> None:
                 _sent_times[chat_id].append(time.time())
                 await storage.add_history(chat_id, "assistant", reply)
 
-            await storage.upsert_inbox(chat_id, name, username, result["summary"], result["urgent"], content)
-            await control_bot.notify(chat_id, name, username, content,
-                                     result["summary"], result["urgent"], reply)
+            # Suhbatdosh egasini chaqirishni so'radi -> alohida, shoshilinch ogohlantirish
+            calling = result["call_owner"] and _call_allowed(chat_id)
+            await storage.upsert_inbox(chat_id, name, username, result["summary"],
+                                       result["urgent"] or calling, content)
+            if calling:
+                log.info("%s (%s) egasini chaqiryapti — botga xabar berildi", name, chat_id)
+                await control_bot.call_owner(chat_id, name, username, content, result["summary"])
+            else:
+                await control_bot.notify(chat_id, name, username, content,
+                                         result["summary"], result["urgent"], reply)
 
     @user.on(events.NewMessage(outgoing=True, func=lambda e: e.is_private))
     async def on_outgoing(event):

@@ -72,6 +72,23 @@ async def notify(chat_id: int, name: str, username: str | None, text: str,
         log.exception("Egasiga xabar yuborilmadi (botga /start bosganmisiz?)")
 
 
+async def call_owner(chat_id: int, name: str, username: str | None, text: str, summary: str) -> None:
+    """Suhbatdosh egasini chaqirishni so'radi — alohida, ko'zga tashlanadigan xabar."""
+    body = (
+        "📞 <b>SIZNI CHAQIRISHYAPTI!</b>\n"
+        f"👤 {_who(name, username, chat_id)}\n\n"
+        f"💬 <i>{html.escape(text[:1000])}</i>\n"
+    )
+    if summary:
+        body += f"\n📝 <b>Xulosa:</b> {html.escape(summary)}"
+    try:
+        msg = await ctx.bot.send_message(ctx.owner_id, body, parse_mode="html",
+                                         buttons=_buttons(chat_id))
+        _notif_map[msg.id] = chat_id
+    except Exception:
+        log.exception("Chaqiruv xabari yuborilmadi (botga /start bosganmisiz?)")
+
+
 async def alert(text: str) -> None:
     """Egasiga tizim ogohlantirishi (masalan, AI kaliti ishlamayapti)."""
     try:

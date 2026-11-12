@@ -55,6 +55,7 @@ OPENAI_MODEL = _str("OPENAI_MODEL", "gpt-4o-mini")
 
 OWNER_NAME = _str("OWNER_NAME", "Husan Suyunov")
 ASSISTANT_NAME = _str("ASSISTANT_NAME", "Anna")
+OWNER_CALL_NAME = _str("OWNER_CALL_NAME", "Husan aka")  # suhbatda egasini shunday ataydi
 OWNER_TAKEOVER_MINUTES = _int("OWNER_TAKEOVER_MINUTES", 120)
 MAX_REPLIES_PER_MINUTE = _int("MAX_REPLIES_PER_MINUTE", 4)
 REPLY_DELAY_SECONDS = _float("REPLY_DELAY_SECONDS", 3)
@@ -65,6 +66,10 @@ FALLBACK_TEXT = (
     "Iltimos, xabaringizni yozib qoldiring, men unga yetkazaman."
 )
 
+# --- Online holat ---
+KEEP_ONLINE = _bool("KEEP_ONLINE", True)  # dastur ishlayotganda akkaunt "online" ko'rinadi
+ONLINE_INTERVAL_SECONDS = max(30, _int("ONLINE_INTERVAL_SECONDS", 60))
+
 # --- MongoDB Atlas ---
 MONGODB_URI = _str("MONGODB_URI")
 MONGODB_DB = _str("MONGODB_DB", "anna_assistant")
@@ -74,6 +79,9 @@ BIO_ENABLED = _bool("BIO_ENABLED", True)
 DRY_RUN = _bool("DRY_RUN", True)  # xavfsiz standart: Telegram'da hech narsa o'zgarmaydi
 BIO_PREFIX = _str("BIO_PREFIX", "Full Stack Developer")
 BIO_TEMPLATE = _str("BIO_TEMPLATE", "{prefix} | 🕒 {time} | {icon} {temp}°C")
+BIO_QUOTE_ENABLED = _bool("BIO_QUOTE_ENABLED", True)
+BIO_QUOTE = _str("BIO_QUOTE")  # bitta doimiy iqtibos; bo'sh bo'lsa quotes.txt dan har kuni almashadi
+BIO_QUOTES_FILE = _str("BIO_QUOTES_FILE", "quotes.txt")
 BIO_MAX_LENGTH = _int("BIO_MAX_LENGTH", 0)  # 0 = avtomatik (oddiy akkaunt 70, Premium 140)
 BIO_UPDATE_INTERVAL_SECONDS = max(60, _int("BIO_UPDATE_INTERVAL_SECONDS", 300))
 BIO_RETRY_SECONDS = max(30, _int("BIO_RETRY_SECONDS", 120))

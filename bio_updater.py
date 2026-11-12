@@ -40,6 +40,7 @@ FALLBACK_ICON = "🌡️"
 FALLBACK_TEMP = "--"
 BIO_LIMIT_DEFAULT = 70   # oddiy akkaunt
 BIO_LIMIT_PREMIUM = 140  # Telegram Premium
+QUOTE_FORMAT = " | “{}”"
 
 # Open-Meteo WMO ob-havo kodlari (https://open-meteo.com/en/docs -> "WMO Weather interpretation codes")
 WMO_CODES: dict[int, tuple[str, str]] = {
@@ -176,6 +177,22 @@ async def get_original_bio() -> str | None:
     return state.get("original_bio")
 
 
+def load_quotes() -> list[str]:
+    """BIO_QUOTE (bitta doimiy iqtibos) yoki quotes.txt dagi ro'yxat. O'chirilgan bo'lsa — bo'sh."""
+    if not config.BIO_QUOTE_ENABLED:
+        return []
+    if config.BIO_QUOTE:
+        return [config.BIO_QUOTE]
+    try:
+        with open(config.BIO_QUOTES_FILE, encoding="utf-8") as f:
+            return [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+    except FileNotFoundError:
+        log.warning("%s topilmadi — bio iqtibossiz chiqadi", config.BIO_QUOTES_FILE)
+    except OSError as e:
+        log.warning("%s o'qilmadi (%s) — bio iqtibossiz chiqadi", config.BIO_QUOTES_FILE, type(e).__name__)
+    return []
+
+
 class BioUpdater:
     def __init__(self, client: TelegramClient, dry_run: bool = config.DRY_RUN) -> None:
         self.client = client
@@ -186,6 +203,7 @@ class BioUpdater:
         self.next_weather_at = 0.0
         self.current_bio: str | None = None
         self.backup_ok = False
+        self.quotes = load_quotes()
 
     # ----- tayyorgarlik -----
     async def prepare(self) -> None:
@@ -263,19 +281,35 @@ class BioUpdater:
         log.info("Ob-havo (%s): %s %s, %d°C", config.CITY_NAME, w.icon, w.desc, w.temp)
         return True
 
+    # ----- iqtibos -----
+    def pick_quote(self, now: datetime, room: int) -> str | None:
+        """Bugungi iqtibos: kun bo'yicha aylanadi, faqat `room` belgiga sig'adiganlari orasidan."""
+        if not self.quotes or room <= 0:
+            return None
+        fitting = [q for q in self.quotes if tg_len(q) <= room]
+        if not fitting:
+            return None
+        return fitting[now.toordinal() % len(fitting)]
+
     # ----- matn -----
     def build_bio(self, now: datetime) -> str:
         w = self._fresh_weather()
         icon, temp = (w.icon, str(w.temp)) if w else (FALLBACK_ICON, FALLBACK_TEMP)
         hhmm = now.strftime("%H:%M")
-        candidates = [
-            config.BIO_TEMPLATE.format(prefix=config.BIO_PREFIX, time=hhmm, icon=icon, temp=temp),
-            f"{config.BIO_PREFIX} | 🕒 {hhmm}",
-            config.BIO_PREFIX,
-        ]
-        for text in candidates:
+        base = config.BIO_TEMPLATE.format(prefix=config.BIO_PREFIX, time=hhmm, icon=icon, temp=temp)
+
+        # Iqtibos: asosiy matndan keyin qolgan joyga sig'adiganidan bittasi
+        candidates = []
+        room = self.max_len - tg_len(base + QUOTE_FORMAT.format(""))
+        quote = self.pick_quote(now, room)
+        if quote:
+            candidates.append(base + QUOTE_FORMAT.format(quote))
+        acceptable = len(candidates) + 1  # iqtibosli yoki iqtibossiz asosiy matn — normal holat
+        candidates += [base, f"{config.BIO_PREFIX} | 🕒 {hhmm}", config.BIO_PREFIX]
+
+        for i, text in enumerate(candidates):
             if tg_len(text) <= self.max_len:
-                if text is not candidates[0]:
+                if i >= acceptable:
                     log.warning("Bio %d belgidan uzun — qisqartirilgan variant ishlatildi", self.max_len)
                 return text
         # Juda uzun BIO_PREFIX: qat'iy kesiladi
@@ -421,7 +455,11 @@ async def _main(args: argparse.Namespace) -> None:
             await updater.tick()
         else:
             log.info("Bio yangilash ishga tushdi. To'xtatish: Ctrl+C")
-            await updater.run()
+            tasks = [updater.run()]
+            if config.KEEP_ONLINE:
+                from presence import keep_online
+                tasks.append(keep_online(client))
+            await asyncio.gather(*tasks)
     finally:
         await client.disconnect()
 
