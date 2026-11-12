@@ -4,6 +4,7 @@ import sqlite3
 import sys
 
 from telethon import TelegramClient, errors
+from telethon.sessions import StringSession
 
 import config
 
@@ -56,8 +57,9 @@ def setup_logging() -> None:
 
 
 def create_user_client() -> TelegramClient:
+    session = StringSession(config.SESSION_STRING) if config.SESSION_STRING else config.USER_SESSION
     return TelegramClient(
-        config.USER_SESSION, config.API_ID, config.API_HASH,
+        session, config.API_ID, config.API_HASH,
         connection_retries=10, retry_delay=10, auto_reconnect=True,
     )
 
@@ -71,6 +73,13 @@ async def login(client: TelegramClient) -> None:
 
     Kod va parol faqat terminalda so'raladi, hech qayerga yozilmaydi va logga chiqmaydi.
     """
+    if not sys.stdin or not sys.stdin.isatty():
+        # Serverda (Render) kodni kiritadigan terminal yo'q — kod so'rash befoyda va FloodWait'ga olib keladi
+        await client.connect()
+        if not await client.is_user_authorized():
+            sys.exit("[telegram] Akkauntga kirilmagan va terminal yo'q (server). Kompyuterda "
+                     "`python export_session.py` ni ishga tushirib, chiqqan matnni serverda "
+                     "SESSION_STRING o'zgaruvchisiga qo'ying.")
     try:
         await client.start(phone=config.PHONE or _ask_phone)
     except errors.ApiIdInvalidError:

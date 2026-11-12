@@ -75,6 +75,9 @@ API_ID = _int("API_ID", 0)
 API_HASH = _str("API_HASH")
 PHONE = _str("PHONE")  # ixtiyoriy: bo'sh bo'lsa, Telethon login paytida so'raydi
 USER_SESSION = _path(_str("USER_SESSION", "anna"))
+# Server (Render va h.k.) uchun: terminal yo'q, kod kiritib bo'lmaydi — session matn ko'rinishida beriladi.
+# Olish: kompyuterda `python export_session.py`. MAXFIY — akkauntga to'liq kirish beradi!
+SESSION_STRING = _str("SESSION_STRING")
 
 # --- Nazorat boti va AI (faqat main.py / kotiba rejimi uchun) ---
 BOT_TOKEN = _str("BOT_TOKEN")
