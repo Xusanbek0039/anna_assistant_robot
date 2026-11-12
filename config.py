@@ -59,6 +59,16 @@ OWNER_NAME = _str("OWNER_NAME", "Husan Suyunov")
 ASSISTANT_NAME = _str("ASSISTANT_NAME", "Anna")
 OWNER_CALL_NAME = _str("OWNER_CALL_NAME", "Husan aka")  # suhbatda egasini shunday ataydi
 OWNER_TAKEOVER_MINUTES = _int("OWNER_TAKEOVER_MINUTES", 120)
+
+# --- Aqlli rejim (/auto) ---
+BUSY_HOURS = _str("BUSY_HOURS")  # masalan: "Mon-Fri 09:00-18:00; Sat 10:00-14:00"
+OWNER_ACTIVE_MINUTES = _int("OWNER_ACTIVE_MINUTES", 10)  # shuncha vaqt ichida yozgan bo'lsangiz — faol
+CALENDAR_ICS_URL = _str("CALENDAR_ICS_URL")  # Google Calendar "maxfiy iCal manzili" (maxfiy!)
+
+# --- Ovozli javob ---
+VOICE_REPLY_ENABLED = _bool("VOICE_REPLY_ENABLED", True)  # ovozli xabarga ovoz bilan javob
+TTS_MODEL = _str("TTS_MODEL", "gpt-4o-mini-tts")
+TTS_VOICE = _str("TTS_VOICE", "nova")
 MAX_REPLIES_PER_MINUTE = _int("MAX_REPLIES_PER_MINUTE", 4)
 REPLY_DELAY_SECONDS = _float("REPLY_DELAY_SECONDS", 3)
 HISTORY_LIMIT = 20
@@ -87,7 +97,7 @@ BIO_QUOTE_ENABLED = _bool("BIO_QUOTE_ENABLED", True)
 BIO_QUOTE = _str("BIO_QUOTE")  # bitta doimiy iqtibos; bo'sh bo'lsa quotes.txt dan har kuni almashadi
 BIO_QUOTES_FILE = _str("BIO_QUOTES_FILE", "quotes.txt")
 BIO_MAX_LENGTH = _int("BIO_MAX_LENGTH", 0)  # 0 = avtomatik (oddiy akkaunt 70, Premium 140)
-BIO_UPDATE_INTERVAL_SECONDS = max(60, _int("BIO_UPDATE_INTERVAL_SECONDS", 300))
+BIO_UPDATE_INTERVAL_SECONDS = max(60, _int("BIO_UPDATE_INTERVAL_SECONDS", 60))
 BIO_RETRY_SECONDS = max(30, _int("BIO_RETRY_SECONDS", 120))
 BIO_BACKUP_FILE = _str("BIO_BACKUP_FILE", "bio_backup.json")
 

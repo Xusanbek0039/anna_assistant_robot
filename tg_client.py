@@ -16,7 +16,7 @@ class _RedactSecrets(logging.Filter):
     def __init__(self) -> None:
         super().__init__()
         secrets = [config.API_HASH, config.PHONE, config.BOT_TOKEN, config.OPENAI_API_KEY,
-                   config.MONGODB_URI]
+                   config.MONGODB_URI, config.CALENDAR_ICS_URL]
         if config.MONGODB_URI and "@" in config.MONGODB_URI:
             # URI ichidagi login:parol qismi alohida ham yashiriladi
             creds = config.MONGODB_URI.split("://", 1)[-1].split("@", 1)[0]

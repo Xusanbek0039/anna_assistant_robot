@@ -1,5 +1,6 @@
 """Shaxsiy akkaunt (userbot): kiruvchi shaxsiy xabarlarga AI orqali javob beradi."""
 import asyncio
+import io
 import logging
 import random
 import time
@@ -10,10 +11,11 @@ from telethon import TelegramClient, events
 from telethon.tl.types import User
 
 import ai
+import availability
 import control_bot
 import storage
 from config import (FALLBACK_TEXT, MAX_REPLIES_PER_MINUTE, OWNER_NAME, OWNER_TAKEOVER_MINUTES,
-                    REPLY_DELAY_SECONDS)
+                    REPLY_DELAY_SECONDS, VOICE_REPLY_ENABLED)
 
 log = logging.getLogger("userbot")
 
@@ -24,6 +26,27 @@ _seq: dict[int, int] = defaultdict(int)             # debounce: har bir chat uch
 _locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 _sent_times: dict[int, deque] = defaultdict(deque)  # rate-limit
 _ai_texts: dict[int, set[str]] = defaultdict(set)   # AI yuborgan matnlar (egasi yozganidan farqlash uchun)
+_ai_voice_pending: dict[int, int] = defaultdict(int)  # AI yuborayotgan ovozli xabarlar soni
+
+
+async def _send_voice(user: TelegramClient, chat_id: int, text: str) -> bool:
+    """Javobni ovozli xabar qilib yuboradi. Muvaffaqiyatsiz bo'lsa False (matn yuboriladi)."""
+    try:
+        async with user.action(chat_id, "record-audio"):
+            audio = await ai.speak(text)
+        f = io.BytesIO(audio)
+        f.name = "javob.ogg"
+        _ai_voice_pending[chat_id] += 1
+        try:
+            await user.send_file(chat_id, f, voice_note=True)
+        except Exception:
+            _ai_voice_pending[chat_id] -= 1
+            raise
+        log.info("%s ga ovozli javob yuborildi", chat_id)
+        return True
+    except Exception as e:
+        log.warning("Ovozli javob bo'lmadi (%s) — matn yuboriladi", type(e).__name__)
+        return False
 
 
 def _media_label(msg) -> str | None:
@@ -153,10 +176,21 @@ def setup(user: TelegramClient, me_id: int) -> None:
             except Exception:
                 log.exception("Media botga yuborilmadi")
 
-        if not await storage.is_enabled() or await storage.is_muted(chat_id):
-            # AI javob bermaydi, lekin egasi baribir xabardor bo'ladi
+        # Kontakt turi: oila -> AI javob bermaydi, faqat egasiga xabar
+        tag = await storage.get_tag(sender.id)
+        if tag == "oila":
             await storage.upsert_inbox(chat_id, name, username, "", False, content)
-            if not await storage.is_muted(chat_id):
+            await control_bot.notify(chat_id, f"👨‍👩‍👧 {name}", username, content, "", False, None)
+            return
+        kind = tag or ("tanish" if sender.contact else "notanish")
+
+        if await storage.is_muted(chat_id):
+            return  # egasi o'zi shu chatda gaplashyapti
+        status = await availability.get_status()
+        if not status.reply:
+            log.info("%s ga javob berilmadi: %s", chat_id, status.reason)
+            await storage.upsert_inbox(chat_id, name, username, "", False, content)
+            if status.notify:
                 await control_bot.notify(chat_id, name, username, content, "", False, None)
             return
 
@@ -168,27 +202,37 @@ def setup(user: TelegramClient, me_id: int) -> None:
             return
 
         async with _locks[chat_id]:
-            if await storage.is_muted(chat_id) or not await storage.is_enabled():
+            if await storage.is_muted(chat_id):
                 return
             if not _rate_ok(chat_id):
                 log.warning("Rate-limit: %s", chat_id)
                 return
 
             history = await storage.get_history(chat_id)
+            context = f"{status.ai_context}\nSuhbatdosh turi: {kind}."
             try:
-                result = await ai.generate(history)
+                result = await ai.generate(history, context)
             except Exception as e:
                 await _report_ai_error(e)
                 already = any(h["role"] == "assistant" for h in history)
                 result = {"reply": None if already else FALLBACK_TEXT,
-                          "summary": "", "urgent": False, "call_owner": False}
+                          "summary": "", "urgent": False, "call_owner": False, "spam": False}
+
+            # Notanishdan kelgan aniq spam: javob ham, bildirishnoma ham yo'q
+            if result["spam"] and kind == "notanish":
+                log.info("%s (%s) dan spam — javob berilmadi, bildirishnoma yuborilmadi", name, chat_id)
+                await storage.upsert_inbox(chat_id, name, username, "🚫 spam", False, content)
+                await storage.mark_handled(chat_id)
+                return
 
             reply = result["reply"]
             if reply:
-                async with user.action(chat_id, "typing"):
-                    await asyncio.sleep(min(1 + len(reply) / 40, 5) + random.uniform(0, 1))
-                _ai_texts[chat_id].add(reply)
-                await user.send_message(chat_id, reply)
+                is_voice_in = bool(msg.voice or msg.video_note)
+                if not (is_voice_in and VOICE_REPLY_ENABLED and await _send_voice(user, chat_id, reply)):
+                    async with user.action(chat_id, "typing"):
+                        await asyncio.sleep(min(1 + len(reply) / 40, 5) + random.uniform(0, 1))
+                    _ai_texts[chat_id].add(reply)
+                    await user.send_message(chat_id, reply)
                 _sent_times[chat_id].append(time.time())
                 await storage.add_history(chat_id, "assistant", reply)
 
@@ -196,25 +240,36 @@ def setup(user: TelegramClient, me_id: int) -> None:
             calling = result["call_owner"] and _call_allowed(chat_id)
             await storage.upsert_inbox(chat_id, name, username, result["summary"],
                                        result["urgent"] or calling, content)
+            label_name = f"💼 {name}" if kind == "mijoz" else name
             if calling:
                 log.info("%s (%s) egasini chaqiryapti — botga xabar berildi", name, chat_id)
-                await control_bot.call_owner(chat_id, name, username, content, result["summary"])
+                await control_bot.call_owner(chat_id, label_name, username, content, result["summary"])
             else:
-                await control_bot.notify(chat_id, name, username, content,
+                await control_bot.notify(chat_id, label_name, username, content,
                                          result["summary"], result["urgent"], reply)
 
-    @user.on(events.NewMessage(outgoing=True, func=lambda e: e.is_private))
+    @user.on(events.NewMessage(outgoing=True))
     async def on_outgoing(event):
         chat_id = event.chat_id
-        text = event.message.message or ""
-        if text in _ai_texts[chat_id]:
-            _ai_texts[chat_id].discard(text)  # bu AI'ning o'z javobi
+        msg = event.message
+        text = msg.message or ""
+        # Kotibaning o'z xabarlari — egasi yozgani emas
+        if text and text in _ai_texts[chat_id]:
+            _ai_texts[chat_id].discard(text)
             return
-        if chat_id == me_id:  # Saved Messages
+        if (msg.voice or msg.video_note) and _ai_voice_pending[chat_id] > 0:
+            _ai_voice_pending[chat_id] -= 1
             return
-        # Egasi o'zi yozdi -> AI shu chatda vaqtincha jim
+
+        # Egasi istalgan joyga (guruh, kanal, shaxsiy) o'zi yozdi -> u faol (/auto rejimi uchun)
+        await availability.mark_owner_active()
+
+        if not event.is_private or chat_id == me_id:  # guruhlar va Saved Messages
+            return
+        # Egasi o'zi shu chatga yozdi -> AI shu chatda vaqtincha jim
         await storage.mute(chat_id, OWNER_TAKEOVER_MINUTES * 60)
         await storage.mark_handled(chat_id)
         if text:
             await storage.add_history(chat_id, "assistant", f"({OWNER_NAME} o'zi yozdi) {text}")
         log.info("Egasi %s chatiga o'zi yozdi — AI %d daqiqa jim", chat_id, OWNER_TAKEOVER_MINUTES)
+

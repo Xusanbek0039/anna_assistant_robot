@@ -234,6 +234,10 @@ class BioUpdater:
                  "maks. uzunlik=%d, DRY_RUN=%s", config.CITY_NAME, config.TIMEZONE,
                  config.BIO_UPDATE_INTERVAL_SECONDS, config.WEATHER_INTERVAL_SECONDS,
                  self.max_len, self.dry_run)
+        if config.BIO_UPDATE_INTERVAL_SECONDS > 60:
+            log.warning("Soat har %d daqiqada yangilanadi — %d daqiqagacha ortda qolishi mumkin. "
+                        "Aniq vaqt uchun .env da BIO_UPDATE_INTERVAL_SECONDS=60 qiling.",
+                        config.BIO_UPDATE_INTERVAL_SECONDS // 60, config.BIO_UPDATE_INTERVAL_SECONDS // 60 - 1)
 
     async def ensure_backup(self) -> bool:
         """Asl bio'ni birinchi marta saqlaydi. Zaxira bo'lmasa, haqiqiy yangilash qilinmaydi."""

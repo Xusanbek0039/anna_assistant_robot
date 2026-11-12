@@ -4,6 +4,7 @@ import logging
 
 from telethon import Button, TelegramClient, events
 
+import availability
 import storage
 from config import OWNER_TAKEOVER_MINUTES
 
@@ -11,9 +12,12 @@ log = logging.getLogger("bot")
 
 HELP = (
     "<b>Anna — avtojavob kotiba</b>\n\n"
-    "/on — avtojavobni yoqish\n"
+    "/auto — aqlli rejim: faqat band bo'lganingizda javob beradi\n"
+    "/on — doim javob beradi\n"
     "/off — avtojavobni o'chirish\n"
     "/status — holat\n"
+    "/tag &lt;id yoki @username&gt; &lt;oila|mijoz|dost|clear&gt; — kontakt turi\n"
+    "/tags — turlar ro'yxati\n"
     "/inbox — javob berilmagan xabarlar\n"
     "/reply &lt;chat_id&gt; &lt;matn&gt; — sizning nomingizdan javob yozish\n"
     "/ignore &lt;id yoki @username&gt; — bu odamga avtojavob bermaslik\n"
@@ -21,6 +25,14 @@ HELP = (
     "/ignored — istisnolar ro'yxati\n\n"
     "Xulosa xabariga <i>reply</i> qilib yozsangiz, matn o'sha odamga sizning nomingizdan ketadi."
 )
+
+MODE_NAMES = {"on": "🟢 doim yoqiq (/on)", "off": "⚪️ o'chirilgan (/off)", "auto": "🤖 aqlli (/auto)"}
+TAGS = {
+    "oila": "👨‍👩‍👧 oila — kotiba javob bermaydi, faqat sizga xabar beradi",
+    "mijoz": "💼 mijoz — rasmiy ohang",
+    "dost": "🤝 do'st — samimiy ohang",
+}
+TAG_ALIASES = {"do'st": "dost", "dost": "dost", "family": "oila", "client": "mijoz", "friend": "dost"}
 
 # notification message id -> chat_id  (reply orqali javob berish uchun)
 _notif_map: dict[int, int] = {}
@@ -145,22 +157,61 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
 
     @bot.on(events.NewMessage(pattern=r"^/on$", func=is_owner))
     async def _on(event):
-        await storage.set_enabled(True)
-        await event.respond("🟢 Avtojavob yoqildi.")
+        await storage.set_mode("on")
+        await event.respond("🟢 Avtojavob doim yoqiq.")
 
     @bot.on(events.NewMessage(pattern=r"^/off$", func=is_owner))
     async def _off(event):
-        await storage.set_enabled(False)
-        await event.respond("⚪️ Avtojavob o'chirildi.")
+        await storage.set_mode("off")
+        await event.respond("⚪️ Avtojavob o'chirildi (xabarlar baribir sizga yetkaziladi).")
+
+    @bot.on(events.NewMessage(pattern=r"^/auto$", func=is_owner))
+    async def _auto(event):
+        await storage.set_mode("auto")
+        st = await availability.get_status()
+        await event.respond(
+            "🤖 Aqlli rejim: kotiba faqat siz band bo'lganda javob beradi "
+            "(kalendarda uchrashuv, ish vaqti yoki siz oxirgi daqiqalarda yozmagan bo'lsangiz).\n"
+            f"Hozir: {'javob beradi' if st.reply else 'jim turadi'} — {st.reason}"
+        )
 
     @bot.on(events.NewMessage(pattern=r"^/status$", func=is_owner))
     async def _status(event):
-        state = "🟢 yoqilgan" if await storage.is_enabled() else "⚪️ o'chirilgan"
+        mode = await storage.get_mode()
+        st = await availability.get_status()
         await event.respond(
-            f"Avtojavob: {state}\n"
+            f"Rejim: {MODE_NAMES[mode]}\n"
+            f"Hozir: {'🟢 javob beradi' if st.reply else '⚪️ jim'} — {st.reason}\n"
             f"Oxirgi 24 soatda kelgan xabarlar: {await storage.today_count()}\n"
             f"Javob kutayotganlar: {len(await storage.pending_inbox())}"
         )
+
+    @bot.on(events.NewMessage(pattern=r"^/tag\s+(\S+)\s+(\S+)$", func=is_owner))
+    async def _tag(event):
+        arg, tag = event.pattern_match.group(1), event.pattern_match.group(2).lower()
+        tag = TAG_ALIASES.get(tag, tag)
+        uid = await _resolve_user_id(arg)
+        if uid is None:
+            await event.respond("❌ Foydalanuvchi topilmadi.")
+            return
+        if tag in ("clear", "tozalash", "-"):
+            ok = await storage.remove_tag(uid)
+            await event.respond("✅ Turi olib tashlandi." if ok else "Bu odamga tur berilmagan edi.")
+            return
+        if tag not in TAGS:
+            await event.respond("Tur: oila, mijoz yoki dost. Olib tashlash: /tag <id> clear")
+            return
+        await storage.set_tag(uid, tag, arg)
+        await event.respond(f"✅ {arg} — {TAGS[tag]}")
+
+    @bot.on(events.NewMessage(pattern=r"^/tags$", func=is_owner))
+    async def _tags(event):
+        rows = await storage.list_tags()
+        if not rows:
+            await event.respond("Hali hech kimga tur berilmagan. Masalan: /tag @username oila")
+            return
+        await event.respond("\n".join(f"• {TAGS.get(r['tag'], r['tag'])}: {html.escape(r['label'])} "
+                                      f"<code>{r['user_id']}</code>" for r in rows), parse_mode="html")
 
     @bot.on(events.NewMessage(pattern=r"^/inbox$", func=is_owner))
     async def _inbox(event):

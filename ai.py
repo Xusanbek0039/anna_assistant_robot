@@ -7,7 +7,7 @@ import logging
 from openai import AsyncOpenAI
 
 from config import (ASSISTANT_NAME, OPENAI_API_KEY, OPENAI_MODEL, OPENAI_TRANSCRIBE_MODEL,
-                    OWNER_CALL_NAME, OWNER_NAME, OWNER_PROFILE_FILE)
+                    OWNER_CALL_NAME, OWNER_NAME, OWNER_PROFILE_FILE, TTS_MODEL, TTS_VOICE)
 
 log = logging.getLogger("ai")
 _client: AsyncOpenAI | None = None
@@ -72,20 +72,34 @@ Qoidalar:
 - Rasm "[rasm] ..." ko'rinishida tavsifi bilan keladi — rasmda nima borligini tushunib, mazmuniga javob ber.
 - Agar media o'qib bo'lmagan bo'lsa ("[media: ...]"), uni qabul qilganingni va yetkazishingni ayt.
 
+Agar "Joriy holat" da {OWNER_CALL_NAME} qachongacha bandligi berilgan bo'lsa ("15:00 gacha"), birinchi javobda
+"taxminan 15:00 dan keyin bo'shaydi" deb ayt. Uchrashuv nima haqidaligini bilmaysan — so'rashsa ham taxmin qilma.
+
+Suhbatdosh turiga qarab ohang (pastdagi "Joriy holat" da beriladi):
+- mijoz: rasmiy, hurmat bilan ("Siz"), ishchan. Savolini aniq yozib oling, tez yetkazishga va'da ber.
+- do'st: samimiy, iliq, biroz norasmiy.
+- tanish: muloyim, oddiy.
+- notanish: muloyim, lekin ehtiyotkor. Reklama, firibgarlik, shubhali havola, "pul yutdingiz",
+  kripto/investitsiya taklifi, ommaviy tarqatma bo'lsa — bu spam: "spam": true.
+  Oddiy notanish odamning savoli spam EMAS.
+
 Javobni FAQAT quyidagi JSON ko'rinishida qaytar:
 {{
   "reply": "suhbatdoshga yuboriladigan matn",
   "summary": "{OWNER_NAME} uchun o'zbek tilida 1-2 gaplik xulosa: kim, nima istaydi (butun suhbat bo'yicha)",
   "urgent": true yoki false,      (faqat haqiqatan shoshilinch bo'lsa true)
-  "call_owner": true yoki false   (faqat SHU xabarda suhbatdosh {OWNER_CALL_NAME}ni chaqirishni so'rasa/rozi bo'lsa true)
+  "call_owner": true yoki false,  (faqat SHU xabarda suhbatdosh {OWNER_CALL_NAME}ni chaqirishni so'rasa/rozi bo'lsa true)
+  "spam": true yoki false         (faqat aniq spam/reklama/firibgarlik bo'lsa true)
 }}"""
 
 
-async def generate(history: list[dict]) -> dict:
-    """history: [{'role': 'user'|'assistant', 'content': str}, ...]"""
+async def generate(history: list[dict], context: str = "") -> dict:
+    """history: [{'role': 'user'|'assistant', 'content': str}, ...]
+    context: joriy holat (egasi qachongacha band, suhbatdosh turi) — har safar yangidan beriladi."""
+    system = SYSTEM_PROMPT + (f"\n\nJoriy holat:\n{context}" if context else "")
     resp = await _get_client().chat.completions.create(
         model=OPENAI_MODEL,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}, *history],
+        messages=[{"role": "system", "content": system}, *history],
         response_format={"type": "json_object"},
         temperature=0.6,
         max_tokens=400,
@@ -99,7 +113,16 @@ async def generate(history: list[dict]) -> dict:
         "summary": str(data.get("summary", "")).strip(),
         "urgent": bool(data.get("urgent", False)),
         "call_owner": data.get("call_owner") is True,
+        "spam": data.get("spam") is True,
     }
+
+
+async def speak(text: str) -> bytes:
+    """Matnni ovozga aylantiradi (OGG/Opus — Telegram ovozli xabar formati)."""
+    resp = await _get_client().audio.speech.create(
+        model=TTS_MODEL, voice=TTS_VOICE, input=text[:1000], response_format="opus",
+    )
+    return resp.content
 
 
 async def check_key() -> str | None:

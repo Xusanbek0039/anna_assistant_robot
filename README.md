@@ -112,7 +112,7 @@ Soat har doim `TIMEZONE` (standart `Asia/Tashkent`) bo'yicha ko'rsatiladi, kompy
 |---|---|---|
 | `BIO_PREFIX` | `Full Stack Developer` | Doim saqlanadigan matn |
 | `BIO_TEMPLATE` | `{prefix} \| 🕒 {time} \| {icon} {temp}°C` | Ko'rinish shabloni |
-| `BIO_UPDATE_INTERVAL_SECONDS` | `300` | Bio yangilash oralig'i (min. 60) |
+| `BIO_UPDATE_INTERVAL_SECONDS` | `60` | Bio va ismdagi soat yangilanish oralig'i (min. 60). 300 bo'lsa soat 4 daqiqagacha ortda qoladi |
 | `WEATHER_INTERVAL_SECONDS` | `900` | Ob-havo olish oralig'i (15 daqiqa) |
 | `WEATHER_MAX_AGE_SECONDS` | `10800` | Eski ob-havo qancha vaqt ishlatiladi |
 | `BIO_MAX_LENGTH` | `0` | 0 = avtomatik: oddiy akkaunt 70, Premium 140 |
@@ -173,14 +173,48 @@ python main.py
 
 | Buyruq | Vazifa |
 |---|---|
-| `/on`, `/off` | Avtojavobni yoqish / o'chirish |
-| `/status` | Holat |
+| `/auto` | **Aqlli rejim** — faqat siz band bo'lganda javob beradi (pastga qarang) |
+| `/on`, `/off` | Doim javob berish / o'chirish |
+| `/status` | Rejim va hozir nega javob beradi/bermaydi |
+| `/tag <id/@username> <oila\|mijoz\|dost\|clear>` | Kontakt turi |
+| `/tags` | Turlar ro'yxati |
 | `/inbox` | Javob kutayotganlar |
 | `/reply <chat_id> <matn>` | Sizning nomingizdan javob |
-| `/ignore <id/@username>` | Bu odamga avtojavob bermaslik (oila, yaqinlar) |
+| `/ignore <id/@username>` | Bu odamga umuman tegmaslik (xabar ham kelmaydi) |
 | `/unignore <id>`, `/ignored` | Istisnolarni boshqarish |
 
 Xulosa xabariga **reply** qilib yozsangiz yoki "✍️ Javob berish" tugmasini bossangiz — matn o'sha odamga sizning nomingizdan ketadi.
+
+### Aqlli rejim (`/auto`)
+
+Kotiba quyidagi tartibda qaror qiladi:
+
+1. **Google Calendar'da hozir uchrashuv bor** → javob beradi: "taxminan 15:00 dan keyin bo'shaydi".
+   Uchrashuv nomi va tafsilotlari **hech qachon** aytilmaydi.
+2. **Ish vaqti** (`BUSY_HOURS`, masalan `Du-Ju 09:00-18:00; Sh 10:00-14:00`) → javob beradi.
+3. **Siz oxirgi 10 daqiqada biror joyga yozgansiz** (`OWNER_ACTIVE_MINUTES`) → jim turadi, o'zingiz javob berasiz.
+4. Aks holda (telefon yonida emassiz) → javob beradi.
+
+**Google Calendar ulash:** calendar.google.com → ⚙️ Sozlamalar → chapda kalendaringiz → *Integrate calendar* →
+**"Secret address in iCal format"** (Maxfiy iCal manzili) ni nusxalab, `.env` ga `CALENDAR_ICS_URL=...` qilib qo'ying.
+Bu havola **maxfiy** — u orqali kalendaringizni istalgan kishi o'qiy oladi. Faqat `.env` da saqlang (logda yashiriladi).
+Butun kunlik tadbirlar va "Bo'sh" (*Free*) deb belgilanganlar bandlik hisoblanmaydi.
+
+### Kontakt turlari (`/tag`)
+
+| Tur | Kotiba nima qiladi |
+|---|---|
+| `oila` | **Javob bermaydi**, faqat sizga 👨‍👩‍👧 belgisi bilan xabar beradi |
+| `mijoz` | Rasmiy ohang, botda 💼 belgisi |
+| `dost` | Samimiy ohang |
+| *(turi yo'q, kontaktlaringizda bor)* | Oddiy muloyim |
+| *(turi yo'q, notanish)* | Ehtiyotkor. **Aniq spam** (reklama, "pul yutdingiz", shubhali havola) bo'lsa — javob ham, bildirishnoma ham yo'q |
+
+### Ovozli javob
+
+Ovozli xabar yoki video-xabarga kotiba **ovozli xabar** bilan javob beradi (`VOICE_REPLY_ENABLED`, ovoz: `TTS_VOICE`).
+Ovoz yaratib bo'lmasa, matn yuboriladi. O'zbek tilida talaffuz biroz chet el aksentli bo'lishi mumkin —
+yoqmasa `VOICE_REPLY_ENABLED=false`.
 
 ## 5. Online holat
 

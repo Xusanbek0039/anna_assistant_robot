@@ -113,13 +113,57 @@ async def today_count() -> int:
 
 
 # ---------- sozlamalar ----------
+MODES = ("on", "off", "auto")
+
+
+async def get_mode() -> str:
+    """on — doim javob beradi, off — hech qachon, auto — faqat band bo'lganda."""
+    doc = await _get_db().settings.find_one({"_id": "mode"})
+    if doc and doc.get("value") in MODES:
+        return doc["value"]
+    legacy = await _get_db().settings.find_one({"_id": "enabled"})  # eski /on /off sozlamasi
+    if legacy is not None:
+        return "on" if legacy.get("value") else "off"
+    return "on"
+
+
+async def set_mode(mode: str) -> None:
+    await _get_db().settings.update_one({"_id": "mode"}, {"$set": {"value": mode}}, upsert=True)
+
+
 async def is_enabled() -> bool:
-    doc = await _get_db().settings.find_one({"_id": "enabled"})
-    return doc is None or bool(doc.get("value"))
+    return await get_mode() != "off"
 
 
-async def set_enabled(on: bool) -> None:
-    await _get_db().settings.update_one({"_id": "enabled"}, {"$set": {"value": on}}, upsert=True)
+# ---------- egasining faolligi ----------
+async def set_owner_active(ts: float) -> None:
+    await _get_db().settings.update_one({"_id": "owner_active"}, {"$set": {"value": ts}}, upsert=True)
+
+
+async def get_owner_active() -> float:
+    doc = await _get_db().settings.find_one({"_id": "owner_active"})
+    return float(doc["value"]) if doc else 0.0
+
+
+# ---------- kontakt turlari (oila / mijoz / do'st) ----------
+async def get_tag(user_id: int) -> str | None:
+    doc = await _get_db().contacts.find_one({"_id": user_id})
+    return doc.get("tag") if doc else None
+
+
+async def set_tag(user_id: int, tag: str, label: str) -> None:
+    await _get_db().contacts.update_one(
+        {"_id": user_id}, {"$set": {"user_id": user_id, "tag": tag, "label": label}}, upsert=True
+    )
+
+
+async def remove_tag(user_id: int) -> bool:
+    res = await _get_db().contacts.delete_one({"_id": user_id})
+    return res.deleted_count > 0
+
+
+async def list_tags() -> list[dict]:
+    return await _get_db().contacts.find().sort("tag", ASCENDING).to_list()
 
 
 # ---------- istisnolar ----------
