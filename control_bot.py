@@ -311,57 +311,24 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                                       for name, p in results.items()))
 
     # ---------- profil: bio, iqtibos, online ----------
+    # /bio, /online, /quote — argumentsiz bo'lsa tugmali panel, argument bilan — to'g'ridan-to'g'ri
     @bot.on(events.NewMessage(pattern=r"^/bio(?:\s+(\S+))?$", func=is_owner))
     async def _bio(event):
         arg = (event.pattern_match.group(1) or "").lower()
-        upd = bio_updater.INSTANCE
-        if arg == "on":
-            await runtime.update(bio_enabled=True)
-            await event.respond("🟢 Bio yangilash yoqildi.")
-        elif arg == "off":
-            await runtime.update(bio_enabled=False)
-            await event.respond("⏸ Bio yangilash to'xtatildi. Bio oxirgi holatida qoladi. "
-                                "Asl bio kerak bo'lsa: /bio restore")
-        elif arg == "now":
-            if upd is None:
-                await event.respond("Bio moduli ishlamayapti (BIO_ENABLED=false).")
-                return
-            await runtime.update()  # siklni uyg'otadi
-            await event.respond("🔄 Bio hozir yangilanadi.")
-        elif arg == "restore":
-            if upd is None:
-                await event.respond("Bio moduli ishlamayapti (BIO_ENABLED=false).")
-                return
-            await runtime.update(bio_enabled=False)
-            await upd.restore()
-            original = await bio_updater.get_original_bio()
-            await event.respond(f"↩️ Asl bio qaytarildi va avtomatik yangilash to'xtatildi:\n{original!r}\n"
-                                "Qayta yoqish: /bio on")
-        elif arg:
-            await event.respond("Foydalanish: /bio, /bio on, /bio off, /bio now, /bio restore")
+        if not arg:
+            await _send_panel(event)
+        elif arg in ("on", "off", "now", "restore"):
+            await event.respond(await _do_action(f"bio_{arg}"))
         else:
-            state = "🟢 yoqiq" if runtime.get("bio_enabled") else "⏸ to'xtatilgan"
-            current = upd.current_bio if upd else None
-            qmode = {"auto": "har kuni almashadi (quotes.txt)", "off": "o'chirilgan",
-                     "fixed": f"doimiy: “{runtime.get('quote_text')}”"}[runtime.get("quote_mode")]
-            await event.respond(
-                f"Bio yangilash: {state}{' (DRY_RUN)' if config.DRY_RUN else ''}\n"
-                f"Joriy bio: {current!r}\n"
-                f"Iqtibos: {qmode}\n"
-                f"Online: {'🟢 yoqiq' if runtime.get('online') else '⚪️ o‘chiq'}"
-            )
+            await event.respond("Foydalanish: /bio, /bio on, /bio off, /bio now, /bio restore")
 
     @bot.on(events.NewMessage(pattern=r"^/quote(?:\s+([\s\S]+))?$", func=is_owner))
     async def _quote(event):
         arg = (event.pattern_match.group(1) or "").strip()
         if not arg:
-            await event.respond("Foydalanish: /quote <matn>, /quote auto, /quote off")
-        elif arg.lower() == "auto":
-            await runtime.update(quote_mode="auto")
-            await event.respond("🔁 Iqtibos har kuni quotes.txt dan almashadi.")
-        elif arg.lower() == "off":
-            await runtime.update(quote_mode="off")
-            await event.respond("🚫 Bio iqtibossiz chiqadi.")
+            await _send_panel(event, extra="✍️ Doimiy iqtibos qo'yish: <code>/quote Ilm — kuch</code>")
+        elif arg.lower() in ("auto", "off"):
+            await event.respond(await _do_action(f"quote_{arg.lower()}"))
         else:
             arg = arg.strip("“”\"'«»")
             await runtime.update(quote_mode="fixed", quote_text=arg)
@@ -375,12 +342,21 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     async def _online(event):
         arg = (event.pattern_match.group(1) or "").lower()
         if arg in ("on", "off"):
-            await runtime.update(online=(arg == "on"))
-            await event.respond("🟢 Akkaunt online ko'rinadi." if arg == "on"
-                                else "⚪️ Online ko'rsatish o'chirildi.")
+            await event.respond(await _do_action(f"online_{arg}"))
         else:
-            await event.respond(f"Online: {'🟢 yoqiq' if runtime.get('online') else '⚪️ o‘chiq'}\n"
-                                "Foydalanish: /online on, /online off")
+            await _send_panel(event)
+
+    # Panel tugmalari: cfg:<amal>
+    @bot.on(events.CallbackQuery(pattern=rb"^cfg:", func=is_owner))
+    async def _cfg_callback(event):
+        action = event.data.decode().split(":", 1)[1]
+        result = await _do_action(action)
+        await event.answer(result[:190])
+        text, buttons = await _panel()
+        try:
+            await event.edit(text, parse_mode="html", buttons=buttons)
+        except Exception:
+            pass  # panel o'zgarmagan bo'lsa Telegram xato qaytaradi — e'tiborsiz
 
     # Oddiy matn: tugma orqali yoki xulosaga reply qilib javob yozish
     @bot.on(events.NewMessage(func=lambda e: is_owner(e) and e.text and not e.text.startswith("/")))
@@ -397,7 +373,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         _awaiting_reply.pop("chat", None)
         await _send_as_owner(chat_id, event.text, event)
 
-    @bot.on(events.CallbackQuery(func=is_owner))
+    @bot.on(events.CallbackQuery(pattern=rb"^(reply|done|mute|ignore):", func=is_owner))
     async def _callback(event):
         action, _, raw = event.data.decode().partition(":")
         chat_id = int(raw)
