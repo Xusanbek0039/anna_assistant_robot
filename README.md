@@ -230,16 +230,65 @@ Dastur to'xtatilganda (Ctrl+C) akkaunt "offline" holatiga qaytariladi.
 > boshqa qurilmada "o'tiribdi" deb hisoblaydi. Muhim xabarlar baribir nazorat boti orqali keladi (bot
 > bildirishnomalari alohida ishlaydi).
 
-## 6. Ishga tushirish va to'xtatish
+## 6. Botdan boshqarish, hisobot va nazorat
+
+`.env` ni tahrirlash va dasturni qayta ishga tushirish shart emas — bu sozlamalar MongoDB'da saqlanadi
+va qayta ishga tushganda ham saqlanib qoladi.
+
+| Buyruq | Vazifa |
+|---|---|
+| `/bio` | Joriy bio, iqtibos va online holati |
+| `/bio on` / `/bio off` | Bio yangilashni yoqish / to'xtatish (bio oxirgi holatida qoladi) |
+| `/bio now` | Bio'ni hozir yangilash |
+| `/bio restore` | Asl bio va familiyani qaytarish (avtomatik yangilash to'xtaydi) |
+| `/quote Ilm — kuch` | Doimiy iqtibos |
+| `/quote auto` / `/quote off` | Har kuni almashadigan (`quotes.txt`) / iqtibossiz |
+| `/online on` / `/online off` | Akkauntni online ko'rsatish |
+| `/report` | Bugungi hisobot |
+| `/usage` | Bugungi AI sarfi va limitlar |
+| `/health` | MongoDB, OpenAI, Telegram holatini hozir tekshirish |
+
+**Kunlik hisobot** har kuni `REPORT_TIME` (standart 21:00) da keladi:
+
+```
+📊 Bugungi hisobot — 12-noyabr
+👥 Yozganlar: 12 kishi (34 ta xabar)
+🔴 muhim: 3 | 📞 chaqirishgan: 1 | 🚫 spam: 2
+🤖 AI: 41 / 300 so'rov (35 javob, 4 ovoz, 2 rasm), ~38.2k token
+📬 Javob kutayotganlar: 3
+🔴 Ali: Sayt buyurtma qilmoqchi, narxini so'radi
+```
+
+**Xarajat nazorati.** Har bir AI so'rovi (javob, ovozni matnga o'girish, rasm, ovozli javob) hisoblanadi.
+`AI_DAILY_LIMIT` (kuniga jami, standart 300) yoki `AI_CHAT_DAILY_LIMIT` (bitta odamga, standart 30) tugasa,
+kotiba AI'siz ishlaydi: shablon matn bir marta yuboriladi, xabarlar baribir sizga yetkaziladi. Limit tugagani
+haqida botga kuniga bir marta xabar keladi.
+
+**Holat nazorati.** Har 5 daqiqada MongoDB va Telegram, har 30 daqiqada OpenAI tekshiriladi. Biror qism
+ishdan chiqsa — `❌ MongoDB ishlamayapti`, tiklansa — `✅ MongoDB qayta ishlayapti` (har tekshiruvda takrorlanmaydi).
+Bio, online yoki hisobot qismi xato bilan to'xtasa ham botga xabar keladi, qolgan qismlar ishlashda davom etadi.
+
+## 7. Ishga tushirish va to'xtatish
 
 | Nima | Buyruq |
 |---|---|
+| **Tavsiya: yiqilsa o'zi qayta ishga tushadi** | `run.bat` (ikki marta bosing) |
 | Hammasi (kotiba + bio) | `python main.py` |
 | Faqat bio | `python bio_updater.py` |
 | Bio'ni bir marta sinash | `python bio_updater.py --once` |
 | To'xtatish | Terminalda **Ctrl+C** |
 
 To'xtatilganda bio oxirgi holatida qoladi. Asl holatga qaytarish: `python bio_updater.py --restore`.
+
+## 8. Testlar
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q tests
+```
+
+Testlar haqiqiy `.env`, Telegram, OpenAI va MongoDB'ga **tegmaydi** (soxta obyektlar ishlatiladi), 3 soniyada o'tadi.
+Har bir o'zgarishdan keyin ishga tushiring — eski funksiyalar buzilmaganini ko'rsatadi.
 
 > `main.py` va `bio_updater.py` ni **bir vaqtda** ishga tushirmang — ikkalasi bitta `anna.session` faylini
 > ishlatadi. `main.py` ishlayotgan bo'lsa, bio allaqachon uning ichida yangilanmoqda.

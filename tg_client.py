@@ -49,6 +49,11 @@ def setup_logging() -> None:
     for name in ("pymongo", "httpx", "httpx2", "httpcore", "openai"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
+    for key, lines in config.ENV_DUPLICATES.items():
+        logging.getLogger("config").warning(
+            ".env da %s %d marta yozilgan (qatorlar: %s) — faqat OXIRGISI (%d-qator) amal qiladi. "
+            "Ortiqchasini o'chiring.", key, len(lines), ", ".join(map(str, lines)), lines[-1])
+
 
 def create_user_client() -> TelegramClient:
     return TelegramClient(

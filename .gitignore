@@ -17,3 +17,6 @@ anna.db
 __pycache__/
 .venv/
 venv/
+
+# Testlar
+.pytest_cache/

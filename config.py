@@ -11,6 +11,26 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 
+def _find_env_duplicates(path: Path) -> dict[str, list[int]]:
+    """.env da bir necha marta yozilgan sozlamalar: {nom: [qator raqamlari]} (qiymatlar o'qilmaydi)."""
+    seen: dict[str, list[int]] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return {}
+    for no, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].removeprefix("export ").strip()
+        seen.setdefault(key, []).append(no)
+    return {k: v for k, v in seen.items() if len(v) > 1}
+
+
+# Takroriy sozlamada OXIRGI qator amal qiladi — bu ko'pincha kutilmagan natija beradi
+ENV_DUPLICATES = _find_env_duplicates(BASE_DIR / ".env")
+
+
 def _path(value: str) -> str:
     p = Path(value)
     return str(p if p.is_absolute() else BASE_DIR / p)
