@@ -132,6 +132,9 @@ def _fetch_weather_sync() -> Weather:
 
 async def _safe_db(coro, what: str):
     """MongoDB vaqtincha ishlamasa, bio yangilanishi to'xtab qolmasligi uchun."""
+    if not config.MONGODB_URI:  # Mongo sozlanmagan — faqat mahalliy zaxira
+        coro.close()
+        return None
     try:
         return await coro
     except PyMongoError as e:
