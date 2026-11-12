@@ -46,7 +46,8 @@ def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler])
     # Telethon INFO darajasida ichki tafsilotlarni yozadi — faqat ogohlantirishlar qoladi
     logging.getLogger("telethon").setLevel(logging.WARNING)
-    logging.getLogger("pymongo").setLevel(logging.WARNING)
+    for name in ("pymongo", "httpx", "httpx2", "httpcore", "openai"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def create_user_client() -> TelegramClient:

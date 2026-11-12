@@ -62,3 +62,18 @@ async def generate(history: list[dict]) -> dict:
         "summary": str(data.get("summary", "")).strip(),
         "urgent": bool(data.get("urgent", False)),
     }
+
+
+async def check_key() -> str | None:
+    """Ishga tushishda kalitni tekshiradi. Muammo bo'lsa, tushunarli matn qaytaradi (kalitni chiqarmaydi)."""
+    import openai
+
+    try:
+        await _get_client().models.retrieve(OPENAI_MODEL)
+        return None
+    except openai.AuthenticationError:
+        return "OPENAI_API_KEY noto'g'ri yoki bekor qilingan (401) — platform.openai.com/api-keys dan yangisini oling"
+    except openai.NotFoundError:
+        return f"OPENAI_MODEL '{OPENAI_MODEL}' topilmadi yoki bu kalitga ochiq emas"
+    except openai.APIError as e:
+        return f"OpenAI tekshiruvi o'tmadi ({type(e).__name__})"

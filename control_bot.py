@@ -72,6 +72,14 @@ async def notify(chat_id: int, name: str, username: str | None, text: str,
         log.exception("Egasiga xabar yuborilmadi (botga /start bosganmisiz?)")
 
 
+async def alert(text: str) -> None:
+    """Egasiga tizim ogohlantirishi (masalan, AI kaliti ishlamayapti)."""
+    try:
+        await ctx.bot.send_message(ctx.owner_id, text)
+    except Exception:
+        log.warning("Ogohlantirish botga yuborilmadi")
+
+
 async def send_media(chat_id: int, name: str, data: bytes, filename: str | None) -> None:
     try:
         file = data

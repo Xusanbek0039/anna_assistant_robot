@@ -3,6 +3,7 @@ import logging
 
 from telethon import TelegramClient
 
+import ai
 import config
 import control_bot
 import storage
@@ -18,6 +19,12 @@ async def main() -> None:
     if config.BIO_ENABLED:
         validate_settings()
     await storage.init()
+
+    problem = await ai.check_key()
+    if problem:
+        log.error("AI: %s. Kotiba hozircha faqat shablon matn bilan javob beradi.", problem)
+    else:
+        log.info("OpenAI kaliti ishlayapti (model: %s)", config.OPENAI_MODEL)
 
     user = create_user_client()
     # Birinchi ishga tushishda telefon raqam, Telegram kodi (va 2FA parol) terminalda so'raladi

@@ -5,6 +5,7 @@ import random
 import time
 from collections import defaultdict, deque
 
+import openai
 from telethon import TelegramClient, events
 from telethon.tl.types import User
 
@@ -41,6 +42,31 @@ def _media_label(msg) -> str | None:
     if msg.media:
         return "media"
     return None
+
+
+_ai_alerted: set[str] = set()  # egasiga bir xil AI xatosi haqida faqat bir marta xabar berish
+
+
+async def _report_ai_error(e: Exception) -> None:
+    """OpenAI xatosini tushunarli logga yozadi; jiddiy xatolarda egasini bot orqali ogohlantiradi."""
+    hints = {
+        openai.AuthenticationError: "OpenAI API kaliti noto'g'ri yoki bekor qilingan (401). "
+                                    ".env dagi OPENAI_API_KEY ni yangilang.",
+        openai.PermissionDeniedError: "OpenAI kalitida bu modelga ruxsat yo'q (403). OPENAI_MODEL ni tekshiring.",
+        openai.NotFoundError: "OPENAI_MODEL topilmadi (404). .env dagi model nomini tekshiring.",
+        openai.RateLimitError: "OpenAI limiti tugagan yoki balans yetarli emas (429). "
+                               "platform.openai.com -> Billing ni tekshiring.",
+    }
+    hint = next((h for cls, h in hints.items() if isinstance(e, cls)), None)
+    if hint is None:
+        log.exception("OpenAI xatosi — shablon javob ishlatiladi")
+        return
+    log.error("%s Shablon javob ishlatiladi.", hint)
+    if type(e).__name__ not in _ai_alerted:
+        _ai_alerted.add(type(e).__name__)
+        await control_bot.alert(f"⚠️ AI ishlamayapti: {hint}\n"
+                                "Hozircha odamlarga tayyor shablon matn yuboriladi. "
+                                "Kalitni yangilagach, dasturni qayta ishga tushiring.")
 
 
 def _rate_ok(chat_id: int) -> bool:
@@ -109,8 +135,8 @@ def setup(user: TelegramClient, me_id: int) -> None:
             history = await storage.get_history(chat_id)
             try:
                 result = await ai.generate(history)
-            except Exception:
-                log.exception("OpenAI xatosi — shablon javob ishlatiladi")
+            except Exception as e:
+                await _report_ai_error(e)
                 already = any(h["role"] == "assistant" for h in history)
                 result = {"reply": None if already else FALLBACK_TEXT,
                           "summary": "", "urgent": False}
