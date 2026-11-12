@@ -19,12 +19,10 @@ def _get_db():
     global _client, _db
     if _db is None:
         if not MONGODB_URI:
-            sys.exit("[config] .env faylida MONGODB_URI to'ldirilmagan")
-        try:
-            _client = AsyncMongoClient(MONGODB_URI, serverSelectionTimeoutMS=10_000,
-                                       appname="anna_assistant")
-        except ConfigurationError as e:
-            sys.exit(f"[storage] MONGODB_URI noto'g'ri formatda: {type(e).__name__}")
+            raise ConfigurationError("MONGODB_URI to'ldirilmagan")
+        # Noto'g'ri formatdagi URI ham ConfigurationError beradi (xabarida URI chiqarilmaydi)
+        _client = AsyncMongoClient(MONGODB_URI, serverSelectionTimeoutMS=10_000,
+                                   appname="anna_assistant")
         _db = _client[MONGODB_DB]
     return _db
 
@@ -35,7 +33,12 @@ async def init(retry_forever: bool = True) -> bool:
     Login/parol xato bo'lsa dastur to'xtaydi; tarmoq xatosida qayta uriniladi
     (retry_forever=False bo'lsa False qaytaradi). URI hech qachon logga chiqmaydi.
     """
-    db = _get_db()
+    try:
+        db = _get_db()
+    except ConfigurationError:
+        if not retry_forever:
+            return False
+        sys.exit("[storage] MONGODB_URI bo'sh yoki noto'g'ri formatda (.env ni tekshiring)")
     delay = 5
     while True:
         try:
