@@ -58,6 +58,7 @@ async def main() -> None:
     log.info("Nazorat boti: @%s — botga /start bosishni unutmang", bot_me.username)
 
     control_bot.setup(bot, user, owner_id=me.id)
+    await control_bot.set_commands(bot, me.id)  # "/" bosilganda chiqadigan menyu
     userbot.setup(user, me_id=me.id)
     monitor = health.Monitor(user, control_bot.alert)
     control_bot.ctx.monitor = monitor

@@ -163,13 +163,145 @@ async def _resolve_user_id(arg: str) -> int | None:
         return None
 
 
+# ---------- "/" menyusi ----------
+# (buyruq, tavsif) — Telegram'da "/" bosilganda shu ro'yxat chiqadi
+BOT_COMMANDS = [
+    ("status", "📊 Holat va boshqaruv paneli"),
+    ("auto", "🤖 Aqlli rejim — faqat band bo'lganda javob"),
+    ("on", "🟢 Kotiba doim javob beradi"),
+    ("off", "⚪️ Avtojavobni o'chirish"),
+    ("inbox", "📬 Javob kutayotgan xabarlar"),
+    ("report", "📈 Bugungi hisobot"),
+    ("bio", "🕒 Bio, iqtibos va online — tugmali panel"),
+    ("quote", "💬 Iqtibos: /quote matn | auto | off"),
+    ("online", "🟢 Online ko'rinish: on | off"),
+    ("usage", "💸 Bugungi AI sarfi va limitlar"),
+    ("health", "🩺 MongoDB, OpenAI, Telegram holati"),
+    ("tags", "🏷 Kontakt turlari ro'yxati"),
+    ("tag", "🏷 Tur berish: /tag @user oila|mijoz|dost"),
+    ("reply", "✍️ Javob: /reply chat_id matn"),
+    ("ignored", "🚫 Istisnolar ro'yxati"),
+    ("ignore", "🚫 Istisno: /ignore @user"),
+    ("unignore", "↩️ Istisnodan chiqarish: /unignore id"),
+    ("help", "❓ Barcha buyruqlar"),
+]
+
+
+async def set_commands(bot: TelegramClient, owner_id: int) -> None:
+    """Buyruqlar menyusini o'rnatadi. Menyu faqat egasiga ko'rinadi (begonalar uchun bo'sh)."""
+    from telethon.tl.functions.bots import SetBotCommandsRequest
+    from telethon.tl.types import BotCommand, BotCommandScopeDefault, BotCommandScopePeer
+
+    commands = [BotCommand(command=c, description=d) for c, d in BOT_COMMANDS]
+    try:
+        peer = await bot.get_input_entity(owner_id)
+        await bot(SetBotCommandsRequest(scope=BotCommandScopePeer(peer=peer), lang_code="", commands=commands))
+        await bot(SetBotCommandsRequest(scope=BotCommandScopeDefault(), lang_code="", commands=[]))
+        log.info("Bot menyusi o'rnatildi (%d ta buyruq, faqat egasiga ko'rinadi)", len(commands))
+    except Exception as e:
+        # Egasi hali botga /start bosmagan bo'lsa — hamma uchun o'rnatamiz (begonalar baribir rad etiladi)
+        log.info("Menyuni faqat egasiga o'rnatib bo'lmadi (%s) — umumiy menyu o'rnatiladi", type(e).__name__)
+        try:
+            await bot(SetBotCommandsRequest(scope=BotCommandScopeDefault(), lang_code="", commands=commands))
+        except Exception as e2:
+            log.warning("Bot menyusi o'rnatilmadi (%s)", type(e2).__name__)
+
+
+# ---------- boshqaruv paneli (tugmalar) ----------
+async def _do_action(action: str) -> str:
+    """Panel tugmasi yoki buyruq bajaradigan amal. Natija matnini qaytaradi."""
+    upd = bio_updater.INSTANCE
+    if action.startswith("mode_"):
+        mode = action[5:]
+        if mode in storage.MODES:
+            await storage.set_mode(mode)
+            return {"auto": "🤖 Aqlli rejim yoqildi", "on": "🟢 Kotiba doim javob beradi",
+                    "off": "⚪️ Avtojavob o'chirildi"}[mode]
+    if action == "bio_on":
+        await runtime.update(bio_enabled=True)
+        return "🟢 Bio yangilash yoqildi"
+    if action == "bio_off":
+        await runtime.update(bio_enabled=False)
+        return "⏸ Bio yangilash to'xtatildi (bio oxirgi holatida qoladi)"
+    if action in ("bio_now", "bio_restore") and upd is None:
+        return "Bio moduli ishlamayapti (BIO_ENABLED=false)"
+    if action == "bio_now":
+        await runtime.update()  # siklni uyg'otadi
+        return "🔄 Bio hozir yangilanadi"
+    if action == "bio_restore":
+        await runtime.update(bio_enabled=False)
+        await upd.restore()
+        original = await bio_updater.get_original_bio()
+        return f"↩️ Asl bio qaytarildi: {original!r}. Avtomatik yangilash to'xtatildi"
+    if action == "quote_auto":
+        await runtime.update(quote_mode="auto")
+        return "🔁 Iqtibos har kuni quotes.txt dan almashadi"
+    if action == "quote_off":
+        await runtime.update(quote_mode="off")
+        return "🚫 Bio iqtibossiz chiqadi"
+    if action in ("online_on", "online_off"):
+        on = action == "online_on"
+        await runtime.update(online=on)
+        return "🟢 Akkaunt online ko'rinadi" if on else "⚪️ Online ko'rsatish o'chirildi"
+    if action == "refresh":
+        return "🔄 Yangilandi"
+    return "Noma'lum amal"
+
+
+async def _panel() -> tuple[str, list]:
+    mode = await storage.get_mode()
+    st = await availability.get_status()
+    upd = bio_updater.INSTANCE
+    bio_on, online = runtime.get("bio_enabled"), runtime.get("online")
+    qmode = runtime.get("quote_mode")
+    qtext = {"auto": "har kuni almashadi", "off": "o'chirilgan",
+             "fixed": f"“{html.escape(runtime.get('quote_text') or '')}”"}.get(qmode, qmode)
+    current = html.escape(upd.current_bio) if upd and upd.current_bio else "—"
+    text = (
+        "⚙️ <b>Boshqaruv paneli</b>\n\n"
+        f"Kotiba: {MODE_NAMES[mode]}\n"
+        f"Hozir: {'🟢 javob beradi' if st.reply else '⚪️ jim'} — {html.escape(st.reason)}\n\n"
+        f"Bio: {'🟢 yangilanmoqda' if bio_on else '⏸ to‘xtatilgan'}"
+        f"{' (DRY_RUN — Telegram’da o‘zgarmaydi)' if config.DRY_RUN else ''}\n"
+        f"<code>{current}</code>\n"
+        f"Iqtibos: {qtext}\n"
+        f"Online: {'🟢 yoqiq' if online else '⚪️ o‘chiq'}"
+    )
+    tick = lambda cond, label: ("✅ " if cond else "") + label  # noqa: E731
+    buttons = [
+        [Button.inline(tick(mode == "auto", "🤖 Aqlli"), b"cfg:mode_auto"),
+         Button.inline(tick(mode == "on", "🟢 Doim"), b"cfg:mode_on"),
+         Button.inline(tick(mode == "off", "⚪️ O'chiq"), b"cfg:mode_off")],
+        [Button.inline("⏸ Bio to'xtatish" if bio_on else "▶️ Bio yoqish",
+                       b"cfg:bio_off" if bio_on else b"cfg:bio_on"),
+         Button.inline("🔄 Hozir yangilash", b"cfg:bio_now")],
+        [Button.inline(tick(qmode == "auto", "🔁 Iqtibos: har kuni"), b"cfg:quote_auto"),
+         Button.inline(tick(qmode == "off", "🚫 Iqtibossiz"), b"cfg:quote_off")],
+        [Button.inline("⚪️ Online o'chirish" if online else "🟢 Online yoqish",
+                       b"cfg:online_off" if online else b"cfg:online_on"),
+         Button.inline("↩️ Asl bio", b"cfg:bio_restore")],
+        [Button.inline("🔃 Yangilash", b"cfg:refresh")],
+    ]
+    return text, buttons
+
+
+async def _send_panel(event, extra: str = "") -> None:
+    text, buttons = await _panel()
+    if extra:
+        text += f"\n\n{extra}"
+    await event.respond(text, parse_mode="html", buttons=buttons)
+
+
 def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     ctx.bot, ctx.user, ctx.owner_id = bot, user, owner_id
     is_owner = lambda e: e.sender_id == owner_id  # noqa: E731
 
     @bot.on(events.NewMessage(pattern=r"^/(start|help)", func=is_owner))
     async def _help(event):
-        await event.respond(HELP, parse_mode="html")
+        if event.raw_text.startswith("/start"):
+            await set_commands(bot, owner_id)  # birinchi /start dan keyin menyu faqat egasiga o'rnatiladi
+        await event.respond(HELP + "\n\n💡 Pastdagi <b>/</b> yoki ☰ <b>Menyu</b> tugmasini bosing — "
+                                   "barcha buyruqlar chiqadi.", parse_mode="html")
 
     @bot.on(events.NewMessage(func=lambda e: e.sender_id != owner_id and e.is_private))
     async def _stranger(event):
@@ -197,14 +329,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
 
     @bot.on(events.NewMessage(pattern=r"^/status$", func=is_owner))
     async def _status(event):
-        mode = await storage.get_mode()
-        st = await availability.get_status()
-        await event.respond(
-            f"Rejim: {MODE_NAMES[mode]}\n"
-            f"Hozir: {'🟢 javob beradi' if st.reply else '⚪️ jim'} — {st.reason}\n"
-            f"Oxirgi 24 soatda kelgan xabarlar: {await storage.today_count()}\n"
-            f"Javob kutayotganlar: {len(await storage.pending_inbox())}"
-        )
+        await _send_panel(event, extra=(
+            f"📨 Oxirgi 24 soatda: {await storage.today_count()} ta xabar\n"
+            f"📬 Javob kutayotganlar: {len(await storage.pending_inbox())} (/inbox)"
+        ))
 
     @bot.on(events.NewMessage(pattern=r"^/tag\s+(\S+)\s+(\S+)$", func=is_owner))
     async def _tag(event):

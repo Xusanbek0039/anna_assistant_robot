@@ -235,6 +235,10 @@ Dastur to'xtatilganda (Ctrl+C) akkaunt "offline" holatiga qaytariladi.
 `.env` ni tahrirlash va dasturni qayta ishga tushirish shart emas — bu sozlamalar MongoDB'da saqlanadi
 va qayta ishga tushganda ham saqlanib qoladi.
 
+**Menyu:** nazorat botida pastdagi **/** yoki ☰ **Menyu** tugmasini bosing — barcha buyruqlar tavsifi bilan chiqadi.
+Menyu faqat sizga ko'rinadi (begonalarga bo'sh). **`/status`** yoki **`/bio`** — tugmali boshqaruv paneli:
+rejim (🤖 Aqlli / 🟢 Doim / ⚪️ O'chiq), bio yoqish/to'xtatish, iqtibos, online — hammasi bir bosishda.
+
 | Buyruq | Vazifa |
 |---|---|
 | `/bio` | Joriy bio, iqtibos va online holati |
