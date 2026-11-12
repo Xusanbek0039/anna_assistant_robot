@@ -1,7 +1,19 @@
+# Maxfiy sozlamalar
 .env
+.env.*
+!.env.example
+
+# Telegram session fayllari (akkauntga to'liq kirish beradi!)
 *.session
 *.session-journal
+
+# Asl bio zaxirasi (shaxsiy ma'lumot)
+bio_backup.json
+bio_backup.json.tmp
+
+# Eski SQLite baza
 anna.db
+
 __pycache__/
 .venv/
 venv/

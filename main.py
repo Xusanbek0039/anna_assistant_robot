@@ -3,27 +3,29 @@ import logging
 
 from telethon import TelegramClient
 
+import config
 import control_bot
+import storage
 import userbot
-from config import API_HASH, API_ID, BOT_SESSION, BOT_TOKEN, PHONE, USER_SESSION
+from bio_updater import BioUpdater, validate_settings
+from tg_client import create_user_client, login, setup_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-)
-logging.getLogger("telethon").setLevel(logging.WARNING)
 log = logging.getLogger("main")
 
 
 async def main() -> None:
-    user = TelegramClient(USER_SESSION, API_ID, API_HASH)
-    # Birinchi ishga tushishda telefoningizga kelgan kodni (va 2FA parolni) shu yerda kiritasiz
-    await user.start(phone=PHONE)
-    me = await user.get_me()
-    log.info("Akkauntga kirildi: %s (id=%s)", me.first_name, me.id)
+    config.require("API_ID", "API_HASH", "BOT_TOKEN", "OPENAI_API_KEY", "MONGODB_URI")
+    if config.BIO_ENABLED:
+        validate_settings()
+    await storage.init()
 
-    bot = TelegramClient(BOT_SESSION, API_ID, API_HASH)
-    await bot.start(bot_token=BOT_TOKEN)
+    user = create_user_client()
+    # Birinchi ishga tushishda telefon raqam, Telegram kodi (va 2FA parol) terminalda so'raladi
+    await login(user)
+    me = await user.get_me()
+
+    bot = TelegramClient(config.BOT_SESSION, config.API_ID, config.API_HASH)
+    await bot.start(bot_token=config.BOT_TOKEN)
     bot_me = await bot.get_me()
     log.info("Nazorat boti: @%s — botga /start bosishni unutmang", bot_me.username)
 
@@ -35,12 +37,19 @@ async def main() -> None:
     except Exception:
         log.warning("Botdan xabar yuborib bo'lmadi — Telegram'da @%s ga /start bosing", bot_me.username)
 
+    tasks = [user.run_until_disconnected(), bot.run_until_disconnected()]
+    if config.BIO_ENABLED:
+        tasks.append(BioUpdater(user).run())
+    else:
+        log.info("Avtomatik bio o'chirilgan (BIO_ENABLED=false)")
+
     log.info("Ishlayapti. To'xtatish: Ctrl+C")
-    await asyncio.gather(user.run_until_disconnected(), bot.run_until_disconnected())
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":
+    setup_logging()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        pass
+        log.info("To'xtatildi (Ctrl+C)")
