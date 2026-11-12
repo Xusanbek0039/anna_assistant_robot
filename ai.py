@@ -7,7 +7,15 @@ from openai import AsyncOpenAI
 from config import ASSISTANT_NAME, OPENAI_API_KEY, OPENAI_MODEL, OWNER_NAME
 
 log = logging.getLogger("ai")
-_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+_client: AsyncOpenAI | None = None
+
+
+def _get_client() -> AsyncOpenAI:
+    # Kalit bo'sh bo'lsa import paytida yiqilmasligi uchun klient kerak bo'lganda yaratiladi
+    global _client
+    if _client is None:
+        _client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    return _client
 
 SYSTEM_PROMPT = f"""Sen {OWNER_NAME}ning shaxsiy kotibasi {ASSISTANT_NAME}san va uning Telegram akkauntidan javob yozyapsan.
 {OWNER_NAME} hozirda band va javob bera olmaydi.
@@ -38,7 +46,7 @@ Javobni FAQAT quyidagi JSON ko'rinishida qaytar:
 
 async def generate(history: list[dict]) -> dict:
     """history: [{'role': 'user'|'assistant', 'content': str}, ...]"""
-    resp = await _client.chat.completions.create(
+    resp = await _get_client().chat.completions.create(
         model=OPENAI_MODEL,
         messages=[{"role": "system", "content": SYSTEM_PROMPT}, *history],
         response_format={"type": "json_object"},
