@@ -120,26 +120,26 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
 
     @bot.on(events.NewMessage(pattern=r"^/on$", func=is_owner))
     async def _on(event):
-        storage.set_enabled(True)
+        await storage.set_enabled(True)
         await event.respond("🟢 Avtojavob yoqildi.")
 
     @bot.on(events.NewMessage(pattern=r"^/off$", func=is_owner))
     async def _off(event):
-        storage.set_enabled(False)
+        await storage.set_enabled(False)
         await event.respond("⚪️ Avtojavob o'chirildi.")
 
     @bot.on(events.NewMessage(pattern=r"^/status$", func=is_owner))
     async def _status(event):
-        state = "🟢 yoqilgan" if storage.is_enabled() else "⚪️ o'chirilgan"
+        state = "🟢 yoqilgan" if await storage.is_enabled() else "⚪️ o'chirilgan"
         await event.respond(
             f"Avtojavob: {state}\n"
-            f"Oxirgi 24 soatda kelgan xabarlar: {storage.today_count()}\n"
-            f"Javob kutayotganlar: {len(storage.pending_inbox())}"
+            f"Oxirgi 24 soatda kelgan xabarlar: {await storage.today_count()}\n"
+            f"Javob kutayotganlar: {len(await storage.pending_inbox())}"
         )
 
     @bot.on(events.NewMessage(pattern=r"^/inbox$", func=is_owner))
     async def _inbox(event):
-        rows = storage.pending_inbox()
+        rows = await storage.pending_inbox()
         if not rows:
             await event.respond("📭 Javob kutayotgan xabar yo'q.")
             return
@@ -164,18 +164,18 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         if uid is None:
             await event.respond("❌ Foydalanuvchi topilmadi.")
             return
-        storage.add_ignored(uid, arg)
+        await storage.add_ignored(uid, arg)
         await event.respond(f"🚫 {arg} ({uid}) ga endi avtojavob berilmaydi.")
 
     @bot.on(events.NewMessage(pattern=r"^/unignore\s+(\S+)", func=is_owner))
     async def _unignore(event):
         uid = await _resolve_user_id(event.pattern_match.group(1))
-        ok = uid is not None and storage.remove_ignored(uid)
+        ok = uid is not None and await storage.remove_ignored(uid)
         await event.respond("✅ Istisnodan chiqarildi." if ok else "❌ Ro'yxatda topilmadi.")
 
     @bot.on(events.NewMessage(pattern=r"^/ignored$", func=is_owner))
     async def _ignored(event):
-        rows = storage.list_ignored()
+        rows = await storage.list_ignored()
         if not rows:
             await event.respond("Istisnolar ro'yxati bo'sh.")
             return
@@ -206,11 +206,11 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
             await event.respond(f"✍️ <code>{chat_id}</code> ga javob matnini yozing:", parse_mode="html")
         elif action == "done":
-            storage.mark_handled(chat_id)
+            await storage.mark_handled(chat_id)
             await event.answer("Ko'rildi deb belgilandi")
         elif action == "mute":
-            storage.mute(chat_id, OWNER_TAKEOVER_MINUTES * 60)
+            await storage.mute(chat_id, OWNER_TAKEOVER_MINUTES * 60)
             await event.answer(f"Bu chatda AI {OWNER_TAKEOVER_MINUTES} daqiqa jim turadi")
         elif action == "ignore":
-            storage.add_ignored(chat_id, str(chat_id))
+            await storage.add_ignored(chat_id, str(chat_id))
             await event.answer("Istisnoga qo'shildi — endi avtojavob berilmaydi")

@@ -1,139 +1,181 @@
-"""SQLite saqlash: suhbat tarixi, kelgan xabarlar (inbox), sozlamalar, istisnolar."""
-import sqlite3
+"""MongoDB Atlas saqlash: suhbat tarixi, inbox, sozlamalar, istisnolar va bio holati."""
+import asyncio
+import logging
+import sys
 import time
 
-from config import DB_PATH, HISTORY_LIMIT
+from pymongo import ASCENDING, DESCENDING, AsyncMongoClient
+from pymongo.errors import ConfigurationError, OperationFailure, PyMongoError
 
-_db = sqlite3.connect(DB_PATH)
-_db.row_factory = sqlite3.Row
-_db.executescript(
+from config import HISTORY_LIMIT, MONGODB_DB, MONGODB_URI
+
+log = logging.getLogger("storage")
+
+_client: AsyncMongoClient | None = None
+_db = None
+
+
+def _get_db():
+    global _client, _db
+    if _db is None:
+        if not MONGODB_URI:
+            sys.exit("[config] .env faylida MONGODB_URI to'ldirilmagan")
+        try:
+            _client = AsyncMongoClient(MONGODB_URI, serverSelectionTimeoutMS=10_000,
+                                       appname="anna_assistant")
+        except ConfigurationError as e:
+            sys.exit(f"[storage] MONGODB_URI noto'g'ri formatda: {type(e).__name__}")
+        _db = _client[MONGODB_DB]
+    return _db
+
+
+async def init(retry_forever: bool = True) -> bool:
+    """Ulanishni tekshiradi va indekslarni yaratadi.
+
+    Login/parol xato bo'lsa dastur to'xtaydi; tarmoq xatosida qayta uriniladi
+    (retry_forever=False bo'lsa False qaytaradi). URI hech qachon logga chiqmaydi.
     """
-    CREATE TABLE IF NOT EXISTS history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id INTEGER NOT NULL,
-        role TEXT NOT NULL,          -- user | assistant
-        content TEXT NOT NULL,
-        ts REAL NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_history_chat ON history(chat_id, id);
-
-    CREATE TABLE IF NOT EXISTS inbox (
-        chat_id INTEGER PRIMARY KEY,
-        name TEXT,
-        username TEXT,
-        summary TEXT,
-        urgent INTEGER DEFAULT 0,
-        last_text TEXT,
-        updated REAL,
-        handled INTEGER DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
-    CREATE TABLE IF NOT EXISTS ignored (user_id INTEGER PRIMARY KEY, label TEXT);
-    CREATE TABLE IF NOT EXISTS muted (chat_id INTEGER PRIMARY KEY, until REAL);
-    """
-)
-_db.commit()
+    db = _get_db()
+    delay = 5
+    while True:
+        try:
+            await db.command("ping")
+            await db.history.create_index([("chat_id", ASCENDING), ("_id", DESCENDING)])
+            await db.history.create_index([("role", ASCENDING), ("ts", DESCENDING)])
+            log.info("MongoDB'ga ulandi (baza: %s)", MONGODB_DB)
+            return True
+        except OperationFailure as e:
+            if e.code in (18, 8000):  # AuthenticationFailed / Atlas auth xatosi
+                sys.exit("[storage] MongoDB login yoki paroli noto'g'ri (MONGODB_URI ni tekshiring)")
+            log.warning("MongoDB xatosi: %s (kod %s)", type(e).__name__, e.code)
+        except PyMongoError as e:
+            log.warning("MongoDB'ga ulanib bo'lmadi: %s", type(e).__name__)
+        if not retry_forever:
+            return False
+        log.info("%d soniyadan keyin qayta urinaman...", delay)
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 60)
 
 
 # ---------- tarix ----------
-def add_history(chat_id: int, role: str, content: str) -> None:
-    _db.execute(
-        "INSERT INTO history(chat_id, role, content, ts) VALUES (?,?,?,?)",
-        (chat_id, role, content, time.time()),
+async def add_history(chat_id: int, role: str, content: str) -> None:
+    await _get_db().history.insert_one(
+        {"chat_id": chat_id, "role": role, "content": content, "ts": time.time()}
     )
-    _db.commit()
 
 
-def get_history(chat_id: int, limit: int = HISTORY_LIMIT) -> list[dict]:
-    rows = _db.execute(
-        "SELECT role, content FROM history WHERE chat_id=? ORDER BY id DESC LIMIT ?",
-        (chat_id, limit),
-    ).fetchall()
+async def get_history(chat_id: int, limit: int = HISTORY_LIMIT) -> list[dict]:
+    cursor = _get_db().history.find({"chat_id": chat_id}).sort("_id", DESCENDING).limit(limit)
+    rows = await cursor.to_list()
     return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
 
 # ---------- inbox ----------
-def upsert_inbox(chat_id, name, username, summary, urgent, last_text) -> None:
-    _db.execute(
-        """INSERT INTO inbox(chat_id, name, username, summary, urgent, last_text, updated, handled)
-           VALUES (?,?,?,?,?,?,?,0)
-           ON CONFLICT(chat_id) DO UPDATE SET
-             name=excluded.name, username=excluded.username, summary=excluded.summary,
-             urgent=CASE WHEN inbox.handled=1 THEN excluded.urgent
-                         ELSE MAX(inbox.urgent, excluded.urgent) END,
-             last_text=excluded.last_text, updated=excluded.updated, handled=0""",
-        (chat_id, name, username, summary, int(urgent), last_text, time.time()),
+async def upsert_inbox(chat_id, name, username, summary, urgent, last_text) -> None:
+    # Pipeline update: ko'rilmagan xabar shoshilinch bo'lsa, belgisi saqlanib qoladi
+    await _get_db().inbox.update_one(
+        {"_id": chat_id},
+        [{"$set": {
+            "chat_id": chat_id,
+            "name": name,
+            "username": username,
+            "summary": summary,
+            "last_text": last_text,
+            "updated": time.time(),
+            "urgent": {"$cond": [
+                {"$eq": [{"$ifNull": ["$handled", True]}, True]},
+                bool(urgent),
+                {"$or": [{"$ifNull": ["$urgent", False]}, bool(urgent)]},
+            ]},
+            "handled": False,
+        }}],
+        upsert=True,
     )
-    _db.commit()
 
 
-def mark_handled(chat_id: int) -> None:
-    _db.execute("UPDATE inbox SET handled=1, urgent=0 WHERE chat_id=?", (chat_id,))
-    _db.commit()
+async def mark_handled(chat_id: int) -> None:
+    await _get_db().inbox.update_one({"_id": chat_id}, {"$set": {"handled": True, "urgent": False}})
 
 
-def pending_inbox() -> list[sqlite3.Row]:
-    return _db.execute(
-        "SELECT * FROM inbox WHERE handled=0 ORDER BY urgent DESC, updated DESC"
-    ).fetchall()
+async def pending_inbox() -> list[dict]:
+    cursor = _get_db().inbox.find({"handled": False}).sort([("urgent", DESCENDING),
+                                                             ("updated", DESCENDING)])
+    return await cursor.to_list()
 
 
-def today_count() -> int:
-    start = time.time() - 24 * 3600
-    return _db.execute(
-        "SELECT COUNT(*) FROM history WHERE role='user' AND ts>=?", (start,)
-    ).fetchone()[0]
+async def today_count() -> int:
+    return await _get_db().history.count_documents(
+        {"role": "user", "ts": {"$gte": time.time() - 24 * 3600}}
+    )
 
 
 # ---------- sozlamalar ----------
-def is_enabled() -> bool:
-    row = _db.execute("SELECT value FROM settings WHERE key='enabled'").fetchone()
-    return row is None or row["value"] == "1"
+async def is_enabled() -> bool:
+    doc = await _get_db().settings.find_one({"_id": "enabled"})
+    return doc is None or bool(doc.get("value"))
 
 
-def set_enabled(on: bool) -> None:
-    _db.execute(
-        "INSERT OR REPLACE INTO settings(key, value) VALUES ('enabled', ?)",
-        ("1" if on else "0",),
-    )
-    _db.commit()
+async def set_enabled(on: bool) -> None:
+    await _get_db().settings.update_one({"_id": "enabled"}, {"$set": {"value": on}}, upsert=True)
 
 
 # ---------- istisnolar ----------
-def is_ignored(user_id: int) -> bool:
-    return _db.execute("SELECT 1 FROM ignored WHERE user_id=?", (user_id,)).fetchone() is not None
+async def is_ignored(user_id: int) -> bool:
+    return await _get_db().ignored.find_one({"_id": user_id}) is not None
 
 
-def add_ignored(user_id: int, label: str) -> None:
-    _db.execute("INSERT OR REPLACE INTO ignored(user_id, label) VALUES (?,?)", (user_id, label))
-    _db.commit()
+async def add_ignored(user_id: int, label: str) -> None:
+    await _get_db().ignored.update_one(
+        {"_id": user_id}, {"$set": {"user_id": user_id, "label": label}}, upsert=True
+    )
 
 
-def remove_ignored(user_id: int) -> bool:
-    cur = _db.execute("DELETE FROM ignored WHERE user_id=?", (user_id,))
-    _db.commit()
-    return cur.rowcount > 0
+async def remove_ignored(user_id: int) -> bool:
+    res = await _get_db().ignored.delete_one({"_id": user_id})
+    return res.deleted_count > 0
 
 
-def list_ignored() -> list[sqlite3.Row]:
-    return _db.execute("SELECT * FROM ignored").fetchall()
+async def list_ignored() -> list[dict]:
+    return await _get_db().ignored.find().to_list()
 
 
 # ---------- vaqtincha jim (egasi o'zi gaplashayotganda) ----------
-def mute(chat_id: int, seconds: float) -> None:
-    _db.execute(
-        "INSERT OR REPLACE INTO muted(chat_id, until) VALUES (?,?)",
-        (chat_id, time.time() + seconds),
+async def mute(chat_id: int, seconds: float) -> None:
+    await _get_db().muted.update_one(
+        {"_id": chat_id}, {"$set": {"until": time.time() + seconds}}, upsert=True
     )
-    _db.commit()
 
 
-def unmute(chat_id: int) -> None:
-    _db.execute("DELETE FROM muted WHERE chat_id=?", (chat_id,))
-    _db.commit()
+async def unmute(chat_id: int) -> None:
+    await _get_db().muted.delete_one({"_id": chat_id})
 
 
-def is_muted(chat_id: int) -> bool:
-    row = _db.execute("SELECT until FROM muted WHERE chat_id=?", (chat_id,)).fetchone()
-    return row is not None and row["until"] > time.time()
+async def is_muted(chat_id: int) -> bool:
+    doc = await _get_db().muted.find_one({"_id": chat_id})
+    return doc is not None and doc.get("until", 0) > time.time()
+
+
+# ---------- avtomatik bio holati ----------
+async def get_bio_state() -> dict:
+    return await _get_db().bio_state.find_one({"_id": "bio"}) or {}
+
+
+async def save_bio_state(**fields) -> None:
+    await _get_db().bio_state.update_one({"_id": "bio"}, {"$set": fields}, upsert=True)
+
+
+async def save_original_bio_once(about: str, saved_at: float) -> bool:
+    """Asl bio'ni faqat birinchi marta yozadi; mavjud zaxirani hech qachon ustidan yozmaydi."""
+    res = await _get_db().bio_state.update_one(
+        {"_id": "bio", "original_bio": {"$exists": False}},
+        {"$set": {"original_bio": about, "original_saved_at": saved_at}},
+        upsert=False,
+    )
+    if res.matched_count:
+        return True
+    if await _get_db().bio_state.find_one({"_id": "bio"}) is None:
+        await _get_db().bio_state.insert_one(
+            {"_id": "bio", "original_bio": about, "original_saved_at": saved_at}
+        )
+        return True
+    return False
