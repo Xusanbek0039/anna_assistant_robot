@@ -52,6 +52,8 @@ BOT_TOKEN = _str("BOT_TOKEN")
 BOT_SESSION = "anna_bot"
 OPENAI_API_KEY = _str("OPENAI_API_KEY")
 OPENAI_MODEL = _str("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_TRANSCRIBE_MODEL = _str("OPENAI_TRANSCRIBE_MODEL", "whisper-1")  # ovozli xabarlar uchun
+OWNER_PROFILE_FILE = _str("OWNER_PROFILE_FILE", "owner_profile.txt")  # kotiba aytadigan ochiq ma'lumotlar
 
 OWNER_NAME = _str("OWNER_NAME", "Husan Suyunov")
 ASSISTANT_NAME = _str("ASSISTANT_NAME", "Anna")
@@ -79,6 +81,8 @@ BIO_ENABLED = _bool("BIO_ENABLED", True)
 DRY_RUN = _bool("DRY_RUN", True)  # xavfsiz standart: Telegram'da hech narsa o'zgarmaydi
 BIO_PREFIX = _str("BIO_PREFIX", "Full Stack Developer")
 BIO_TEMPLATE = _str("BIO_TEMPLATE", "{prefix} | 🕒 {time} | {icon} {temp}°C")
+NAME_CLOCK_ENABLED = _bool("NAME_CLOCK_ENABLED", True)  # familiya yonida joriy vaqt
+NAME_TEMPLATE = _str("NAME_TEMPLATE", "{last_name} 🕒 {time}")
 BIO_QUOTE_ENABLED = _bool("BIO_QUOTE_ENABLED", True)
 BIO_QUOTE = _str("BIO_QUOTE")  # bitta doimiy iqtibos; bo'sh bo'lsa quotes.txt dan har kuni almashadi
 BIO_QUOTES_FILE = _str("BIO_QUOTES_FILE", "quotes.txt")

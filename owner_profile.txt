@@ -1,0 +1,8 @@
+# Kotiba suhbatdoshlarga aytishi MUMKIN bo'lgan ochiq ma'lumotlar.
+# "#" bilan boshlangan qatorlar e'tiborga olinmaydi. Bu yerga telefon, manzil kabi maxfiy narsalarni yozmang.
+Ism: Husan Suyunov (Husanbek)
+Tug'ilgan sana: 2004-yil 30-yanvar
+Tug'ilgan joyi: Jizzax
+Kasbi: Full Stack Developer
+Shaxsiy sayti: https://husanbek-coder.uz
+O'quv markazi: ITC Academy — https://itc-academy.uz (Husan Suyunovga tegishli)

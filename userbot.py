@@ -88,6 +88,26 @@ def _rate_ok(chat_id: int) -> bool:
     return len(q) < MAX_REPLIES_PER_MINUTE
 
 
+async def _understand_media(msg, label: str, data: bytes) -> str | None:
+    """Ovozli xabar/audio/video-xabar -> matn, rasm -> tavsif. Bo'lmasa None (oddiy "[media]" yoziladi)."""
+    mime = (getattr(msg.file, "mime_type", None) or "").lower()
+    try:
+        if msg.voice or msg.video_note or mime.startswith("audio/"):
+            ext = {"audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/x-wav": "wav",
+                   "audio/wav": "wav", "video/mp4": "mp4"}.get(mime, "ogg")
+            spoken = await ai.transcribe(data, f"audio.{ext}")
+            kind = "video-xabar" if msg.video_note else "ovozli xabar"
+            log.info("%s matnga o'girildi (%d belgi)", kind, len(spoken))
+            return f"[{kind}] {spoken}" if spoken else f"[{kind}: tushunarsiz yoki bo'sh]"
+        if msg.photo or mime.startswith("image/"):
+            desc = await ai.describe_image(data, mime if mime.startswith("image/") else "image/jpeg")
+            log.info("Rasm tasvirlandi (%d belgi)", len(desc))
+            return f"[rasm] {desc}" if desc else None
+    except Exception as e:
+        await _report_ai_error(e)
+    return None
+
+
 def _display_name(u: User) -> str:
     return " ".join(p for p in (u.first_name, u.last_name) if p) or "Nomaʼlum"
 
@@ -106,22 +126,32 @@ def setup(user: TelegramClient, me_id: int) -> None:
         msg = event.message
         label = _media_label(msg)
         text = msg.message or ""
-        content = (f"[media: {label}] " if label else "") + text
-        if not content.strip():
-            return
-        await storage.add_history(chat_id, "user", content.strip())
-
         name, username = _display_name(sender), sender.username
 
-        # Media'ni egasiga bot orqali yuboramiz
+        # Media: yuklab olamiz, ovozni matnga o'giramiz / rasmni tasvirlaymiz, egasiga bot orqali yuboramiz
+        data = None
         if label and label != "stiker":
             size = getattr(msg.file, "size", 0) or 0
             if size <= MAX_MEDIA_BYTES:
                 try:
                     data = await msg.download_media(file=bytes)
-                    await control_bot.send_media(chat_id, name, data, getattr(msg.file, "name", None))
                 except Exception:
                     log.exception("Media yuklab olinmadi")
+        media_text = await _understand_media(msg, label, data) if data else None
+
+        if media_text:
+            content = f"{media_text}\n{text}".strip()
+        else:
+            content = (f"[media: {label}] " if label else "") + text
+        if not content.strip():
+            return
+        await storage.add_history(chat_id, "user", content.strip())
+
+        if data:
+            try:
+                await control_bot.send_media(chat_id, name, data, getattr(msg.file, "name", None))
+            except Exception:
+                log.exception("Media botga yuborilmadi")
 
         if not await storage.is_enabled() or await storage.is_muted(chat_id):
             # AI javob bermaydi, lekin egasi baribir xabardor bo'ladi

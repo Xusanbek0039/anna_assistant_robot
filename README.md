@@ -129,6 +129,11 @@ Full Stack Developer | 🕒 14:35 | 🌤️ 7°C | “Ilm — saodat kaliti”
 - Oddiy akkauntda bio 70 belgi, shuning uchun iqtibos ~22 belgidan oshmasin. Joy yetmasa sig'adigan iqtibos
   tanlanadi, hech biri sig'masa iqtibossiz chiqadi. Telegram Premium'da (140 belgi) uzunroq iqtibos ham sig'adi.
 
+**Ism yonida vaqt.** Familiyangiz yoniga joriy vaqt qo'shiladi: `Husan Suyunov 🕒 14:35`. U bio bilan **bitta
+so'rovda** yangilanadi, shuning uchun Telegram'ga qo'shimcha yuk tushmaydi. Asl ism-familiya ham `bio_backup.json`
+va MongoDB'ga saqlanadi, `--restore` ularni qaytaradi. O'chirish: `NAME_CLOCK_ENABLED=false`.
+Ko'rinishni `NAME_TEMPLATE` orqali o'zgartirish mumkin (standart: `{last_name} 🕒 {time}`).
+
 **Ob-havo belgilari** (WMO kodlari): ☀️ ochiq (0), 🌤️ asosan ochiq (1), ⛅ qisman bulutli (2), ☁️ bulutli (3),
 🌫️ tuman (45, 48), 🌧️ shivalama/yomg'ir/jala (51–67, 80–82), ❄️ qor (71–77, 85, 86), ⛈️ momaqaldiroq (95–99).
 Harorat butun songa yaxlitlanadi (°C).
@@ -158,7 +163,11 @@ python main.py
 - Faqat shaxsiy chatlarga javob beradi (guruh, kanal, botlar e'tiborsiz).
 - Ketma-ket yozilgan xabarlarga bitta javob beradi, "yozmoqda..." ko'rsatadi.
 - **Siz o'zingiz chatga yozsangiz**, AI shu chatda 2 soat jim turadi (`OWNER_TAKEOVER_MINUTES`).
-- Ovozli xabar, rasm, fayllar nazorat botiga yuboriladi.
+- O'zini "Husan Suyunov yaratgan sun'iy intellekt yordamchisi Anna" deb tanishtiradi. Husan haqida faqat
+  `owner_profile.txt` dagi ochiq ma'lumotlarni (tug'ilgan sana/joy, saytlar) aytadi. Bu faylni o'zingiz tahrirlang.
+- **Ovozli xabar**, audio va video-xabarlarni matnga o'giradi (`OPENAI_TRANSCRIBE_MODEL`, standart `whisper-1`),
+  **rasmlarni** tushunadi (undagi matnni ham o'qiydi) va mazmuniga javob beradi.
+- Ovozli xabar, rasm, fayllar nazorat botiga ham yuboriladi.
 - OpenAI ishlamay qolsa, bir marta tayyor shablon matn yuboriladi.
 - `BIO_ENABLED=true` bo'lsa, avtomatik bio ham shu jarayonda ishlaydi.
 

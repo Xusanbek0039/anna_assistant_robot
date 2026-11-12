@@ -40,6 +40,7 @@ FALLBACK_ICON = "🌡️"
 FALLBACK_TEMP = "--"
 BIO_LIMIT_DEFAULT = 70   # oddiy akkaunt
 BIO_LIMIT_PREMIUM = 140  # Telegram Premium
+NAME_LIMIT = 64          # ism/familiya cheklovi
 QUOTE_FORMAT = " | “{}”"
 
 # Open-Meteo WMO ob-havo kodlari (https://open-meteo.com/en/docs -> "WMO Weather interpretation codes")
@@ -156,11 +157,13 @@ def _read_local_backup() -> dict | None:
         return None
 
 
-def _write_local_backup(original: str, saved_at: float) -> bool:
+def _write_local_backup(original: str, saved_at: float, **extra) -> bool:
+    """Zaxira faylini yozadi. `extra` — mavjud faylga qo'shiladigan maydonlar (masalan asl ism)."""
     tmp = config.BIO_BACKUP_FILE + ".tmp"
+    data = {**(_read_local_backup() or {}), "original_bio": original, "saved_at": saved_at, **extra}
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"original_bio": original, "saved_at": saved_at}, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, config.BIO_BACKUP_FILE)
         return True
     except OSError as e:
@@ -204,6 +207,10 @@ class BioUpdater:
         self.current_bio: str | None = None
         self.backup_ok = False
         self.quotes = load_quotes()
+        self.current_first = ""
+        self.current_last = ""
+        self.orig_first: str | None = None
+        self.orig_last: str | None = None  # None = ism zaxirasi hali yo'q -> ismga tegilmaydi
 
     # ----- tayyorgarlik -----
     async def prepare(self) -> None:
@@ -212,6 +219,8 @@ class BioUpdater:
             self.max_len = BIO_LIMIT_PREMIUM if getattr(me, "premium", False) else BIO_LIMIT_DEFAULT
         full = await self.client(GetFullUserRequest(me))
         self.current_bio = full.full_user.about or ""
+        self.current_first = me.first_name or ""
+        self.current_last = me.last_name or ""
         await self.ensure_backup()
 
         state = await _safe_db(storage.get_bio_state(), "bio holati") or {}
@@ -251,7 +260,41 @@ class BioUpdater:
         self.backup_ok = local_ok or remote_ok
         if not self.backup_ok:
             log.error("Asl bio hech qayerga saqlanmadi — xavfsizlik uchun bio o'zgartirilmaydi")
+        if self.backup_ok and config.NAME_CLOCK_ENABLED:
+            await self.ensure_name_backup()
         return self.backup_ok
+
+    async def ensure_name_backup(self) -> None:
+        """Asl ism/familiyani birinchi marta saqlaydi (keyin hech qachon ustidan yozmaydi)."""
+        local = _read_local_backup() or {}
+        if "original_last_name" in local:
+            self.orig_first = local.get("original_first_name") or self.current_first
+            self.orig_last = local["original_last_name"]
+            return
+        state = await _safe_db(storage.get_bio_state(), "ism zaxirasi") or {}
+        if "original_last_name" in state:
+            self.orig_first = state.get("original_first_name") or self.current_first
+            self.orig_last = state["original_last_name"]
+            log.info("Asl ism zaxirasi MongoDB'dan tiklandi")
+        else:
+            self.orig_first, self.orig_last = self.current_first, self.current_last
+            log.info("Asl ism zaxiralandi: %s %s", self.orig_first, self.orig_last)
+            if "🕒" in self.orig_last:
+                log.warning("Diqqat: familiyada allaqachon vaqt bor — %s faylida original_last_name ni "
+                            "to'g'rilang", config.BIO_BACKUP_FILE)
+            await _safe_db(storage.save_bio_state(original_first_name=self.orig_first,
+                                                  original_last_name=self.orig_last), "asl ism")
+        if local:
+            _write_local_backup(local["original_bio"], local.get("saved_at", time.time()),
+                                original_first_name=self.orig_first, original_last_name=self.orig_last)
+
+    def build_last_name(self, now: datetime) -> str | None:
+        """Ism yonidagi vaqt: familiya + 🕒 HH:MM (Telegram cheklovi 64 belgi)."""
+        if not config.NAME_CLOCK_ENABLED or self.orig_last is None:
+            return None
+        hhmm = now.strftime("%H:%M")
+        text = config.NAME_TEMPLATE.format(last_name=self.orig_last, time=hhmm).strip()
+        return text if tg_len(text) <= NAME_LIMIT else f"🕒 {hhmm}"
 
     # ----- ob-havo -----
     def _fresh_weather(self) -> Weather | None:
@@ -323,22 +366,30 @@ class BioUpdater:
     # ----- bitta yangilash -----
     async def tick(self) -> None:
         weather_changed = await self.refresh_weather_if_due()
-        text = self.build_bio(datetime.now(self.tz))
+        now = datetime.now(self.tz)
+        text = self.build_bio(now)
+        last_name = self.build_last_name(now)  # None -> ismga tegilmaydi
         length = f"{tg_len(text)}/{self.max_len}"
         updated = False
+        name_changed = last_name is not None and last_name != self.current_last
+        name_info = f" | ism: {self.orig_first} {last_name}" if last_name is not None else ""
 
-        if text == self.current_bio:
-            log.info("Bio o'zgarmagan, so'rov yuborilmadi: %s", text)
+        if text == self.current_bio and not name_changed:
+            log.info("Bio va ism o'zgarmagan, so'rov yuborilmadi: %s", text)
         elif self.dry_run:
-            log.info("[DRY_RUN] Telegram'da o'zgartirilmadi. Yangi bio bo'lardi: %s (%s)", text, length)
+            log.info("[DRY_RUN] Telegram'da o'zgartirilmadi. Yangi bio bo'lardi: %s (%s)%s",
+                     text, length, name_info)
         elif not self.backup_ok and not await self.ensure_backup():
             log.error("Asl bio zaxirasiz yangilash o'tkazib yuborildi")
             return
         else:
-            await self.client(UpdateProfileRequest(about=text))
+            # Bio va ism bitta so'rovda — Telegram'ga qo'shimcha yuk yo'q
+            await self.client(UpdateProfileRequest(about=text, last_name=last_name))
             self.current_bio = text
+            if last_name is not None:
+                self.current_last = last_name
             updated = True
-            log.info("✅ Bio yangilandi: %s (%s)", text, length)
+            log.info("✅ Bio yangilandi: %s (%s)%s", text, length, name_info)
 
         if weather_changed and self.weather:
             await _safe_db(storage.save_bio_state(last_weather=asdict(self.weather)), "ob-havo")
@@ -406,11 +457,17 @@ class BioUpdater:
         if original is None:
             log.error("Asl bio zaxirasi topilmadi (%s ham, MongoDB ham bo'sh)", config.BIO_BACKUP_FILE)
             return
+        local = _read_local_backup() or {}
+        state = {} if "original_last_name" in local else (
+            await _safe_db(storage.get_bio_state(), "ism zaxirasi") or {})
+        orig_last = local.get("original_last_name", state.get("original_last_name"))
         if self.dry_run:
-            log.info("[DRY_RUN] Telegram'da o'zgartirilmadi. Asl bio qaytarilardi: %r", original)
+            log.info("[DRY_RUN] Telegram'da o'zgartirilmadi. Asl bio qaytarilardi: %r, familiya: %r",
+                     original, orig_last)
             return
-        await self.client(UpdateProfileRequest(about=original))
-        log.info("✅ Asl bio qaytarildi: %r", original)
+        await self.client(UpdateProfileRequest(about=original, last_name=orig_last))
+        log.info("✅ Asl bio qaytarildi: %r%s", original,
+                 f", familiya: {orig_last!r}" if orig_last is not None else "")
 
 
 def validate_settings() -> None:
@@ -422,6 +479,10 @@ def validate_settings() -> None:
         config.BIO_TEMPLATE.format(prefix="", time="", icon="", temp="")
     except (KeyError, IndexError, ValueError):
         sys.exit("[config] BIO_TEMPLATE da faqat {prefix} {time} {icon} {temp} ishlatish mumkin")
+    try:
+        config.NAME_TEMPLATE.format(last_name="", time="")
+    except (KeyError, IndexError, ValueError):
+        sys.exit("[config] NAME_TEMPLATE da faqat {last_name} {time} ishlatish mumkin")
     if not config.BIO_PREFIX:
         sys.exit("[config] BIO_PREFIX bo'sh bo'lmasligi kerak")
     if not (-90 <= config.LATITUDE <= 90 and -180 <= config.LONGITUDE <= 180):

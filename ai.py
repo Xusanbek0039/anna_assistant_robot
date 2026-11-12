@@ -1,10 +1,13 @@
 """OpenAI orqali kotiba javobi + egasi uchun qisqa xulosa."""
+import base64
+import io
 import json
 import logging
 
 from openai import AsyncOpenAI
 
-from config import ASSISTANT_NAME, OPENAI_API_KEY, OPENAI_MODEL, OWNER_CALL_NAME, OWNER_NAME
+from config import (ASSISTANT_NAME, OPENAI_API_KEY, OPENAI_MODEL, OPENAI_TRANSCRIBE_MODEL,
+                    OWNER_CALL_NAME, OWNER_NAME, OWNER_PROFILE_FILE)
 
 log = logging.getLogger("ai")
 _client: AsyncOpenAI | None = None
@@ -18,12 +21,35 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-SYSTEM_PROMPT = f"""Sen {OWNER_NAME}ning shaxsiy yordamchisi {ASSISTANT_NAME}san va uning Telegram akkauntidan javob yozyapsan.
+def _load_owner_profile() -> str:
+    try:
+        with open(OWNER_PROFILE_FILE, encoding="utf-8") as f:
+            lines = [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+        return chr(10).join(f"- {ln}" for ln in lines)
+    except OSError:
+        log.warning("%s topilmadi — kotiba egasi haqida qo'shimcha ma'lumot bilmaydi", OWNER_PROFILE_FILE)
+        return f"- Ism: {OWNER_NAME}"
+
+
+OWNER_PROFILE = _load_owner_profile()
+
+SYSTEM_PROMPT = f"""Sen {ASSISTANT_NAME}san — {OWNER_NAME} tomonidan yaratilgan sun'iy intellekt yordamchisi (kotiba).
+Sen uning Telegram akkauntidan javob yozyapsan.
 {OWNER_NAME} hozirda band va o'zi javob bera olmaydi. Suhbatda uni "{OWNER_CALL_NAME}" deb ata.
+
+O'zing haqingda:
+- Sening isming {ASSISTANT_NAME}. Seni {OWNER_NAME} yaratgan. U band paytida xabarlarni qabul qilib,
+  savollarga javob berib, muhim narsalarni unga yetkazasan.
+- "Sen kimsan?", "bot misan?", "seni kim yaratgan?" deb so'rashsa — ANIQ ayt: "Meni {OWNER_NAME} yaratgan",
+  va o'zing nima qilishingni qisqa tushuntir. Odam ekaningni da'vo qilma.
+
+{OWNER_CALL_NAME} haqida aytish MUMKIN bo'lgan ochiq ma'lumotlar (faqat so'rashsa yoki o'rinli bo'lsa):
+{OWNER_PROFILE}
 
 Vazifang:
 - Suhbatdosh bilan muloyim va samimiy gaplash.
-- Birinchi javobda salom ber, o'zingni {OWNER_CALL_NAME}ning yordamchisi deb tanishtir, u hozir band ekanini ayt
+- Birinchi javobda salom ber, o'zingni "{OWNER_NAME} yaratgan sun'iy intellekt yordamchisi {ASSISTANT_NAME}"
+  deb tanishtir, {OWNER_CALL_NAME} hozir band ekanini ayt
   va xabarini yozib qoldirishni so'ra: "men unga yetkazaman".
 - Suhbatdosh oddiy savol bersa (masalan "2*2 nechi?", umumiy bilim, maslahat, tarjima, hisob-kitob),
   unga O'ZING qisqa va to'g'ri javob ber. Keyin so'ra: "Sizga {OWNER_CALL_NAME}ni chaqirib beraymi?"
@@ -36,11 +62,15 @@ Vazifang:
 
 Qoidalar:
 - {OWNER_CALL_NAME} nomidan hech narsa va'da qilma, kelishuvga rozilik berma, pul/qarz/uchrashuv bo'yicha qaror qilma.
-- Uning shaxsiy ma'lumotlarini (telefon, manzil, jadval, qayerdaligi, kim bilan ekanligi) oshkor qilma.
+- Yuqoridagi ochiq ma'lumotlardan boshqa shaxsiy narsalarni (telefon, manzil, jadval, hozir qayerdaligi,
+  kim bilan ekanligi) oshkor qilma.
 - Qachon javob berishini aniq bilmaysan - "imkoni bo'lishi bilan" de.
 - Suhbatdosh qaysi tilda yozsa (o'zbek, rus, ingliz), o'sha tilda javob ber.
 - Qisqa yoz: 1-3 gap. Emoji kam ishlat.
-- Agar ovozli xabar, rasm yoki fayl kelgan bo'lsa ("[media: ...]"), uni qabul qilganingni va yetkazishingni ayt.
+- Ovozli xabar "[ovozli xabar] ..." ko'rinishida matnga o'girilgan holda keladi — uni oddiy matndek tushun
+  va mazmuniga javob ber.
+- Rasm "[rasm] ..." ko'rinishida tavsifi bilan keladi — rasmda nima borligini tushunib, mazmuniga javob ber.
+- Agar media o'qib bo'lmagan bo'lsa ("[media: ...]"), uni qabul qilganingni va yetkazishingni ayt.
 
 Javobni FAQAT quyidagi JSON ko'rinishida qaytar:
 {{
@@ -85,3 +115,38 @@ async def check_key() -> str | None:
         return f"OPENAI_MODEL '{OPENAI_MODEL}' topilmadi yoki bu kalitga ochiq emas"
     except openai.APIError as e:
         return f"OpenAI tekshiruvi o'tmadi ({type(e).__name__})"
+
+
+# ---------- media: ovoz va rasm ----------
+TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024  # OpenAI cheklovi
+IMAGE_MAX_BYTES = 15 * 1024 * 1024
+
+
+async def transcribe(data: bytes, filename: str = "voice.ogg") -> str:
+    """Ovozli xabar / audio / video-xabarni matnga o'giradi."""
+    if len(data) > TRANSCRIBE_MAX_BYTES:
+        raise ValueError("audio juda katta")
+    f = io.BytesIO(data)
+    f.name = filename  # format fayl kengaytmasidan aniqlanadi (ogg, mp3, m4a, mp4 ...)
+    resp = await _get_client().audio.transcriptions.create(model=OPENAI_TRANSCRIBE_MODEL, file=f)
+    return (resp.text or "").strip()
+
+
+async def describe_image(data: bytes, mime: str = "image/jpeg") -> str:
+    """Rasmni qisqa tasvirlaydi va undagi matnni o'qiydi."""
+    if len(data) > IMAGE_MAX_BYTES:
+        raise ValueError("rasm juda katta")
+    url = f"data:{mime};base64,{base64.b64encode(data).decode()}"
+    resp = await _get_client().chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Bu rasmni o'zbek tilida 1-3 gapda tasvirla. Rasmda matn bo'lsa, "
+                                         "uni aynan o'qib ber. Faqat tasvirni yoz, boshqa gap qo'shma."},
+                {"type": "image_url", "image_url": {"url": url, "detail": "low"}},
+            ],
+        }],
+        max_tokens=300,
+    )
+    return (resp.choices[0].message.content or "").strip()
