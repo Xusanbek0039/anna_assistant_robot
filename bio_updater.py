@@ -31,6 +31,7 @@ from telethon.tl.functions.account import UpdateProfileRequest
 from telethon.tl.functions.users import GetFullUserRequest
 
 import config
+import runtime
 import storage
 
 log = logging.getLogger("bio")
@@ -42,6 +43,7 @@ BIO_LIMIT_DEFAULT = 70   # oddiy akkaunt
 BIO_LIMIT_PREMIUM = 140  # Telegram Premium
 NAME_LIMIT = 64          # ism/familiya cheklovi
 QUOTE_FORMAT = " | “{}”"
+INSTANCE: "BioUpdater | None" = None  # ishlayotgan nusxa (nazorat boti uchun)
 
 # Open-Meteo WMO ob-havo kodlari (https://open-meteo.com/en/docs -> "WMO Weather interpretation codes")
 WMO_CODES: dict[int, tuple[str, str]] = {
@@ -207,6 +209,9 @@ class BioUpdater:
         self.current_bio: str | None = None
         self.backup_ok = False
         self.quotes = load_quotes()
+        self._wake = runtime.listener()
+        global INSTANCE
+        INSTANCE = self  # nazorat boti /bio buyrug'i uchun
         self.current_first = ""
         self.current_last = ""
         self.orig_first: str | None = None
@@ -331,9 +336,10 @@ class BioUpdater:
     # ----- iqtibos -----
     def pick_quote(self, now: datetime, room: int) -> str | None:
         """Bugungi iqtibos: kun bo'yicha aylanadi, faqat `room` belgiga sig'adiganlari orasidan."""
-        if not self.quotes or room <= 0:
+        quotes = runtime.quotes(self.quotes)  # /quote buyrug'i quotes.txt dan ustun
+        if not quotes or room <= 0:
             return None
-        fitting = [q for q in self.quotes if tg_len(q) <= room]
+        fitting = [q for q in quotes if tg_len(q) <= room]
         if not fitting:
             return None
         return fitting[now.toordinal() % len(fitting)]
@@ -426,8 +432,16 @@ class BioUpdater:
                             type(e).__name__, config.BIO_RETRY_SECONDS)
                 await asyncio.sleep(config.BIO_RETRY_SECONDS)
 
+        paused_logged = False
         while True:
             try:
+                if not runtime.get("bio_enabled"):
+                    if not paused_logged:
+                        log.info("Bio yangilash to'xtatilgan (/bio off). Yoqish: /bio on")
+                        paused_logged = True
+                    await runtime.wait_changed(self._wake, 3600)
+                    continue
+                paused_logged = False
                 await self.tick()
                 delay = self._seconds_to_next_slot()
             except errors.FloodWaitError as e:
@@ -453,7 +467,8 @@ class BioUpdater:
             except Exception:
                 delay = config.BIO_RETRY_SECONDS
                 log.exception("Kutilmagan xato. %ds dan keyin qayta urinaman.", delay)
-            await asyncio.sleep(delay)
+            # /bio now, /quote, /bio on kabi buyruqlar kutishni to'xtatib, darhol yangilaydi
+            await runtime.wait_changed(self._wake, delay)
 
     # ----- tiklash -----
     async def restore(self) -> None:

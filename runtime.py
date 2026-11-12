@@ -43,6 +43,8 @@ async def update(**values) -> None:
     _values.update(values)
     for ev in _listeners:
         ev.set()
+    if not values:  # faqat uyg'otish (masalan /bio now)
+        return
     try:
         await storage.set_runtime(**values)
     except Exception as e:

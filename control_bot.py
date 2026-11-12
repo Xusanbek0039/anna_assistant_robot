@@ -5,6 +5,10 @@ import logging
 from telethon import Button, TelegramClient, events
 
 import availability
+import bio_updater
+import config
+import report
+import runtime
 import storage
 from config import OWNER_TAKEOVER_MINUTES
 
@@ -17,7 +21,17 @@ HELP = (
     "/off — avtojavobni o'chirish\n"
     "/status — holat\n"
     "/tag &lt;id yoki @username&gt; &lt;oila|mijoz|dost|clear&gt; — kontakt turi\n"
-    "/tags — turlar ro'yxati\n"
+    "/tags — turlar ro'yxati\n\n"
+    "<b>Hisobot va nazorat</b>\n"
+    "/report — bugungi hisobot (har kuni kechqurun avtomatik ham keladi)\n"
+    "/usage — bugungi AI sarfi va limitlar\n"
+    "/health — MongoDB, OpenAI, Telegram holati\n\n"
+    "<b>Profil</b>\n"
+    "/bio — joriy bio va holat\n"
+    "/bio on | off | now | restore — yoqish, to'xtatish, hozir yangilash, asl bio'ni qaytarish\n"
+    "/quote &lt;matn&gt; — doimiy iqtibos, /quote auto — har kuni almashadi, /quote off — iqtibossiz\n"
+    "/online on | off — akkauntni online ko'rsatish\n\n"
+    "<b>Boshqa</b>\n"
     "/inbox — javob berilmagan xabarlar\n"
     "/reply &lt;chat_id&gt; &lt;matn&gt; — sizning nomingizdan javob yozish\n"
     "/ignore &lt;id yoki @username&gt; — bu odamga avtojavob bermaslik\n"
@@ -44,9 +58,15 @@ class Ctx:
     bot: TelegramClient
     user: TelegramClient
     owner_id: int
+    monitor = None  # health.Monitor (main.py o'rnatadi)
 
 
 ctx = Ctx()
+
+
+async def send_html(text: str) -> None:
+    """Egasiga HTML xabar (kunlik hisobot uchun)."""
+    await ctx.bot.send_message(ctx.owner_id, text, parse_mode="html")
 
 
 def _who(name: str, username: str | None, chat_id: int) -> str:
@@ -257,6 +277,110 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return
         await event.respond("\n".join(f"• {r['label']} — <code>{r['user_id']}</code>" for r in rows),
                             parse_mode="html")
+
+    # ---------- hisobot va nazorat ----------
+    @bot.on(events.NewMessage(pattern=r"^/report$", func=is_owner))
+    async def _report(event):
+        await event.respond(await report.make_report(), parse_mode="html")
+
+    @bot.on(events.NewMessage(pattern=r"^/usage$", func=is_owner))
+    async def _usage(event):
+        st = await storage.get_stats()
+        lim = lambda n: str(n) if n else "cheksiz"  # noqa: E731
+        busiest = sorted((st.get("chat_ai") or {}).items(), key=lambda kv: -kv[1])[:3]
+        top = "\n".join(f"  • <code>{cid}</code>: {n}" for cid, n in busiest) or "  —"
+        await event.respond(
+            f"🤖 <b>Bugungi AI sarfi</b>\n"
+            f"So'rovlar: {st.get('ai_requests', 0)} / {lim(config.AI_DAILY_LIMIT)}\n"
+            f"  javob: {st.get('ai_chat', 0)}, ovoz: {st.get('ai_voice', 0)}, "
+            f"rasm: {st.get('ai_image', 0)}, ovozli javob: {st.get('ai_tts', 0)}\n"
+            f"Tokenlar: ~{st.get('ai_tokens', 0)}\n"
+            f"Bitta odamga limit: {lim(config.AI_CHAT_DAILY_LIMIT)} so'rov/kun\n"
+            f"Eng ko'p ishlatganlar:\n{top}",
+            parse_mode="html",
+        )
+
+    @bot.on(events.NewMessage(pattern=r"^/health$", func=is_owner))
+    async def _health(event):
+        if ctx.monitor is None:
+            await event.respond("Holat nazorati ishlamayapti.")
+            return
+        await event.respond("⏳ Tekshirilmoqda...")
+        results = await ctx.monitor.check_once()
+        await event.respond("\n".join(f"{'✅' if p is None else '❌'} {name}" + (f": {p}" if p else "")
+                                      for name, p in results.items()))
+
+    # ---------- profil: bio, iqtibos, online ----------
+    @bot.on(events.NewMessage(pattern=r"^/bio(?:\s+(\S+))?$", func=is_owner))
+    async def _bio(event):
+        arg = (event.pattern_match.group(1) or "").lower()
+        upd = bio_updater.INSTANCE
+        if arg == "on":
+            await runtime.update(bio_enabled=True)
+            await event.respond("🟢 Bio yangilash yoqildi.")
+        elif arg == "off":
+            await runtime.update(bio_enabled=False)
+            await event.respond("⏸ Bio yangilash to'xtatildi. Bio oxirgi holatida qoladi. "
+                                "Asl bio kerak bo'lsa: /bio restore")
+        elif arg == "now":
+            if upd is None:
+                await event.respond("Bio moduli ishlamayapti (BIO_ENABLED=false).")
+                return
+            await runtime.update()  # siklni uyg'otadi
+            await event.respond("🔄 Bio hozir yangilanadi.")
+        elif arg == "restore":
+            if upd is None:
+                await event.respond("Bio moduli ishlamayapti (BIO_ENABLED=false).")
+                return
+            await runtime.update(bio_enabled=False)
+            await upd.restore()
+            original = await bio_updater.get_original_bio()
+            await event.respond(f"↩️ Asl bio qaytarildi va avtomatik yangilash to'xtatildi:\n{original!r}\n"
+                                "Qayta yoqish: /bio on")
+        elif arg:
+            await event.respond("Foydalanish: /bio, /bio on, /bio off, /bio now, /bio restore")
+        else:
+            state = "🟢 yoqiq" if runtime.get("bio_enabled") else "⏸ to'xtatilgan"
+            current = upd.current_bio if upd else None
+            qmode = {"auto": "har kuni almashadi (quotes.txt)", "off": "o'chirilgan",
+                     "fixed": f"doimiy: “{runtime.get('quote_text')}”"}[runtime.get("quote_mode")]
+            await event.respond(
+                f"Bio yangilash: {state}{' (DRY_RUN)' if config.DRY_RUN else ''}\n"
+                f"Joriy bio: {current!r}\n"
+                f"Iqtibos: {qmode}\n"
+                f"Online: {'🟢 yoqiq' if runtime.get('online') else '⚪️ o‘chiq'}"
+            )
+
+    @bot.on(events.NewMessage(pattern=r"^/quote(?:\s+([\s\S]+))?$", func=is_owner))
+    async def _quote(event):
+        arg = (event.pattern_match.group(1) or "").strip()
+        if not arg:
+            await event.respond("Foydalanish: /quote <matn>, /quote auto, /quote off")
+        elif arg.lower() == "auto":
+            await runtime.update(quote_mode="auto")
+            await event.respond("🔁 Iqtibos har kuni quotes.txt dan almashadi.")
+        elif arg.lower() == "off":
+            await runtime.update(quote_mode="off")
+            await event.respond("🚫 Bio iqtibossiz chiqadi.")
+        else:
+            arg = arg.strip("“”\"'«»")
+            await runtime.update(quote_mode="fixed", quote_text=arg)
+            note = ""
+            if bio_updater.tg_len(arg) > 22:
+                note = ("\n⚠️ Iqtibos uzun — oddiy akkauntda bio 70 belgi, sig'masa iqtibossiz chiqadi. "
+                        "~22 belgigacha tavsiya etiladi.")
+            await event.respond(f"✅ Iqtibos: “{arg}”{note}")
+
+    @bot.on(events.NewMessage(pattern=r"^/online(?:\s+(\S+))?$", func=is_owner))
+    async def _online(event):
+        arg = (event.pattern_match.group(1) or "").lower()
+        if arg in ("on", "off"):
+            await runtime.update(online=(arg == "on"))
+            await event.respond("🟢 Akkaunt online ko'rinadi." if arg == "on"
+                                else "⚪️ Online ko'rsatish o'chirildi.")
+        else:
+            await event.respond(f"Online: {'🟢 yoqiq' if runtime.get('online') else '⚪️ o‘chiq'}\n"
+                                "Foydalanish: /online on, /online off")
 
     # Oddiy matn: tugma orqali yoki xulosaga reply qilib javob yozish
     @bot.on(events.NewMessage(func=lambda e: is_owner(e) and e.text and not e.text.startswith("/")))

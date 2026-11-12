@@ -1,10 +1,19 @@
 """Sozlamalar .env faylidan o'qiladi. Maxfiy qiymatlar kodda saqlanmaydi."""
 import os
+from pathlib import Path
 import sys
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Barcha fayllar (.env, session, zaxira, iqtiboslar) loyiha papkasiga nisbatan —
+# dastur qaysi papkadan ishga tushirilishidan qat'i nazar
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+
+
+def _path(value: str) -> str:
+    p = Path(value)
+    return str(p if p.is_absolute() else BASE_DIR / p)
 
 
 def _str(name: str, default: str = "") -> str:
@@ -45,15 +54,15 @@ def require(*names: str) -> None:
 API_ID = _int("API_ID", 0)
 API_HASH = _str("API_HASH")
 PHONE = _str("PHONE")  # ixtiyoriy: bo'sh bo'lsa, Telethon login paytida so'raydi
-USER_SESSION = _str("USER_SESSION", "anna")
+USER_SESSION = _path(_str("USER_SESSION", "anna"))
 
 # --- Nazorat boti va AI (faqat main.py / kotiba rejimi uchun) ---
 BOT_TOKEN = _str("BOT_TOKEN")
-BOT_SESSION = "anna_bot"
+BOT_SESSION = _path("anna_bot")
 OPENAI_API_KEY = _str("OPENAI_API_KEY")
 OPENAI_MODEL = _str("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TRANSCRIBE_MODEL = _str("OPENAI_TRANSCRIBE_MODEL", "whisper-1")  # ovozli xabarlar uchun
-OWNER_PROFILE_FILE = _str("OWNER_PROFILE_FILE", "owner_profile.txt")  # kotiba aytadigan ochiq ma'lumotlar
+OWNER_PROFILE_FILE = _path(_str("OWNER_PROFILE_FILE", "owner_profile.txt"))  # kotiba aytadigan ochiq ma'lumotlar
 
 OWNER_NAME = _str("OWNER_NAME", "Husan Suyunov")
 ASSISTANT_NAME = _str("ASSISTANT_NAME", "Anna")
@@ -106,11 +115,11 @@ NAME_CLOCK_ENABLED = _bool("NAME_CLOCK_ENABLED", True)  # familiya yonida joriy 
 NAME_TEMPLATE = _str("NAME_TEMPLATE", "{last_name} 🕒 {time}")
 BIO_QUOTE_ENABLED = _bool("BIO_QUOTE_ENABLED", True)
 BIO_QUOTE = _str("BIO_QUOTE")  # bitta doimiy iqtibos; bo'sh bo'lsa quotes.txt dan har kuni almashadi
-BIO_QUOTES_FILE = _str("BIO_QUOTES_FILE", "quotes.txt")
+BIO_QUOTES_FILE = _path(_str("BIO_QUOTES_FILE", "quotes.txt"))
 BIO_MAX_LENGTH = _int("BIO_MAX_LENGTH", 0)  # 0 = avtomatik (oddiy akkaunt 70, Premium 140)
 BIO_UPDATE_INTERVAL_SECONDS = max(60, _int("BIO_UPDATE_INTERVAL_SECONDS", 60))
 BIO_RETRY_SECONDS = max(30, _int("BIO_RETRY_SECONDS", 120))
-BIO_BACKUP_FILE = _str("BIO_BACKUP_FILE", "bio_backup.json")
+BIO_BACKUP_FILE = _path(_str("BIO_BACKUP_FILE", "bio_backup.json"))
 
 TIMEZONE = _str("TIMEZONE", "Asia/Tashkent")
 CITY_NAME = _str("CITY_NAME", "Toshkent, Uzbekistan")

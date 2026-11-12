@@ -9,6 +9,7 @@ from telethon.tl.types import (InputPrivacyKeyStatusTimestamp, PrivacyValueAllow
                                PrivacyValueAllowContacts, UserStatusOffline)
 
 import config
+import runtime
 
 log = logging.getLogger("presence")
 
@@ -43,21 +44,39 @@ async def keep_online(client: TelegramClient) -> None:
     """
     interval = config.ONLINE_INTERVAL_SECONDS
     me = await client.get_me()
-    wake = asyncio.Event()
+    # Bitta signal: telefon "offline" yuborganda YOKI /online buyrug'i berilganda uyg'onadi
+    wake = runtime.listener()
     last_ping = 0.0
+    phone_offline = False
 
     async def on_self_status(event):
         # Boshqa qurilma (telefon) bizni offline qildi -> kutmasdan qayta online
+        nonlocal phone_offline
         if event.user_id == me.id and isinstance(event.status, UserStatusOffline):
+            phone_offline = True
             wake.set()
 
     client.add_event_handler(on_self_status, events.UserUpdate)
     await check_privacy(client)
     log.info("Akkaunt online ko'rinib turadi (har %ds yangilanadi)", interval)
 
-    was_ok, first = True, True
+    was_ok, first, paused = True, True, False
     try:
         while True:
+            if not runtime.get("online"):
+                if not paused:
+                    paused = True
+                    log.info("Online holat o'chirildi (/online off)")
+                    try:
+                        await client(UpdateStatusRequest(offline=True))
+                    except Exception:
+                        pass
+                wake.clear()
+                await runtime.wait_changed(wake, 3600)
+                continue
+            if paused:
+                paused = False
+                log.info("Online holat yoqildi (/online on)")
             try:
                 await client(UpdateStatusRequest(offline=False))
                 last_ping = time.time()
@@ -81,15 +100,13 @@ async def keep_online(client: TelegramClient) -> None:
                 delay = min(interval, 30)
 
             wake.clear()
-            try:
-                await asyncio.wait_for(wake.wait(), timeout=delay)
+            if await runtime.wait_changed(wake, delay) and phone_offline:
+                phone_offline = False
                 # Telefon offline qildi — juda tez-tez emas, kamida REPING_MIN_GAP oraliq bilan
                 gap = REPING_MIN_GAP - (time.time() - last_ping)
                 if gap > 0:
                     await asyncio.sleep(gap)
                 log.info("Boshqa qurilma 'offline' qildi — qayta online")
-            except asyncio.TimeoutError:
-                pass
     except asyncio.CancelledError:
         client.remove_event_handler(on_self_status)
         try:

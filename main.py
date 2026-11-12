@@ -1,11 +1,15 @@
 import asyncio
 import logging
+import sys
 
 from telethon import TelegramClient
 
 import ai
 import config
 import control_bot
+import health
+import report
+import runtime
 import storage
 import userbot
 from bio_updater import BioUpdater, validate_settings
@@ -15,11 +19,27 @@ from tg_client import create_user_client, login, setup_logging
 log = logging.getLogger("main")
 
 
+async def supervise(name: str, coro) -> None:
+    """Fon vazifasi: kutilmagan xato bilan to'xtasa — logga yozadi va egasini ogohlantiradi,
+    lekin qolgan qismlarni (kotiba, bot) to'xtatmaydi."""
+    try:
+        await coro
+        log.warning("%s vazifasi tugadi", name)
+        await control_bot.alert(f"⚠️ {name} to'xtadi. Logni tekshiring.")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.exception("%s vazifasi xato bilan to'xtadi", name)
+        await control_bot.alert(f"💥 {name} xato bilan to'xtadi: {type(e).__name__}. "
+                                "Qolgan qismlar ishlashda davom etyapti.")
+
+
 async def main() -> None:
     config.require("API_ID", "API_HASH", "BOT_TOKEN", "OPENAI_API_KEY", "MONGODB_URI")
     if config.BIO_ENABLED:
         validate_settings()
     await storage.init()
+    await runtime.load()
 
     problem = await ai.check_key()
     if problem:
@@ -39,22 +59,47 @@ async def main() -> None:
 
     control_bot.setup(bot, user, owner_id=me.id)
     userbot.setup(user, me_id=me.id)
+    monitor = health.Monitor(user, control_bot.alert)
+    control_bot.ctx.monitor = monitor
 
     try:
         await bot.send_message(me.id, "🟢 Anna ishga tushdi. /help — buyruqlar.")
     except Exception:
         log.warning("Botdan xabar yuborib bo'lmadi — Telegram'da @%s ga /start bosing", bot_me.username)
 
-    tasks = [user.run_until_disconnected(), bot.run_until_disconnected()]
+    # Online holat doim ishga tushadi: /online on|off uni botdan boshqaradi (standart — KEEP_ONLINE)
+    background = [
+        supervise("Online holat", keep_online(user)),
+        supervise("Holat nazorati", monitor.run()),
+    ]
     if config.BIO_ENABLED:
-        tasks.append(BioUpdater(user).run())
+        background.append(supervise("Bio yangilash", BioUpdater(user).run()))
     else:
         log.info("Avtomatik bio o'chirilgan (BIO_ENABLED=false)")
-    if config.KEEP_ONLINE:
-        tasks.append(keep_online(user))
+    if config.REPORT_ENABLED:
+        background.append(supervise("Kunlik hisobot", report.run(control_bot.send_html)))
 
     log.info("Ishlayapti. To'xtatish: Ctrl+C")
-    await asyncio.gather(*tasks)
+    try:
+        # Telegram klientlaridan biri uzilsa — dastur tugaydi (run.bat qayta ishga tushiradi)
+        await asyncio.gather(user.run_until_disconnected(), bot.run_until_disconnected(), *background)
+    except asyncio.CancelledError:
+        # Ctrl+C — egasini xabardor qilib to'xtaymiz
+        try:
+            await asyncio.wait_for(bot.send_message(me.id, "🔴 Anna to'xtatildi."), timeout=5)
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        log.exception("Dastur xato bilan to'xtadi")
+        try:
+            await asyncio.wait_for(
+                bot.send_message(me.id, f"💥 Anna xato bilan to'xtadi: {type(e).__name__}. "
+                                        "Logni tekshiring (run.bat bo'lsa, o'zi qayta ishga tushadi)."),
+                timeout=5)
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":
@@ -63,3 +108,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         log.info("To'xtatildi (Ctrl+C)")
+    except SystemExit:
+        raise
+    except Exception:
+        sys.exit(1)
