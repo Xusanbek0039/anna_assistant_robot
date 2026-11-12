@@ -114,6 +114,7 @@ async def generate(history: list[dict], context: str = "") -> dict:
         "urgent": bool(data.get("urgent", False)),
         "call_owner": data.get("call_owner") is True,
         "spam": data.get("spam") is True,
+        "tokens": getattr(resp.usage, "total_tokens", 0) or 0,
     }
 
 

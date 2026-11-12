@@ -14,6 +14,7 @@ import ai
 import availability
 import control_bot
 import storage
+import usage
 from config import (FALLBACK_TEXT, MAX_REPLIES_PER_MINUTE, OWNER_NAME, OWNER_TAKEOVER_MINUTES,
                     REPLY_DELAY_SECONDS, VOICE_REPLY_ENABLED)
 
@@ -31,9 +32,13 @@ _ai_voice_pending: dict[int, int] = defaultdict(int)  # AI yuborayotgan ovozli x
 
 async def _send_voice(user: TelegramClient, chat_id: int, text: str) -> bool:
     """Javobni ovozli xabar qilib yuboradi. Muvaffaqiyatsiz bo'lsa False (matn yuboriladi)."""
+    ok, _ = await usage.check(chat_id)
+    if not ok:
+        return False
     try:
         async with user.action(chat_id, "record-audio"):
             audio = await ai.speak(text)
+        await usage.record(chat_id, "tts")
         f = io.BytesIO(audio)
         f.name = "javob.ogg"
         _ai_voice_pending[chat_id] += 1
@@ -111,24 +116,37 @@ def _rate_ok(chat_id: int) -> bool:
     return len(q) < MAX_REPLIES_PER_MINUTE
 
 
-async def _understand_media(msg, label: str, data: bytes) -> str | None:
+async def _understand_media(msg, label: str, data: bytes, chat_id: int) -> str | None:
     """Ovozli xabar/audio/video-xabar -> matn, rasm -> tavsif. Bo'lmasa None (oddiy "[media]" yoziladi)."""
     mime = (getattr(msg.file, "mime_type", None) or "").lower()
+    ok, reason = await usage.check(chat_id)
+    if not ok:
+        log.info("Media AI'siz qoldirildi: %s", reason)
+        return None
     try:
         if msg.voice or msg.video_note or mime.startswith("audio/"):
             ext = {"audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/x-wav": "wav",
                    "audio/wav": "wav", "video/mp4": "mp4"}.get(mime, "ogg")
             spoken = await ai.transcribe(data, f"audio.{ext}")
+            await usage.record(chat_id, "voice")
             kind = "video-xabar" if msg.video_note else "ovozli xabar"
             log.info("%s matnga o'girildi (%d belgi)", kind, len(spoken))
             return f"[{kind}] {spoken}" if spoken else f"[{kind}: tushunarsiz yoki bo'sh]"
         if msg.photo or mime.startswith("image/"):
             desc = await ai.describe_image(data, mime if mime.startswith("image/") else "image/jpeg")
+            await usage.record(chat_id, "image")
             log.info("Rasm tasvirlandi (%d belgi)", len(desc))
             return f"[rasm] {desc}" if desc else None
     except Exception as e:
         await _report_ai_error(e)
     return None
+
+
+async def _stat(chat_id: int | None = None, **counters: int) -> None:
+    try:
+        await storage.stat_inc(chat_id=chat_id, **counters)
+    except Exception as e:
+        log.warning("Statistika yozilmadi (%s)", type(e).__name__)
 
 
 def _display_name(u: User) -> str:
@@ -160,7 +178,7 @@ def setup(user: TelegramClient, me_id: int) -> None:
                     data = await msg.download_media(file=bytes)
                 except Exception:
                     log.exception("Media yuklab olinmadi")
-        media_text = await _understand_media(msg, label, data) if data else None
+        media_text = await _understand_media(msg, label, data, chat_id) if data else None
 
         if media_text:
             content = f"{media_text}\n{text}".strip()
@@ -169,6 +187,7 @@ def setup(user: TelegramClient, me_id: int) -> None:
         if not content.strip():
             return
         await storage.add_history(chat_id, "user", content.strip())
+        await _stat(chat_id=chat_id, messages=1)
 
         if data:
             try:
@@ -210,16 +229,28 @@ def setup(user: TelegramClient, me_id: int) -> None:
 
             history = await storage.get_history(chat_id)
             context = f"{status.ai_context}\nSuhbatdosh turi: {kind}."
-            try:
-                result = await ai.generate(history, context)
-            except Exception as e:
-                await _report_ai_error(e)
-                already = any(h["role"] == "assistant" for h in history)
-                result = {"reply": None if already else FALLBACK_TEXT,
-                          "summary": "", "urgent": False, "call_owner": False, "spam": False}
+            already = any(h["role"] == "assistant" for h in history)
+            fallback = {"reply": None if already else FALLBACK_TEXT,
+                        "summary": "", "urgent": False, "call_owner": False, "spam": False, "tokens": 0}
+            ok, reason = await usage.check(chat_id)
+            if not ok:
+                log.warning("AI ishlatilmadi (%s) — shablon javob", reason)
+                if usage.should_alert(reason, chat_id):
+                    await control_bot.alert(f"💸 Xarajat limiti: {reason}.\n"
+                                            f"Suhbatdosh: {name} ({chat_id}). Kotiba hozircha shablon matn yuboradi. "
+                                            "Limitlar: .env dagi AI_DAILY_LIMIT, AI_CHAT_DAILY_LIMIT.")
+                result = fallback
+            else:
+                try:
+                    result = await ai.generate(history, context)
+                    await usage.record(chat_id, "chat", result["tokens"])
+                except Exception as e:
+                    await _report_ai_error(e)
+                    result = fallback
 
             # Notanishdan kelgan aniq spam: javob ham, bildirishnoma ham yo'q
             if result["spam"] and kind == "notanish":
+                await _stat(spam=1)
                 log.info("%s (%s) dan spam — javob berilmadi, bildirishnoma yuborilmadi", name, chat_id)
                 await storage.upsert_inbox(chat_id, name, username, "🚫 spam", False, content)
                 await storage.mark_handled(chat_id)
@@ -238,6 +269,10 @@ def setup(user: TelegramClient, me_id: int) -> None:
 
             # Suhbatdosh egasini chaqirishni so'radi -> alohida, shoshilinch ogohlantirish
             calling = result["call_owner"] and _call_allowed(chat_id)
+            if calling:
+                await _stat(calls=1)
+            if result["urgent"]:
+                await _stat(urgent=1)
             await storage.upsert_inbox(chat_id, name, username, result["summary"],
                                        result["urgent"] or calling, content)
             label_name = f"💼 {name}" if kind == "mijoz" else name

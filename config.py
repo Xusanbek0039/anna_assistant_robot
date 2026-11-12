@@ -65,6 +65,17 @@ BUSY_HOURS = _str("BUSY_HOURS")  # masalan: "Mon-Fri 09:00-18:00; Sat 10:00-14:0
 OWNER_ACTIVE_MINUTES = _int("OWNER_ACTIVE_MINUTES", 10)  # shuncha vaqt ichida yozgan bo'lsangiz — faol
 CALENDAR_ICS_URL = _str("CALENDAR_ICS_URL")  # Google Calendar "maxfiy iCal manzili" (maxfiy!)
 
+# --- Kunlik hisobot ---
+REPORT_ENABLED = _bool("REPORT_ENABLED", True)
+REPORT_TIME = _str("REPORT_TIME", "21:00")  # Toshkent vaqti bilan
+
+# --- Xarajat nazorati (OpenAI) ---
+AI_DAILY_LIMIT = _int("AI_DAILY_LIMIT", 300)            # kuniga jami AI so'rovlari (0 = cheksiz)
+AI_CHAT_DAILY_LIMIT = _int("AI_CHAT_DAILY_LIMIT", 30)   # bitta odam uchun kuniga (0 = cheksiz)
+
+# --- Holat nazorati ---
+HEALTH_CHECK_SECONDS = max(60, _int("HEALTH_CHECK_SECONDS", 300))
+
 # --- Ovozli javob ---
 VOICE_REPLY_ENABLED = _bool("VOICE_REPLY_ENABLED", True)  # ovozli xabarga ovoz bilan javob
 TTS_MODEL = _str("TTS_MODEL", "gpt-4o-mini-tts")

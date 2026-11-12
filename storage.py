@@ -226,3 +226,42 @@ async def save_original_bio_once(about: str, saved_at: float) -> bool:
         )
         return True
     return False
+
+
+# ---------- kunlik statistika (hisobot va xarajat nazorati uchun) ----------
+def today_key() -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from config import TIMEZONE
+    return datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d")
+
+
+async def stat_inc(chat_id: int | None = None, day: str | None = None, **counters: int) -> None:
+    """Bugungi hisoblagichlarni oshiradi. chat_id berilsa — "yozgan odamlar" ro'yxatiga qo'shiladi."""
+    update: dict = {}
+    if counters:
+        update["$inc"] = counters
+    if chat_id is not None:
+        update["$addToSet"] = {"chats": chat_id}
+    if update:
+        await _get_db().stats.update_one({"_id": day or today_key()}, update, upsert=True)
+
+
+async def get_stats(day: str | None = None) -> dict:
+    return await _get_db().stats.find_one({"_id": day or today_key()}) or {}
+
+
+# ---------- dasturdan o'zgartiriladigan sozlamalar (/bio, /quote, /online) ----------
+async def get_runtime() -> dict:
+    doc = await _get_db().settings.find_one({"_id": "runtime"}) or {}
+    doc.pop("_id", None)
+    return doc
+
+
+async def set_runtime(**values) -> None:
+    await _get_db().settings.update_one({"_id": "runtime"}, {"$set": values}, upsert=True)
+
+
+async def ping() -> None:
+    await _get_db().command("ping")
