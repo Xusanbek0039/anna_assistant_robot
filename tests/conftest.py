@@ -45,6 +45,17 @@ class FakeStorage:
         self.d_ignored: set[int] = set()
         self.d_ping_error: Exception | None = None
 
+    async def acquire_lock(self, owner, ttl):
+        holder = getattr(self, "d_lock", None)
+        if holder in (None, owner):
+            self.d_lock = owner
+            return True
+        return False
+
+    async def release_lock(self, owner):
+        if getattr(self, "d_lock", None) == owner:
+            self.d_lock = None
+
     async def ping(self):
         if self.d_ping_error:
             raise self.d_ping_error

@@ -116,6 +116,8 @@ MAX_REPLIES_PER_MINUTE = _int("MAX_REPLIES_PER_MINUTE", 4)
 REPLY_DELAY_SECONDS = _float("REPLY_DELAY_SECONDS", 3)
 MAX_MEDIA_MB = _int("MAX_MEDIA_MB", 50)  # bundan katta media yuklab olinmaydi (egasiga ham yuborilmaydi)
 SAVE_MAX_MB = _int("SAVE_MAX_MB", 2000)  # havola orqali saqlashda (/save) eng katta fayl hajmi
+# Bir vaqtda faqat bitta nusxa ishlasin (ikki nusxa = bot har xabarni ikki marta yuboradi)
+SINGLE_INSTANCE = _bool("SINGLE_INSTANCE", True)
 HISTORY_LIMIT = _int("HISTORY_LIMIT", 30)  # AI ga beriladigan oxirgi xabarlar soni
 
 FALLBACK_TEXT = (

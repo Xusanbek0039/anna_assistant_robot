@@ -8,6 +8,7 @@ import ai
 import config
 import control_bot
 import health
+import instance
 import report
 import runtime
 import storage
@@ -39,6 +40,8 @@ async def main() -> None:
     if config.BIO_ENABLED:
         validate_settings()
     await storage.init()
+    if config.SINGLE_INSTANCE:
+        await instance.wait_until_only()  # boshqa nusxa ishlayotgan bo'lsa, Telegram'ga ulanmasdan kutadi
     await runtime.load()
 
     problem = await ai.check_key()
@@ -73,6 +76,13 @@ async def main() -> None:
         supervise("Online holat", keep_online(user)),
         supervise("Holat nazorati", monitor.run()),
     ]
+    if config.SINGLE_INSTANCE:
+        async def _lost() -> None:
+            await control_bot.alert("⚠️ Anna'ning boshqa nusxasi ishga tushdi — bu nusxa to'xtadi "
+                                    "(ikkalasi birga ishlasa, xabarlar ikki martadan kelardi).")
+            await user.disconnect()
+            await bot.disconnect()
+        background.append(supervise("Nusxa nazorati", instance.heartbeat(_lost)))
     if config.BIO_ENABLED:
         background.append(supervise("Bio yangilash", BioUpdater(user).run()))
     else:
@@ -101,6 +111,9 @@ async def main() -> None:
         except Exception:
             pass
         raise
+    finally:
+        if config.SINGLE_INSTANCE:
+            await instance.release()  # keyingi ishga tushish kutib qolmasligi uchun
 
 
 if __name__ == "__main__":

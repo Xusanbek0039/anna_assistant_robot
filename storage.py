@@ -5,7 +5,7 @@ import sys
 import time
 
 from pymongo import ASCENDING, DESCENDING, AsyncMongoClient
-from pymongo.errors import ConfigurationError, OperationFailure, PyMongoError
+from pymongo.errors import ConfigurationError, DuplicateKeyError, OperationFailure, PyMongoError
 
 from config import HISTORY_LIMIT, MONGODB_DB, MONGODB_URI
 
@@ -58,6 +58,25 @@ async def init(retry_forever: bool = True) -> bool:
         log.info("%d soniyadan keyin qayta urinaman...", delay)
         await asyncio.sleep(delay)
         delay = min(delay * 2, 60)
+
+
+# ---------- bitta nusxa qulfi ----------
+async def acquire_lock(owner: str, ttl: float) -> bool:
+    """Qulfni oladi yoki (o'ziniki bo'lsa) yangilaydi. Boshqa tirik nusxa ushlab turgan bo'lsa — False."""
+    now = time.time()
+    try:
+        await _get_db().locks.update_one(
+            {"_id": "main", "$or": [{"owner": owner}, {"ts": {"$lt": now - ttl}}]},
+            {"$set": {"owner": owner, "ts": now}},
+            upsert=True,
+        )
+        return True
+    except DuplicateKeyError:
+        return False  # hujjat bor, lekin shartga tushmadi: qulf boshqa nusxada va hali eskirmagan
+
+
+async def release_lock(owner: str) -> None:
+    await _get_db().locks.delete_one({"_id": "main", "owner": owner})
 
 
 # ---------- tarix ----------
