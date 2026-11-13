@@ -7,7 +7,7 @@ import time
 from collections import defaultdict, deque
 
 import openai
-from telethon import TelegramClient, events
+from telethon import TelegramClient, errors, events
 from telethon.tl.types import User
 
 import ai
@@ -17,12 +17,17 @@ import saver
 import storage
 import usage
 from config import (FALLBACK_TEXT, MAX_MEDIA_MB, MAX_REPLIES_PER_MINUTE, OWNER_TAKEOVER_MINUTES,
-                    REPLY_DELAY_SECONDS, VOICE_REPLY_ENABLED)
+                    REPLY_DELAY_SECONDS, REPLY_QUOTE, VOICE_REPLY_ENABLED)
 
 log = logging.getLogger("userbot")
 
 TELEGRAM_SERVICE_ID = 777000           # login kodlari keladigan rasmiy akkaunt — hech qachon tegmaymiz
 MAX_MEDIA_BYTES = MAX_MEDIA_MB * 1024 * 1024
+
+# Javob kutayotgan xabarlar: (xabar id, matn, vaqt) — kotiba qaysi xabarga reply qilishini tanlashi uchun
+_pending: dict[int, deque] = defaultdict(lambda: deque(maxlen=10))
+PENDING_MAX_AGE = 15 * 60   # bundan eski javobsiz xabarlarga reply qilinmaydi
+QUOTE_SNIPPET = 120
 
 _seq: dict[int, int] = defaultdict(int)             # debounce: har bir chat uchun oxirgi xabar tartibi
 _locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -31,7 +36,55 @@ _ai_texts: dict[int, set[str]] = defaultdict(set)   # AI yuborgan matnlar (egasi
 _ai_voice_pending: dict[int, int] = defaultdict(int)  # AI yuborayotgan ovozli xabarlar soni
 
 
-async def _send_voice(user: TelegramClient, chat_id: int, text: str) -> bool:
+async def _send_quoted(send, reply_to: int | None, *args, **kwargs):
+    """Xabarni reply qilib yuboradi; iqtibos qilinayotgan xabar o'chirilgan bo'lsa — oddiy xabar qilib."""
+    if reply_to:
+        try:
+            return await send(*args, reply_to=reply_to, **kwargs)
+        except errors.BadRequestError as e:  # masalan, iqtibos qilinayotgan xabar o'chirilgan
+            log.info("Reply qilib bo'lmadi (%s) — oddiy xabar yuboriladi", type(e).__name__)
+            file = args[1] if len(args) > 1 else None
+            if hasattr(file, "seek"):
+                file.seek(0)
+    return await send(*args, **kwargs)
+
+
+async def _quoted_prefix(msg) -> str:
+    """Suhbatdosh biror xabarga reply qilib yozgan bo'lsa — AI uchun o'sha xabardan iqtibos."""
+    if not getattr(msg, "is_reply", False):
+        return ""
+    try:
+        orig = await msg.get_reply_message()
+    except Exception:
+        return ""
+    if orig is None:
+        return ""
+    quote = " ".join((orig.message or "").split()) or (_media_label(orig) or "xabar")
+    if len(quote) > QUOTE_SNIPPET:
+        quote = quote[:QUOTE_SNIPPET].rstrip() + "…"
+    return f"[«{quote}» xabariga javoban] "
+
+
+def _take_pending(chat_id: int, fallback_id: int | None) -> list[tuple[int, str]]:
+    """Javob kutayotgan (hali eskirmagan) xabarlarni oladi va navbatni tozalaydi."""
+    now = time.time()
+    items = [(i, text) for i, text, ts in _pending[chat_id] if now - ts <= PENDING_MAX_AGE and i]
+    _pending[chat_id].clear()
+    if not items and fallback_id:
+        items = [(fallback_id, "")]
+    return items
+
+
+def _pick_reply_target(items: list[tuple[int, str]], index: int) -> int | None:
+    """AI tanlagan raqam bo'yicha xabar id si; tanlamagan bo'lsa — oxirgi xabar."""
+    if not REPLY_QUOTE or not items:
+        return None
+    if 1 <= index <= len(items):
+        return items[index - 1][0]
+    return items[-1][0]
+
+
+async def _send_voice(user: TelegramClient, chat_id: int, text: str, reply_to: int | None = None) -> bool:
     """Javobni ovozli xabar qilib yuboradi. Muvaffaqiyatsiz bo'lsa False (matn yuboriladi)."""
     ok, _ = await usage.check(chat_id)
     if not ok:
@@ -44,7 +97,7 @@ async def _send_voice(user: TelegramClient, chat_id: int, text: str) -> bool:
         f.name = "javob.ogg"
         _ai_voice_pending[chat_id] += 1
         try:
-            await user.send_file(chat_id, f, voice_note=True)
+            await _send_quoted(user.send_file, reply_to, chat_id, f, voice_note=True)
         except Exception:
             _ai_voice_pending[chat_id] -= 1
             raise
@@ -226,7 +279,9 @@ def setup(user: TelegramClient, me_id: int) -> None:
             content = (f"[media: {label}] " if label else "") + text
         if not content.strip():
             return
-        await storage.add_history(chat_id, "user", content.strip())
+        content = (await _quoted_prefix(msg) + content.strip()).strip()
+        await storage.add_history(chat_id, "user", content)
+        _pending[chat_id].append((getattr(msg, "id", None), content, time.time()))
         await _stat(chat_id=chat_id, messages=1)
 
         media_msg_id = None  # egasiga yuborilgan media — bildirishnoma shunga reply bo'ladi
@@ -277,6 +332,10 @@ def setup(user: TelegramClient, me_id: int) -> None:
 
             history = await storage.get_history(chat_id)
             context = f"{status.ai_context}\nSuhbatdosh turi: {kind}."
+            waiting = _take_pending(chat_id, getattr(msg, "id", None))
+            if REPLY_QUOTE and len(waiting) > 1:
+                context += "\nJavob kutayotgan xabarlar (reply_to uchun raqamlar):\n" + "\n".join(
+                    f"{n}) {text[:200]}" for n, (_, text) in enumerate(waiting, 1))
             already = any(h["role"] == "assistant" for h in history)
             fallback = {"reply": None if already else FALLBACK_TEXT,
                         "summary": "", "urgent": False, "call_owner": False, "spam": False, "tokens": 0}
@@ -307,11 +366,12 @@ def setup(user: TelegramClient, me_id: int) -> None:
             reply = result["reply"]
             if reply:
                 is_voice_in = bool(msg.voice or msg.video_note)
-                if not (is_voice_in and VOICE_REPLY_ENABLED and await _send_voice(user, chat_id, reply)):
+                target = _pick_reply_target(waiting, result.get("reply_to", 0))
+                if not (is_voice_in and VOICE_REPLY_ENABLED and await _send_voice(user, chat_id, reply, target)):
                     async with user.action(chat_id, "typing"):
                         await asyncio.sleep(min(1 + len(reply) / 40, 5) + random.uniform(0, 1))
                     _ai_texts[chat_id].add(reply)
-                    await user.send_message(chat_id, reply)
+                    await _send_quoted(user.send_message, target, chat_id, reply)
                 _sent_times[chat_id].append(time.time())
                 await storage.add_history(chat_id, "assistant", reply)
 

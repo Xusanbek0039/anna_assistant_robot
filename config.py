@@ -114,6 +114,8 @@ TTS_MODEL = _str("TTS_MODEL", "gpt-4o-mini-tts")
 TTS_VOICE = _str("TTS_VOICE", "nova")
 MAX_REPLIES_PER_MINUTE = _int("MAX_REPLIES_PER_MINUTE", 4)
 REPLY_DELAY_SECONDS = _float("REPLY_DELAY_SECONDS", 3)
+# Kotiba javobni suhbatdoshning aynan o'sha xabariga "reply" qilib yozadi
+REPLY_QUOTE = _bool("REPLY_QUOTE", True)
 MAX_MEDIA_MB = _int("MAX_MEDIA_MB", 50)  # bundan katta media yuklab olinmaydi (egasiga ham yuborilmaydi)
 SAVE_MAX_MB = _int("SAVE_MAX_MB", 2000)  # havola orqali saqlashda (/save) eng katta fayl hajmi
 # Bir vaqtda faqat bitta nusxa ishlasin (ikki nusxa = bot har xabarni ikki marta yuboradi)

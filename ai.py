@@ -85,6 +85,11 @@ Qoidalar:
 - Qachon javob berishini aniq bilmaysan - "imkoni bo'lishi bilan" de.
 - Suhbatdosh qaysi tilda yozsa (o'zbek, rus, ingliz), o'sha tilda javob ber.
 - Qisqa yoz: 1-3 gap. Emoji kam ishlat.
+- Xabar boshida "[«...» xabariga javoban]" belgisi bo'lsa — suhbatdosh aynan o'sha (iqtibos qilingan)
+  xabarga reply qilib yozgan. Javobingda shuni hisobga ol: gap o'sha xabar haqida ketyapti.
+- "Joriy holat"da "Javob kutayotgan xabarlar" ro'yxati berilsa — hammasiga bitta yaxlit javob yoz va
+  "reply_to" ga javobing ASOSAN qaysi xabarga tegishli bo'lsa, o'sha xabarning raqamini qo'y
+  (masalan asosiy savol 2-xabarda bo'lsa: 2). Ro'yxat berilmasa yoki ajratib bo'lmasa: 0.
 - Ovozli xabar "[ovozli xabar] ..." ko'rinishida matnga o'girilgan holda keladi — uni oddiy matndek tushun
   va mazmuniga javob ber.
 - Rasm "[rasm] ..." ko'rinishida tavsifi bilan keladi — rasmda nima borligini tushunib, mazmuniga javob ber.
@@ -107,7 +112,8 @@ Javobni FAQAT quyidagi JSON ko'rinishida qaytar:
   "summary": "{OWNER_NAME} uchun o'zbek tilida 1-2 gaplik xulosa: kim, nima istaydi (butun suhbat bo'yicha)",
   "urgent": true yoki false,      (faqat haqiqatan shoshilinch bo'lsa true)
   "call_owner": true yoki false,  (faqat SHU xabarda suhbatdosh {OWNER_CALL_NAME}ni chaqirishni so'rasa/rozi bo'lsa true)
-  "spam": true yoki false         (faqat aniq spam/reklama/firibgarlik bo'lsa true)
+  "spam": true yoki false,        (faqat aniq spam/reklama/firibgarlik bo'lsa true)
+  "reply_to": 0                   (javob kutayotgan xabarlar ro'yxatidagi raqam; ro'yxat bo'lmasa 0)
 }}"""
 
 
@@ -150,6 +156,15 @@ def _strip_repeat_greeting(reply: str, history: list[dict]) -> str:
     return stripped[0].upper() + stripped[1:]
 
 
+def _as_index(value) -> int:
+    """Model qaytargan "reply_to" ni xavfsiz butun songa aylantiradi (noto'g'ri bo'lsa 0)."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return n if 0 < n <= 50 else 0
+
+
 async def generate(history: list[dict], context: str = "") -> dict:
     """history: [{'role': 'user'|'assistant', 'content': str}, ...]
     context: joriy holat (egasi qachongacha band, suhbatdosh turi) — har safar yangidan beriladi."""
@@ -174,6 +189,7 @@ async def generate(history: list[dict], context: str = "") -> dict:
         "urgent": bool(data.get("urgent", False)),
         "call_owner": data.get("call_owner") is True,
         "spam": data.get("spam") is True,
+        "reply_to": _as_index(data.get("reply_to")),
         "tokens": getattr(resp.usage, "total_tokens", 0) or 0,
     }
 

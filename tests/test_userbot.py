@@ -20,7 +20,12 @@ class File:
 
 
 class Msg:
+    _next_id = 0
+
     def __init__(self, text, voice=False):
+        Msg._next_id += 1
+        self.id = Msg._next_id
+        self.is_reply = False
         self.message = text
         self.voice = True if voice else None
         self.video_note = self.photo = self.video = self.sticker = self.document = None
@@ -46,6 +51,7 @@ class FakeUser:
     def __init__(self):
         self.handlers = {}
         self.sent = []
+        self.replies = []          # har bir yuborilgan xabar qaysi xabarga reply ekani
 
     def on(self, _event):
         def deco(f):
@@ -57,11 +63,13 @@ class FakeUser:
     async def action(self, *a):
         yield
 
-    async def send_message(self, chat, text):
+    async def send_message(self, chat, text, reply_to=None):
+        self.replies.append(reply_to)
         self.sent.append(("text", chat, text))
         await self.handlers["on_outgoing"](Ev(chat, text))       # Telegram o'z xabarimizni ham qaytaradi
 
-    async def send_file(self, chat, f, voice_note=False):
+    async def send_file(self, chat, f, voice_note=False, reply_to=None):
+        self.replies.append(reply_to)
         self.sent.append(("voice", chat, len(f.getvalue())))
         await self.handlers["on_outgoing"](Ev(chat, "", voice=True))
 
@@ -69,7 +77,7 @@ class FakeUser:
 @pytest.fixture
 def env(fake_storage, fast_sleep, monkeypatch):
     for name, value in [("_seq", defaultdict(int)), ("_sent_times", defaultdict(deque)),
-                        ("_ai_texts", defaultdict(set)), ("_ai_voice_pending", defaultdict(int)),
+                        ("_ai_texts", defaultdict(set)), ("_pending", defaultdict(lambda: deque(maxlen=10))), ("_ai_voice_pending", defaultdict(int)),
                         ("_last_call", {}), ("_ai_alerted", set())]:
         monkeypatch.setattr(userbot, name, value)
     monkeypatch.setattr(availability, "_last_active_mem", 0.0)
@@ -280,3 +288,56 @@ def test_too_big_media_alerts_owner(env):
     env.incoming(_photo_ev(1002, ttl=10, size=userbot.MAX_MEDIA_BYTES + 1))
     assert not any(m[0] == "media" for m in env.bot)
     assert any(m[0] == "alert" and "saqlanmadi" in m[1] for m in env.bot)
+
+
+def test_answer_is_sent_as_reply_to_the_message(env):
+    ev = Ev(1100, "narxi qancha?")
+    env.incoming(ev)
+    assert env.user.replies == [ev.message.id]
+
+
+def test_ai_picks_which_message_to_reply_to(env, monkeypatch):
+    first, second = Ev(1101, "narxi qancha?"), Ev(1101, "rahmat oldindan")
+    for ev in (first, second):                      # ikkalasi ham javob kutyapti
+        userbot._pending[1101].append((ev.message.id, ev.message.message, userbot.time.time()))
+    seen = {}
+
+    async def generate(history, context=""):
+        seen["context"] = context
+        return env.make(reply_to=1)
+    monkeypatch.setattr(ai, "generate", generate)
+    userbot._pending[1101].pop()                    # ikkinchisini handler o'zi qo'shadi
+    env.incoming(second)
+    assert "Javob kutayotgan xabarlar" in seen["context"] and "1) narxi qancha?" in seen["context"]
+    assert env.user.replies == [first.message.id]   # AI asosiy savol turgan 1-xabarni tanladi
+    assert not userbot._pending[1101]
+
+
+def test_incoming_reply_is_quoted_for_ai(env):
+    ev = Ev(1102, "shu haqida")
+    ev.message.is_reply = True
+
+    async def get_reply_message():
+        return Msg("Ertaga soat 5 da uchrashamiz")
+    ev.message.get_reply_message = get_reply_message
+    env.incoming(ev)
+    assert env.storage.d_history[1102][0]["content"] == "[«Ertaga soat 5 da uchrashamiz» xabariga javoban] shu haqida"
+
+
+def test_reply_quote_can_be_disabled(env, monkeypatch):
+    monkeypatch.setattr(userbot, "REPLY_QUOTE", False)
+    env.incoming(Ev(1103, "salom"))
+    assert env.user.replies == [None]
+
+
+def test_reply_falls_back_to_plain_message_when_original_deleted(env, monkeypatch):
+    from telethon import errors
+    real = env.user.send_message
+
+    async def send_message(chat, text, reply_to=None):
+        if reply_to:
+            raise errors.MessageIdInvalidError(request=None)
+        await real(chat, text)
+    monkeypatch.setattr(env.user, "send_message", send_message)
+    env.incoming(Ev(1104, "salom"))
+    assert env.user.sent == [("text", 1104, "Salom! Men Anna.")] and env.user.replies == [None]
