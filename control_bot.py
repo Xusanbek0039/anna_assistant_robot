@@ -24,7 +24,9 @@ HELP = (
     "/off — avtojavobni o'chirish\n"
     "/status — holat\n"
     "/tag &lt;id yoki @username&gt; &lt;oila|mijoz|dost|clear&gt; — kontakt turi\n"
-    "/tags — turlar ro'yxati\n\n"
+    "/tags — turlar ro'yxati\n"
+    "/unmute &lt;id yoki @username&gt; — shu chatda kotibani qayta yoqish (o'zingiz yozganingizdan keyin "
+    "u o'sha chatda vaqtincha jim turadi)\n\n"
     "<b>Hisobot va nazorat</b>\n"
     "/report — bugungi hisobot (har kuni kechqurun avtomatik ham keladi)\n"
     "/usage — bugungi AI sarfi va limitlar\n"
@@ -235,6 +237,7 @@ BOT_COMMANDS = [
     ("off", "⚪️ Avtojavobni o'chirish"),
     ("inbox", "📬 Javob kutayotgan xabarlar"),
     ("report", "📈 Bugungi hisobot"),
+    ("unmute", "🔊 Chatda kotibani qayta yoqish: /unmute id"),
     ("save", "💾 Havoladagi mediani Saqlangan xabarlarga joylash"),
     ("bio", "🕒 Bio, iqtibos va online — tugmali panel"),
     ("quote", "💬 Iqtibos: /quote matn | auto | off"),
@@ -460,6 +463,19 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                                 parse_mode="html")
             return
         await _save_links(event, links)
+
+    @bot.on(events.NewMessage(pattern=r"^/unmute(?:\s+(\S+))?$", func=is_owner))
+    async def _unmute(event):
+        arg = event.pattern_match.group(1)
+        uid = await _resolve_user_id(arg) if arg else None
+        if uid is None:
+            await event.respond("Foydalanish: <code>/unmute 123456789</code> yoki <code>/unmute @username</code>",
+                                parse_mode="html")
+            return
+        was_muted = await storage.is_muted(uid)
+        await storage.unmute(uid)
+        await event.respond(f"🔊 <code>{uid}</code> chatida kotiba yana javob beradi."
+                            + ("" if was_muted else " (U jim holatda emas edi.)"), parse_mode="html")
 
     @bot.on(events.NewMessage(pattern=r"^/ignore\s+(\S+)", func=is_owner))
     async def _ignore(event):

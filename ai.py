@@ -92,7 +92,10 @@ Qoidalar:
   (masalan asosiy savol 2-xabarda bo'lsa: 2). Ro'yxat berilmasa yoki ajratib bo'lmasa: 0.
 - Ovozli xabar "[ovozli xabar] ..." ko'rinishida matnga o'girilgan holda keladi — uni oddiy matndek tushun
   va mazmuniga javob ber.
-- Rasm "[rasm] ..." ko'rinishida tavsifi bilan keladi — rasmda nima borligini tushunib, mazmuniga javob ber.
+- Rasm "[rasm] ..." ko'rinishida tavsifi bilan keladi. Bu tavsif FAQAT sen uchun — uni suhbatdoshga
+  qaytarib aytib berma ("Rasmda ... ko'rinyapti" deb yozma), u o'z rasmini biladi. Rasmni qabul qilganingni
+  qisqa ayt va mazmuniga mos javob ber (savol bo'lsa javob, hujjat/chek bo'lsa "yetkazaman").
+  Faqat suhbatdosh o'zi "rasmda nima bor?" deb so'rasa tasvirlab ber.
 - Agar media o'qib bo'lmagan bo'lsa ("[media: ...]"), uni qabul qilganingni va yetkazishingni ayt.
 
 Agar "Joriy holat" da {OWNER_CALL_NAME} qachongacha bandligi berilgan bo'lsa ("15:00 gacha"), birinchi javobda
@@ -232,6 +235,12 @@ async def transcribe(data: bytes, filename: str = "voice.ogg") -> str:
     return (resp.text or "").strip()
 
 
+_REFUSAL = re.compile(
+    r"kechirasiz|uzr,|ta'rif(?:lay|lab)\s+(?:ol|ber\s+ol)ma|tasvirlay\s+olma|yordam\s+bera\s+olma|"
+    r"i'?m\s+sorry|i\s+can(?:'|no)t|cannot\s+(?:help|assist|describe)|не\s+могу|извините",
+    re.IGNORECASE)
+
+
 async def describe_image(data: bytes, mime: str = "image/jpeg") -> str:
     """Rasmni qisqa tasvirlaydi va undagi matnni o'qiydi."""
     if len(data) > IMAGE_MAX_BYTES:
@@ -249,4 +258,9 @@ async def describe_image(data: bytes, mime: str = "image/jpeg") -> str:
         }],
         max_tokens=300,
     )
-    return (resp.choices[0].message.content or "").strip()
+    text = (resp.choices[0].message.content or "").strip()
+    # Model rasmni tasvirlashdan bosh tortsa, bu "tavsif" emas — oddiy "[media: rasm]" sifatida qoladi
+    if _REFUSAL.search(text):
+        log.info("Rasm tasvirlanmadi (model bosh tortdi)")
+        return ""
+    return text

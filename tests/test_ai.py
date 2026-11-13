@@ -38,3 +38,9 @@ def test_strip_repeat_greeting():
 def test_greeting_kept_when_user_greets_again():
     h = [U("salom"), A("Assalomu alaykum! Men Anna."), U("[ovozli xabar] Assalomu alaykum, yaxshimisiz")]
     assert ai._strip_repeat_greeting("Va alaykum assalom! Rahmat.", h) == "Va alaykum assalom! Rahmat."
+
+
+def test_image_refusal_is_not_a_description():
+    assert ai._REFUSAL.search("Kechirasiz, lekin bu turdagi tasvirlarni ta'riflay olmayman.")
+    assert ai._REFUSAL.search("I'm sorry, I can't help with that.")
+    assert not ai._REFUSAL.search("Rasmda qorli maydonda oq avtomobil yonida yigit turibdi.")
