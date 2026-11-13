@@ -2,6 +2,7 @@
 import html
 import io
 import logging
+import time
 
 from telethon import Button, TelegramClient, events
 
@@ -48,6 +49,10 @@ TAGS = {
     "dost": "🤝 do'st — samimiy ohang",
 }
 TAG_ALIASES = {"do'st": "dost", "dost": "dost", "family": "oila", "client": "mijoz", "friend": "dost"}
+
+# begona odam botga yozsa, "Bu shaxsiy bot." javobi soatiga ko'pi bilan bir marta
+_stranger_replied: dict[int, float] = {}
+STRANGER_REPLY_COOLDOWN = 3600
 
 # notification message id -> chat_id  (reply orqali javob berish uchun)
 _notif_map: dict[int, int] = {}
@@ -333,8 +338,14 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         await event.respond(HELP + "\n\n💡 Pastdagi <b>/</b> yoki ☰ <b>Menyu</b> tugmasini bosing — "
                                    "barcha buyruqlar chiqadi.", parse_mode="html")
 
-    @bot.on(events.NewMessage(func=lambda e: e.sender_id != owner_id and e.is_private))
+    # incoming=True SHART: busiz botning o'z xabarlari ham (yuborgan media, bildirishnoma) shu yerga tushib,
+    # "Bu shaxsiy bot." javobi o'ziga-o'zi cheksiz javob qaytaradi.
+    @bot.on(events.NewMessage(incoming=True, func=lambda e: e.sender_id != owner_id and e.is_private))
     async def _stranger(event):
+        now = time.time()
+        if now - _stranger_replied.get(event.sender_id, 0) < STRANGER_REPLY_COOLDOWN:
+            return  # bir odamga (yoki boshqa botga) qayta-qayta yozmaymiz
+        _stranger_replied[event.sender_id] = now
         await event.respond("Bu shaxsiy bot.")
 
     @bot.on(events.NewMessage(pattern=r"^/on$", func=is_owner))
