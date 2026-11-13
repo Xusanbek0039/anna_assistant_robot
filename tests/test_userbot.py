@@ -77,7 +77,7 @@ def env(fake_storage, fast_sleep, monkeypatch):
 
     bot_msgs = []
 
-    async def notify(chat_id, name, username, text, summary, urgent, reply):
+    async def notify(chat_id, name, username, text, summary, urgent, reply, reply_to=None):
         bot_msgs.append(("notify", chat_id, name))
 
     async def call_owner(chat_id, name, *a):
@@ -262,7 +262,8 @@ def test_photo_forwarded_to_owner_as_photo(env, monkeypatch):
     monkeypatch.setattr(ai, "describe_image", describe_image)
     env.incoming(_photo_ev(1000, caption="qarang"))
     kw = next(m[1] for m in env.bot if m[0] == "media")
-    assert kw["kind"] == "rasm" and kw["view_once"] is False and kw["caption"] == "qarang"
+    assert kw["kind"] == "rasm" and kw["view_once"] is False
+    assert "caption" not in kw                     # matn bildirishnomada keladi, ikki marta emas
     assert env.storage.d_history[1000][0]["content"].startswith("[rasm] mushuk")
 
 

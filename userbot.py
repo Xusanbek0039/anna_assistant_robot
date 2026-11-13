@@ -228,12 +228,13 @@ def setup(user: TelegramClient, me_id: int) -> None:
         await storage.add_history(chat_id, "user", content.strip())
         await _stat(chat_id=chat_id, messages=1)
 
+        media_msg_id = None  # egasiga yuborilgan media — bildirishnoma shunga reply bo'ladi
         if data:
             try:
                 has_video = bool(msg.video or msg.video_note)
-                await control_bot.send_media(
+                media_msg_id = await control_bot.send_media(
                     chat_id, name, data, _media_filename(msg, label),
-                    kind=label, username=username, caption=text, view_once=view_once,
+                    kind=label, username=username, view_once=view_once,
                     mime=(getattr(msg.file, "mime_type", None) or "").lower(),
                     attributes=getattr(getattr(msg.media, "document", None), "attributes", None),
                     thumb=await _video_thumb(msg) if has_video else None,
@@ -245,7 +246,7 @@ def setup(user: TelegramClient, me_id: int) -> None:
         tag = await storage.get_tag(sender.id)
         if tag == "oila":
             await storage.upsert_inbox(chat_id, name, username, "", False, content)
-            await control_bot.notify(chat_id, f"👨‍👩‍👧 {name}", username, content, "", False, None)
+            await control_bot.notify(chat_id, f"👨‍👩‍👧 {name}", username, content, "", False, None, reply_to=media_msg_id)
             return
         kind = tag or ("tanish" if sender.contact else "notanish")
 
@@ -256,7 +257,7 @@ def setup(user: TelegramClient, me_id: int) -> None:
             log.info("%s ga javob berilmadi: %s", chat_id, status.reason)
             await storage.upsert_inbox(chat_id, name, username, "", False, content)
             if status.notify:
-                await control_bot.notify(chat_id, name, username, content, "", False, None)
+                await control_bot.notify(chat_id, name, username, content, "", False, None, reply_to=media_msg_id)
             return
 
         # Debounce: odam ketma-ket bir nechta xabar yozsa, oxirgisiga bitta javob beramiz
@@ -327,7 +328,7 @@ def setup(user: TelegramClient, me_id: int) -> None:
                 await control_bot.call_owner(chat_id, label_name, username, content, result["summary"])
             else:
                 await control_bot.notify(chat_id, label_name, username, content,
-                                         result["summary"], result["urgent"], reply)
+                                         result["summary"], result["urgent"], reply, reply_to=media_msg_id)
 
     @user.on(events.NewMessage(outgoing=True))
     async def on_outgoing(event):

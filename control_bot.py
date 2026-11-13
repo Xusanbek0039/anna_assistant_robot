@@ -92,7 +92,8 @@ def _buttons(chat_id: int):
 
 
 async def notify(chat_id: int, name: str, username: str | None, text: str,
-                 summary: str, urgent: bool, ai_reply: str | None) -> None:
+                 summary: str, urgent: bool, ai_reply: str | None, reply_to: int | None = None) -> None:
+    """reply_to: shu xabar bilan kelgan media (bot xabari) id si — bildirishnoma uning tagiga bog'lanadi."""
     head = "🔴 <b>SHOSHILINCH</b>\n" if urgent else "📩 <b>Yangi xabar</b>\n"
     body = (
         f"{head}👤 {_who(name, username, chat_id)}\n\n"
@@ -104,7 +105,7 @@ async def notify(chat_id: int, name: str, username: str | None, text: str,
         body += f"\n🤖 <b>Anna javobi:</b> {html.escape(ai_reply)}"
     try:
         msg = await ctx.bot.send_message(ctx.owner_id, body, parse_mode="html",
-                                         buttons=_buttons(chat_id))
+                                         buttons=_buttons(chat_id), reply_to=reply_to)
         _notif_map[msg.id] = chat_id
     except Exception:
         log.exception("Egasiga xabar yuborilmadi (botga /start bosganmisiz?)")
@@ -140,9 +141,11 @@ _MEDIA_ICONS = {"rasm": "📸", "video": "🎬", "ovozli xabar": "🎤", "video-
 
 async def send_media(chat_id: int, name: str, data: bytes, filename: str | None = None, *,
                      kind: str = "media", username: str | None = None, caption: str = "",
-                     view_once: bool = False, mime: str = "", attributes=None, thumb: bytes | None = None) -> None:
+                     view_once: bool = False, mime: str = "", attributes=None,
+                     thumb: bytes | None = None) -> int | None:
     """Suhbatdosh yuborgan mediani egasiga ASL ko'rinishida yuboradi: rasm — rasm, video — video,
-    ovozli xabar — ovozli xabar. Bir marta ko'riladigan media ham oddiy (saqlasa bo'ladigan) holda keladi."""
+    ovozli xabar — ovozli xabar. Bir marta ko'riladigan media ham oddiy (saqlasa bo'ladigan) holda keladi.
+    Yuborilgan xabar id sini qaytaradi (bildirishnoma shunga reply bo'lib keladi)."""
     cap = f"{_MEDIA_ICONS.get(kind, '📎')} {_who(name, username, chat_id)} — {html.escape(kind)}"
     if view_once:
         cap += "\n🔥 <b>Bir marta ko'riladigan (o'chib ketadigan) media</b> — siz uchun saqlab olindi"
@@ -174,8 +177,10 @@ async def send_media(chat_id: int, name: str, data: bytes, filename: str | None 
         if is_round:  # dumaloq videoga izoh yozib bo'lmaydi — alohida xabar
             note = await ctx.bot.send_message(ctx.owner_id, cap, parse_mode="html", reply_to=msg.id)
             _notif_map[note.id] = chat_id
+        return msg.id
     except Exception:
         log.exception("Media botga yuborilmadi")
+        return None
 
 
 async def _send_as_owner(chat_id: int, text: str, event) -> None:
