@@ -11,6 +11,7 @@ import bio_updater
 import config
 import report
 import runtime
+import saver
 import storage
 from config import OWNER_TAKEOVER_MINUTES
 
@@ -28,6 +29,9 @@ HELP = (
     "/report — bugungi hisobot (har kuni kechqurun avtomatik ham keladi)\n"
     "/usage — bugungi AI sarfi va limitlar\n"
     "/health — MongoDB, OpenAI, Telegram holati\n\n"
+    "<b>Saqlash</b>\n"
+    "/save &lt;havola&gt; — kanal/guruh xabaridagi mediani Saqlangan xabarlaringizga joylaydi. "
+    "Havolaning o'zini yuborsangiz ham bo'ladi (akkauntingiz o'sha kanal a'zosi bo'lishi kerak)\n\n"
     "<b>Profil</b>\n"
     "/bio — joriy bio va holat\n"
     "/bio on | off | now | restore — yoqish, to'xtatish, hozir yangilash, asl bio'ni qaytarish\n"
@@ -192,6 +196,25 @@ async def _send_as_owner(chat_id: int, text: str, event) -> None:
         await event.respond(f"❌ Yuborilmadi: {e}")
 
 
+async def _save_links(event, links: list) -> None:
+    """Havolalardagi mediani egasining Saqlangan xabarlariga joylaydi; jarayon bitta xabarda ko'rsatiladi."""
+    many = len(links) > 1
+    status = await event.respond("⏳ Saqlanmoqda...")
+    done: list[str] = []
+
+    async def show(text: str) -> None:
+        try:
+            await status.edit("\n".join(done + ([text] if text else [])), link_preview=False)
+        except Exception:
+            pass  # matn o'zgarmagan yoki Telegram cheklovi — jarayon ko'rsatkichi muhim emas
+
+    for i, link in enumerate(links, 1):
+        prefix = f"{i}/{len(links)} " if many else ""
+        result = await saver.save_link(ctx.user, link, lambda t, p=prefix: show(f"{p}{t}"))
+        done.append(f"{prefix}{result}" + (f" — {link.url}" if many else ""))
+        await show("⏳ Keyingisi..." if i < len(links) else "")
+
+
 async def _resolve_user_id(arg: str) -> int | None:
     arg = arg.strip()
     if arg.lstrip("-").isdigit():
@@ -212,6 +235,7 @@ BOT_COMMANDS = [
     ("off", "⚪️ Avtojavobni o'chirish"),
     ("inbox", "📬 Javob kutayotgan xabarlar"),
     ("report", "📈 Bugungi hisobot"),
+    ("save", "💾 Havoladagi mediani Saqlangan xabarlarga joylash"),
     ("bio", "🕒 Bio, iqtibos va online — tugmali panel"),
     ("quote", "💬 Iqtibos: /quote matn | auto | off"),
     ("online", "🟢 Online ko'rinish: on | off"),
@@ -427,6 +451,16 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         chat_id = int(event.pattern_match.group(1))
         await _send_as_owner(chat_id, event.pattern_match.group(2), event)
 
+    @bot.on(events.NewMessage(pattern=r"^/save(?:\s+([\s\S]+))?$", func=is_owner))
+    async def _save_cmd(event):
+        links = saver.parse_links(event.pattern_match.group(1) or "")
+        if not links:
+            await event.respond("Foydalanish: <code>/save https://t.me/c/1234567890/15</code>\n"
+                                "Yoki xabar havolasining o'zini yuboring (xabar ustida → «Havolani nusxalash»).",
+                                parse_mode="html")
+            return
+        await _save_links(event, links)
+
     @bot.on(events.NewMessage(pattern=r"^/ignore\s+(\S+)", func=is_owner))
     async def _ignore(event):
         arg = event.pattern_match.group(1)
@@ -538,6 +572,12 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         chat_id = None
         if event.is_reply:
             chat_id = _notif_map.get(event.reply_to_msg_id)
+        # Javob yozish kutilmayapti va matnda xabar havolasi bor -> mediani Saqlangan xabarlarga joylaymiz
+        if chat_id is None and "chat" not in _awaiting_reply:
+            links = saver.parse_links(event.text)
+            if links:
+                await _save_links(event, links)
+                return
         if chat_id is None:
             chat_id = _awaiting_reply.pop("chat", None)
         if chat_id is None:

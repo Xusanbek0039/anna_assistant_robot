@@ -13,6 +13,7 @@ from telethon.tl.types import User
 import ai
 import availability
 import control_bot
+import saver
 import storage
 import usage
 from config import (FALLBACK_TEXT, MAX_MEDIA_MB, MAX_REPLIES_PER_MINUTE, OWNER_TAKEOVER_MINUTES,
@@ -342,6 +343,9 @@ def setup(user: TelegramClient, me_id: int) -> None:
         if (msg.voice or msg.video_note) and _ai_voice_pending[chat_id] > 0:
             _ai_voice_pending[chat_id] -= 1
             return
+
+        if chat_id == me_id and saver.is_saving():
+            return  # /save: media Saqlangan xabarlarga dastur tomonidan joylanyapti — egasi yozgani emas
 
         # Egasi istalgan joyga (guruh, kanal, shaxsiy) o'zi yozdi -> u faol (/auto rejimi uchun)
         await availability.mark_owner_active()
