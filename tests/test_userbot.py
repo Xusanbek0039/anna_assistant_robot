@@ -86,8 +86,8 @@ def env(fake_storage, fast_sleep, monkeypatch):
     async def alert(text):
         bot_msgs.append(("alert", text))
 
-    async def send_media(*a):
-        bot_msgs.append(("media",))
+    async def send_media(*a, **kw):
+        bot_msgs.append(("media", kw))
 
     monkeypatch.setattr(control_bot, "notify", notify)
     monkeypatch.setattr(control_bot, "call_owner", call_owner)
@@ -241,3 +241,41 @@ def test_template_sent_once_when_ai_fails(env, monkeypatch):
     env.incoming(Ev(900, "yana"))
     texts = [s for s in env.user.sent if s[0] == "text"]
     assert len(texts) == 1 and "band" in texts[0][2]           # shablon faqat bir marta
+
+
+class PhotoMedia:
+    def __init__(self, ttl):
+        self.ttl_seconds = ttl
+
+
+def _photo_ev(chat, ttl=None, size=100, caption=""):
+    ev = Ev(chat, caption)
+    m = ev.message
+    m.photo, m.media, m.file = True, PhotoMedia(ttl), File()
+    m.file.size, m.file.mime_type = size, "image/jpeg"
+    return ev
+
+
+def test_photo_forwarded_to_owner_as_photo(env, monkeypatch):
+    async def describe_image(data, mime="image/jpeg"):
+        return "mushuk"
+    monkeypatch.setattr(ai, "describe_image", describe_image)
+    env.incoming(_photo_ev(1000, caption="qarang"))
+    kw = next(m[1] for m in env.bot if m[0] == "media")
+    assert kw["kind"] == "rasm" and kw["view_once"] is False and kw["caption"] == "qarang"
+    assert env.storage.d_history[1000][0]["content"].startswith("[rasm] mushuk")
+
+
+def test_view_once_photo_is_saved_for_owner(env, monkeypatch):
+    async def describe_image(data, mime="image/jpeg"):
+        return "hujjat"
+    monkeypatch.setattr(ai, "describe_image", describe_image)
+    env.incoming(_photo_ev(1001, ttl=2147483647))
+    kw = next(m[1] for m in env.bot if m[0] == "media")
+    assert kw["kind"] == "rasm" and kw["view_once"] is True
+
+
+def test_too_big_media_alerts_owner(env):
+    env.incoming(_photo_ev(1002, ttl=10, size=userbot.MAX_MEDIA_BYTES + 1))
+    assert not any(m[0] == "media" for m in env.bot)
+    assert any(m[0] == "alert" and "saqlanmadi" in m[1] for m in env.bot)

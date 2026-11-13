@@ -94,3 +94,58 @@ def test_panel_marks_current_mode_and_toggles(fake_storage, fresh_runtime):
 def test_bio_actions_without_module(fake_storage, fresh_runtime):
     assert "ishlamayapti" in run(control_bot._do_action("bio_now"))
     assert "ishlamayapti" in run(control_bot._do_action("bio_restore"))
+
+
+class _FakeMsg:
+    def __init__(self, i):
+        self.id = i
+
+
+class _FakeBot:
+    def __init__(self, fail_first=False):
+        self.files, self.texts, self.fail_first = [], [], fail_first
+
+    async def send_file(self, chat, f, **kw):
+        if self.fail_first and not self.files:
+            self.files.append(None)
+            raise RuntimeError("boom")
+        self.files.append((f.name, f.read(), kw))
+        return _FakeMsg(len(self.files))
+
+    async def send_message(self, chat, text, **kw):
+        self.texts.append((text, kw))
+        return _FakeMsg(100 + len(self.texts))
+
+
+def _media_bot(monkeypatch, **kw):
+    bot = _FakeBot(**kw)
+    monkeypatch.setattr(control_bot.ctx, "bot", bot, raising=False)
+    monkeypatch.setattr(control_bot.ctx, "owner_id", 1, raising=False)
+    monkeypatch.setattr(control_bot, "_notif_map", {})
+    return bot
+
+
+def test_send_media_photo_goes_as_photo(monkeypatch):
+    bot = _media_bot(monkeypatch)
+    run(control_bot.send_media(5, "Ali <b>", b"jpg", "photo.jpg", kind="rasm", view_once=True, caption="a<b"))
+    name, data, kw = bot.files[0]
+    assert name == "photo.jpg" and data == b"jpg"
+    assert kw["force_document"] is False and kw["voice_note"] is False
+    assert "Bir marta" in kw["caption"] and "a&lt;b" in kw["caption"] and "Ali &lt;b&gt;" in kw["caption"]
+    assert control_bot._notif_map == {1: 5}
+
+
+def test_send_media_voice_and_round_video(monkeypatch):
+    bot = _media_bot(monkeypatch)
+    run(control_bot.send_media(5, "Ali", b"ogg", "voice.ogg", kind="ovozli xabar"))
+    assert bot.files[0][2]["voice_note"] is True
+    run(control_bot.send_media(5, "Ali", b"mp4", "video_note.mp4", kind="video-xabar"))
+    kw = bot.files[1][2]
+    assert kw["video_note"] is True and kw["caption"] is None
+    assert len(bot.texts) == 1 and bot.texts[0][1]["reply_to"] == 2   # izoh alohida xabar bo'lib keladi
+
+
+def test_send_media_falls_back_to_document(monkeypatch):
+    bot = _media_bot(monkeypatch, fail_first=True)
+    run(control_bot.send_media(5, "Ali", b"x", "video.mp4", kind="video"))
+    assert bot.files[1][2]["force_document"] is True and bot.files[1][1] == b"x"

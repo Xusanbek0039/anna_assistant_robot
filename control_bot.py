@@ -1,5 +1,6 @@
 """Nazorat boti: egasiga xulosalar yuboradi va buyruqlarni qabul qiladi."""
 import html
+import io
 import logging
 
 from telethon import Button, TelegramClient, events
@@ -129,16 +130,45 @@ async def alert(text: str) -> None:
         log.warning("Ogohlantirish botga yuborilmadi")
 
 
-async def send_media(chat_id: int, name: str, data: bytes, filename: str | None) -> None:
+_MEDIA_ICONS = {"rasm": "📸", "video": "🎬", "ovozli xabar": "🎤", "video-xabar": "📹", "audio": "🎵", "fayl": "📎"}
+
+
+async def send_media(chat_id: int, name: str, data: bytes, filename: str | None = None, *,
+                     kind: str = "media", username: str | None = None, caption: str = "",
+                     view_once: bool = False, mime: str = "", attributes=None, thumb: bytes | None = None) -> None:
+    """Suhbatdosh yuborgan mediani egasiga ASL ko'rinishida yuboradi: rasm — rasm, video — video,
+    ovozli xabar — ovozli xabar. Bir marta ko'riladigan media ham oddiy (saqlasa bo'ladigan) holda keladi."""
+    cap = f"{_MEDIA_ICONS.get(kind, '📎')} {_who(name, username, chat_id)} — {html.escape(kind)}"
+    if view_once:
+        cap += "\n🔥 <b>Bir marta ko'riladigan (o'chib ketadigan) media</b> — siz uchun saqlab olindi"
+    if caption:
+        cap += f"\n\n💬 <i>{html.escape(caption[:700])}</i>"
+
+    def _file() -> io.BytesIO:
+        f = io.BytesIO(data)
+        f.name = filename or "file.bin"  # kengaytma bo'lmasa Telegram uni nomsiz fayl qilib ko'rsatadi
+        return f
+
+    is_round = kind == "video-xabar"
     try:
-        file = data
-        if filename:
-            import io
-            file = io.BytesIO(data)
-            file.name = filename
-        msg = await ctx.bot.send_file(ctx.owner_id, file,
-                                      caption=f"📎 {name} yubordi ({chat_id})")
+        try:
+            msg = await ctx.bot.send_file(
+                ctx.owner_id, _file(),
+                caption=None if is_round else cap, parse_mode="html",
+                force_document=kind == "fayl" and mime.startswith("image/"),  # fayl qilib yuborilgan rasm sifati saqlansin
+                voice_note=kind == "ovozli xabar",
+                video_note=is_round,
+                supports_streaming=kind in ("video", "video-xabar"),
+                attributes=attributes, thumb=thumb,
+            )
+        except Exception:
+            log.exception("Media asl ko'rinishida yuborilmadi — fayl sifatida yuboriladi")
+            msg = await ctx.bot.send_file(ctx.owner_id, _file(), caption=None if is_round else cap,
+                                          parse_mode="html", force_document=True)
         _notif_map[msg.id] = chat_id
+        if is_round:  # dumaloq videoga izoh yozib bo'lmaydi — alohida xabar
+            note = await ctx.bot.send_message(ctx.owner_id, cap, parse_mode="html", reply_to=msg.id)
+            _notif_map[note.id] = chat_id
     except Exception:
         log.exception("Media botga yuborilmadi")
 

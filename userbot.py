@@ -15,13 +15,13 @@ import availability
 import control_bot
 import storage
 import usage
-from config import (FALLBACK_TEXT, MAX_REPLIES_PER_MINUTE, OWNER_NAME, OWNER_TAKEOVER_MINUTES,
+from config import (FALLBACK_TEXT, MAX_MEDIA_MB, MAX_REPLIES_PER_MINUTE, OWNER_TAKEOVER_MINUTES,
                     REPLY_DELAY_SECONDS, VOICE_REPLY_ENABLED)
 
 log = logging.getLogger("userbot")
 
 TELEGRAM_SERVICE_ID = 777000           # login kodlari keladigan rasmiy akkaunt — hech qachon tegmaymiz
-MAX_MEDIA_BYTES = 20 * 1024 * 1024
+MAX_MEDIA_BYTES = MAX_MEDIA_MB * 1024 * 1024
 
 _seq: dict[int, int] = defaultdict(int)             # debounce: har bir chat uchun oxirgi xabar tartibi
 _locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -54,6 +54,32 @@ async def _send_voice(user: TelegramClient, chat_id: int, text: str) -> bool:
         return False
 
 
+_DEFAULT_NAMES = {"rasm": "photo.jpg", "video": "video.mp4", "ovozli xabar": "voice.ogg",
+                  "video-xabar": "video_note.mp4", "audio": "audio.mp3"}
+
+
+def _is_view_once(msg) -> bool:
+    """Bir marta ko'riladigan yoki taymerli (o'zi o'chib ketadigan) media."""
+    return bool(getattr(msg.media, "ttl_seconds", None))
+
+
+def _media_filename(msg, label: str) -> str:
+    """Bot orqali yuborishda Telegram media turini to'g'ri aniqlashi uchun kengaytmali nom."""
+    name = getattr(msg.file, "name", None)
+    if name:
+        return name
+    if label in _DEFAULT_NAMES:
+        return _DEFAULT_NAMES[label]
+    return "file" + (getattr(msg.file, "ext", None) or ".bin")
+
+
+async def _video_thumb(msg) -> bytes | None:
+    try:
+        return await msg.download_media(file=bytes, thumb=-1)
+    except Exception:
+        return None
+
+
 def _media_label(msg) -> str | None:
     if msg.voice:
         return "ovozli xabar"
@@ -65,6 +91,8 @@ def _media_label(msg) -> str | None:
         return "video"
     if msg.sticker:
         return "stiker"
+    if getattr(msg, "audio", None):
+        return "audio"
     if msg.document:
         return "fayl"
     if msg.media:
@@ -171,13 +199,24 @@ def setup(user: TelegramClient, me_id: int) -> None:
 
         # Media: yuklab olamiz, ovozni matnga o'giramiz / rasmni tasvirlaymiz, egasiga bot orqali yuboramiz
         data = None
+        view_once = _is_view_once(msg)
         if label and label != "stiker":
             size = getattr(msg.file, "size", 0) or 0
-            if size <= MAX_MEDIA_BYTES:
+            problem = None
+            if size > MAX_MEDIA_BYTES:
+                problem = f"hajmi juda katta ({size / 1024 / 1024:.0f} MB, limit {MAX_MEDIA_MB} MB — .env: MAX_MEDIA_MB)"
+            else:
                 try:
                     data = await msg.download_media(file=bytes)
-                except Exception:
+                except Exception as e:
                     log.exception("Media yuklab olinmadi")
+                    problem = f"yuklab olinmadi ({type(e).__name__})"
+                if not data and not problem:
+                    problem = "yuklab olinmadi (bo'sh)"
+            if problem and (view_once or size > MAX_MEDIA_BYTES):
+                await control_bot.alert(
+                    f"⚠️ {name} ({chat_id}) yuborgan {label}"
+                    f"{' (bir marta ko`riladigan)' if view_once else ''} saqlanmadi: {problem}.")
         media_text = await _understand_media(msg, label, data, chat_id) if data else None
 
         if media_text:
@@ -191,7 +230,14 @@ def setup(user: TelegramClient, me_id: int) -> None:
 
         if data:
             try:
-                await control_bot.send_media(chat_id, name, data, getattr(msg.file, "name", None))
+                has_video = bool(msg.video or msg.video_note)
+                await control_bot.send_media(
+                    chat_id, name, data, _media_filename(msg, label),
+                    kind=label, username=username, caption=text, view_once=view_once,
+                    mime=(getattr(msg.file, "mime_type", None) or "").lower(),
+                    attributes=getattr(getattr(msg.media, "document", None), "attributes", None),
+                    thumb=await _video_thumb(msg) if has_video else None,
+                )
             except Exception:
                 log.exception("Media botga yuborilmadi")
 
@@ -305,6 +351,6 @@ def setup(user: TelegramClient, me_id: int) -> None:
         await storage.mute(chat_id, OWNER_TAKEOVER_MINUTES * 60)
         await storage.mark_handled(chat_id)
         if text:
-            await storage.add_history(chat_id, "assistant", f"({OWNER_NAME} o'zi yozdi) {text}")
+            await storage.add_history(chat_id, "assistant", f"{ai.OWNER_WROTE_PREFIX} {text}")
         log.info("Egasi %s chatiga o'zi yozdi — AI %d daqiqa jim", chat_id, OWNER_TAKEOVER_MINUTES)
 

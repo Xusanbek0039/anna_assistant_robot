@@ -114,7 +114,8 @@ TTS_MODEL = _str("TTS_MODEL", "gpt-4o-mini-tts")
 TTS_VOICE = _str("TTS_VOICE", "nova")
 MAX_REPLIES_PER_MINUTE = _int("MAX_REPLIES_PER_MINUTE", 4)
 REPLY_DELAY_SECONDS = _float("REPLY_DELAY_SECONDS", 3)
-HISTORY_LIMIT = 20
+MAX_MEDIA_MB = _int("MAX_MEDIA_MB", 50)  # bundan katta media yuklab olinmaydi (egasiga ham yuborilmaydi)
+HISTORY_LIMIT = _int("HISTORY_LIMIT", 30)  # AI ga beriladigan oxirgi xabarlar soni
 
 FALLBACK_TEXT = (
     f"Assalomu alaykum! {OWNER_NAME} hozirda band. "

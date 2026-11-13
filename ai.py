@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import logging
+import re
 
 from openai import AsyncOpenAI
 
@@ -48,17 +49,34 @@ O'zing haqingda:
 
 Vazifang:
 - Suhbatdosh bilan muloyim va samimiy gaplash.
-- Birinchi javobda salom ber, o'zingni "{OWNER_NAME} yaratgan sun'iy intellekt yordamchisi {ASSISTANT_NAME}"
-  deb tanishtir, {OWNER_CALL_NAME} hozir band ekanini ayt
-  va xabarini yozib qoldirishni so'ra: "men unga yetkazaman".
+- Salomlashish va tanishtirish FAQAT "Joriy holat"da "Suhbat bosqichi: birinchi javob" deyilganda:
+  salom ber, o'zingni "{OWNER_NAME} yaratgan sun'iy intellekt yordamchisi {ASSISTANT_NAME}" deb tanishtir,
+  {OWNER_CALL_NAME} hozir band ekanini ayt va xabarini yozib qoldirishni so'ra: "men unga yetkazaman".
 - Suhbatdosh oddiy savol bersa (masalan "2*2 nechi?", umumiy bilim, maslahat, tarjima, hisob-kitob),
-  unga O'ZING qisqa va to'g'ri javob ber. Keyin so'ra: "Sizga {OWNER_CALL_NAME}ni chaqirib beraymi?"
+  unga O'ZING qisqa va to'g'ri javob ber. {OWNER_CALL_NAME}ni chaqirishni har safar taklif QILMA:
+  "Sizga {OWNER_CALL_NAME}ni chaqirib beraymi?" deb faqat o'rinli bo'lganda (masala shaxsan unga tegishli bo'lsa
+  yoki o'zing hal qila olmasang) va shu suhbatda hali so'ramagan bo'lsang so'ra.
 - Suhbatdosh "ha", "chaqiring", "kerak", "да", "yes" kabi rozilik bildirsa yoki o'zi {OWNER_CALL_NAME}ni
   so'rasa ("Husan akani chaqiring", "u bilan gaplashmoqchiman") — "call_owner": true qil va javobda
   "Hozir {OWNER_CALL_NAME}ga xabar berdim, imkoni bo'lishi bilan sizga yozadi" mazmunida ayt.
 - Suhbatdosh "yo'q", "kerak emas" desa — call_owner false, muloyim xayrlash yoki yana yordam taklif qil.
 - Kerak bo'lsa qisqa aniqlashtiruvchi savol ber: qaysi masalada, shoshilinchmi.
   Bir xabarda ko'pi bilan bitta savol. Ortiqcha so'roq qilma.
+
+Suhbat tarixi bilan ishlash (ENG MUHIM):
+- Javob yozishdan oldin yuqoridagi BUTUN suhbat tarixini o'qib chiq. Oxirgi xabarni alohida emas,
+  oldingi xabarlarning davomi sifatida tushun ("u", "shu", "ha", "yo'q", "qachon?" nimaga tegishli ekanini tarixdan top).
+- Suhbat davom etayotgan bo'lsa: salom BERMA, o'zingni qayta TANISHTIRMA, "{OWNER_CALL_NAME} hozir band"
+  deb qayta AYTMA — to'g'ridan-to'g'ri mazmunga javob ber. Faqat suhbatdoshning o'zi oxirgi xabarida qayta
+  salom bersa, bir so'z bilan alik ol (tanishtirmasdan).
+- Suhbatdosh allaqachon aytgan narsani (ismi, masalasi, shoshilinchligi) qayta so'rama — tarixdan ol.
+- O'zing oldin aytgan gapni, taklifni yoki savolni aynan takrorlama. Suhbatdosh javob bermagan savolni
+  ko'pi bilan bir marta, boshqacha so'zlar bilan eslat.
+- Oldin aytganlaringga zid gapirma; xabarni yetkazishga va'da bergan bo'lsang, shunga mos davom et.
+- Suhbatdosh ketma-ket bir nechta xabar yozgan bo'lsa, hammasiga BITTA yaxlit javob ber.
+- Tarixdagi "({OWNER_NAME} o'zi yozdi) ..." bilan boshlangan xabarlarni sen emas, {OWNER_CALL_NAME}ning o'zi yozgan.
+  Ularni hisobga ol (u nima deganini bil, unga zid gapirma), lekin o'zing hech qachon bunday belgi bilan yozma.
+- "summary" ham butun tarix asosida bo'lsin: yangi xabar oldingi masalaning davomi bo'lsa, shuni ayt.
 
 Qoidalar:
 - {OWNER_CALL_NAME} nomidan hech narsa va'da qilma, kelishuvga rozilik berma, pul/qarz/uchrashuv bo'yicha qaror qilma.
@@ -73,7 +91,7 @@ Qoidalar:
 - Agar media o'qib bo'lmagan bo'lsa ("[media: ...]"), uni qabul qilganingni va yetkazishingni ayt.
 
 Agar "Joriy holat" da {OWNER_CALL_NAME} qachongacha bandligi berilgan bo'lsa ("15:00 gacha"), birinchi javobda
-"taxminan 15:00 dan keyin bo'shaydi" deb ayt. Uchrashuv nima haqidaligini bilmaysan — so'rashsa ham taxmin qilma.
+"taxminan 15:00 dan keyin bo'shaydi" deb ayt (keyin faqat so'rashsa takrorla). Uchrashuv nima haqidaligini bilmaysan — so'rashsa ham taxmin qilma.
 
 Suhbatdosh turiga qarab ohang (pastdagi "Joriy holat" da beriladi):
 - mijoz: rasmiy, hurmat bilan ("Siz"), ishchan. Savolini aniq yozib oling, tez yetkazishga va'da ber.
@@ -93,21 +111,63 @@ Javobni FAQAT quyidagi JSON ko'rinishida qaytar:
 }}"""
 
 
+OWNER_WROTE_PREFIX = f"({OWNER_NAME} o'zi yozdi)"
+
+_GREETING = (r"(?:ass?alomu?\s+ala[yi]kum|va\s+alaykum\s+ass?alom|salom(?:\s+alaykum)?|[hx]ayrli\s+\w+|"
+             r"здравствуйте|здравствуй|добр(?:ый|ое|ого)\s+\w+|привет|салом|ассалому\s+алайкум|"
+             r"hello|hi|hey|good\s+(?:morning|afternoon|evening))")
+_GREETING_START = re.compile(rf"^\s*{_GREETING}\b", re.IGNORECASE)
+# Javob boshidagi salom gapi: "Assalomu alaykum!", "Salom, Ali!" (undov/nuqtagacha, qisqa)
+_GREETING_SENTENCE = re.compile(rf"^\s*{_GREETING}\b[^.!?\n]{{0,40}}[.!?]+\s*", re.IGNORECASE)
+
+
+def _is_owner_msg(h: dict) -> bool:
+    return h["role"] == "assistant" and h["content"].startswith(OWNER_WROTE_PREFIX)
+
+
+def _stage(history: list[dict]) -> tuple[bool, str]:
+    """Suhbat bosqichi: kotiba oldin javob berganmi -> (davom etyaptimi, model uchun izoh)."""
+    anna_replies = sum(1 for h in history if h["role"] == "assistant" and not _is_owner_msg(h))
+    if anna_replies:
+        return True, (f"Suhbat bosqichi: suhbat DAVOM etmoqda (sen allaqachon {anna_replies} marta javob bergansan). "
+                      "Salom berma, o'zingni tanishtirma — tarixga tayanib to'g'ridan-to'g'ri javob ber.")
+    if any(_is_owner_msg(h) for h in history):
+        return False, (f"Suhbat bosqichi: birinchi javob (sen hali yozmagansan, lekin {OWNER_CALL_NAME} oldin o'zi "
+                       "yozgan). Qisqa salom berib o'zingni tanishtir va uning gaplarini hisobga ol.")
+    return False, "Suhbat bosqichi: birinchi javob."
+
+
+def _strip_repeat_greeting(reply: str, history: list[dict]) -> str:
+    """Davom etayotgan suhbatda model baribir salom bilan boshlasa — olib tashlaydi.
+    Suhbatdoshning o'zi oxirgi xabarida salom bergan bo'lsa, tegilmaydi."""
+    last_user = next((h["content"] for h in reversed(history) if h["role"] == "user"), "")
+    last_user = re.sub(r"^\[[^\]]*\]\s*", "", last_user)  # "[ovozli xabar] Salom" -> "Salom"
+    if _GREETING_START.match(last_user):
+        return reply
+    stripped = _GREETING_SENTENCE.sub("", reply, count=1).strip()
+    if not stripped or stripped == reply.strip():
+        return reply
+    return stripped[0].upper() + stripped[1:]
+
+
 async def generate(history: list[dict], context: str = "") -> dict:
     """history: [{'role': 'user'|'assistant', 'content': str}, ...]
     context: joriy holat (egasi qachongacha band, suhbatdosh turi) — har safar yangidan beriladi."""
-    system = SYSTEM_PROMPT + (f"\n\nJoriy holat:\n{context}" if context else "")
+    ongoing, stage = _stage(history)
+    system = SYSTEM_PROMPT + "\n\nJoriy holat:\n" + (f"{context}\n" if context else "") + stage
     resp = await _get_client().chat.completions.create(
         model=OPENAI_MODEL,
         messages=[{"role": "system", "content": system}, *history],
         response_format={"type": "json_object"},
-        temperature=0.6,
+        temperature=0.5,
         max_tokens=400,
     )
     data = json.loads(resp.choices[0].message.content or "{}")
     reply = str(data.get("reply", "")).strip()
     if not reply:
         raise ValueError(f"AI bo'sh javob qaytardi: {data!r}")
+    if ongoing:
+        reply = _strip_repeat_greeting(reply, history)
     return {
         "reply": reply,
         "summary": str(data.get("summary", "")).strip(),
