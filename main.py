@@ -7,6 +7,7 @@ from telethon import TelegramClient
 import ai
 import config
 import control_bot
+import finance
 import health
 import instance
 import report
@@ -89,6 +90,8 @@ async def main() -> None:
         log.info("Avtomatik bio o'chirilgan (BIO_ENABLED=false)")
     if config.REPORT_ENABLED:
         background.append(supervise("Kunlik hisobot", report.run(control_bot.send_html)))
+    if config.FINANCE_ENABLED:
+        background.append(supervise("Moliya hisoboti", finance.run_reports(control_bot.send_html)))
 
     log.info("Ishlayapti. To'xtatish: Ctrl+C")
     try:

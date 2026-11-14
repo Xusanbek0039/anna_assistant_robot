@@ -45,6 +45,8 @@ async def init(retry_forever: bool = True) -> bool:
             await db.command("ping")
             await db.history.create_index([("chat_id", ASCENDING), ("_id", DESCENDING)])
             await db.history.create_index([("role", ASCENDING), ("ts", DESCENDING)])
+            await db.transactions.create_index([("day", ASCENDING), ("ts", ASCENDING)])
+            await db.transactions.create_index("batch")
             log.info("MongoDB'ga ulandi (baza: %s)", MONGODB_DB)
             return True
         except OperationFailure as e:
@@ -280,6 +282,93 @@ async def get_runtime() -> dict:
 
 async def set_runtime(**values) -> None:
     await _get_db().settings.update_one({"_id": "runtime"}, {"$set": values}, upsert=True)
+
+
+# ---------- shaxsiy buxgalter: kirim-chiqim yozuvlari ----------
+def _tx_out(doc: dict) -> dict:
+    doc["id"] = str(doc.pop("_id"))
+    return doc
+
+
+async def add_transactions(docs: list[dict]) -> tuple[str, list[str]]:
+    """Yozuvlarni bitta "paket" qilib qo'shadi. (paket id, yozuv id lari) — bekor qilish uchun."""
+    from bson import ObjectId
+    batch = str(ObjectId())
+    docs = [{**d, "batch": batch} for d in docs]
+    res = await _get_db().transactions.insert_many(docs)
+    return batch, [str(i) for i in res.inserted_ids]
+
+
+async def list_transactions(start_day: str | None = None, end_day: str | None = None) -> list[dict]:
+    """Kunlar oralig'idagi yozuvlar (YYYY-MM-DD, ikkala chegara ham kiradi). Chegarasiz — hammasi."""
+    query: dict = {}
+    if start_day or end_day:
+        query["day"] = {}
+        if start_day:
+            query["day"]["$gte"] = start_day
+        if end_day:
+            query["day"]["$lte"] = end_day
+    rows = await _get_db().transactions.find(query).sort([("day", ASCENDING), ("ts", ASCENDING)]).to_list()
+    return [_tx_out(r) for r in rows]
+
+
+async def last_transactions(n: int = 15) -> list[dict]:
+    rows = await _get_db().transactions.find().sort("_id", DESCENDING).limit(n).to_list()
+    return [_tx_out(r) for r in rows]
+
+
+async def get_transaction(tx_id: str) -> dict | None:
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        doc = await _get_db().transactions.find_one({"_id": ObjectId(tx_id)})
+    except InvalidId:
+        return None
+    return _tx_out(doc) if doc else None
+
+
+async def delete_transaction(tx_id: str) -> bool:
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        res = await _get_db().transactions.delete_one({"_id": ObjectId(tx_id)})
+    except InvalidId:
+        return False
+    return res.deleted_count > 0
+
+
+async def delete_batch(batch: str) -> int:
+    res = await _get_db().transactions.delete_many({"batch": batch})
+    return res.deleted_count
+
+
+async def last_batch() -> str | None:
+    doc = await _get_db().transactions.find_one(sort=[("_id", DESCENDING)])
+    return doc.get("batch") if doc else None
+
+
+async def update_transaction(tx_id: str, **fields) -> bool:
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        res = await _get_db().transactions.update_one({"_id": ObjectId(tx_id)}, {"$set": fields})
+    except InvalidId:
+        return False
+    return res.matched_count > 0
+
+
+async def get_budget() -> dict:
+    """Oylik byudjet: {kategoriya yoki "jami": limit}"""
+    doc = await _get_db().settings.find_one({"_id": "budget"}) or {}
+    return dict(doc.get("limits") or {})
+
+
+async def set_budget(category: str, limit: int | None) -> None:
+    if limit:
+        await _get_db().settings.update_one({"_id": "budget"}, {"$set": {f"limits.{category}": limit}},
+                                            upsert=True)
+    else:
+        await _get_db().settings.update_one({"_id": "budget"}, {"$unset": {f"limits.{category}": ""}})
 
 
 async def ping() -> None:

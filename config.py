@@ -101,6 +101,12 @@ CALENDAR_ICS_URL = _str("CALENDAR_ICS_URL")  # Google Calendar "maxfiy iCal manz
 REPORT_ENABLED = _bool("REPORT_ENABLED", True)
 REPORT_TIME = _str("REPORT_TIME", "21:00")  # Toshkent vaqti bilan
 
+# --- Shaxsiy buxgalter (botga yozilgan/aytilgan kirim-chiqimlar) ---
+FINANCE_ENABLED = _bool("FINANCE_ENABLED", True)
+FINANCE_REPORT_TIME = _str("FINANCE_REPORT_TIME", "22:00")  # kunlik moliya hisoboti (Toshkent vaqti)
+FINANCE_CURRENCY = _str("FINANCE_CURRENCY", "so'm")
+FINANCE_WEEK_DAY = min(7, max(1, _int("FINANCE_WEEK_DAY", 7)))  # haftalik hisobot kuni: 1=Du ... 7=Ya
+
 # --- Xarajat nazorati (OpenAI) ---
 AI_DAILY_LIMIT = _int("AI_DAILY_LIMIT", 300)            # kuniga jami AI so'rovlari (0 = cheksiz)
 AI_CHAT_DAILY_LIMIT = _int("AI_CHAT_DAILY_LIMIT", 30)   # bitta odam uchun kuniga (0 = cheksiz)

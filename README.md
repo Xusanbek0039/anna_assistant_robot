@@ -272,6 +272,36 @@ haqida botga kuniga bir marta xabar keladi.
 ishdan chiqsa — `❌ MongoDB ishlamayapti`, tiklansa — `✅ MongoDB qayta ishlayapti` (har tekshiruvda takrorlanmaydi).
 Bio, online yoki hisobot qismi xato bilan to'xtasa ham botga xabar keladi, qolgan qismlar ishlashda davom etadi.
 
+## 6.1. 💰 Shaxsiy buxgalter (kirim-chiqim hisobi)
+
+Nazorat botiga oddiy matn yozing yoki **ovozli xabar** yuboring — Anna uni kirim yoki chiqim sifatida yozadi:
+
+| Siz yozasiz / aytasiz | Natija |
+|---|---|
+| `bugun nonga 25 ming, zapravkaga 30 ming ishlatdim` | 🔻 non 25 000 (oziq-ovqat), 🔻 zapravka 30 000 (transport) |
+| `Alidan 200 ming oldim` | 🟢 kirim 200 000 (Ali) |
+| `oylik tushdi 6 mln` | 🟢 kirim 6 000 000 (oylik) |
+| `kecha taksiga 18 ming` | 🔻 kechagi sana bilan yoziladi |
+| `Validan 1 mln qarz oldim` / `Aliga 300 ming qarz berdim` | 📥/📤 qarz — kirim-chiqimga qo'shilmaydi, `/balance` da alohida |
+
+Har yozuvdan keyin tasdiq keladi: **↩️ Bekor qilish** va **✏️ Kategoriya** (kategoriyani tuzatish) tugmalari bilan.
+AI ishlamasa yoki kunlik AI limiti tugasa — oddiy qoidalar bilan taxminiy yoziladi (⚠️ belgisi bilan).
+Xulosa xabariga *reply* qilsangiz yoki «✍️ Javob berish» bosilgan bo'lsa — matn avvalgidek o'sha odamga ketadi.
+
+| Buyruq | Vazifa |
+|---|---|
+| `/fin` | Moliya paneli (Bugun / 3 kun / Hafta / Oy / Balans / Tarix / Excel / Byudjet) |
+| `/today`, `/days3`, `/week`, `/month` | Hisobot: kirim, chiqim, balans, kategoriyalar (%), eng katta xarajat, kunlik o'rtacha, oldingi davr bilan solishtirish |
+| `/balance` | Umumiy balans va ochiq qarzlar (kim kimga qancha) |
+| `/history` | Oxirgi 15 yozuv, 🗑 bilan o'chirish |
+| `/undo` | Oxirgi yozuvni bekor qilish |
+| `/budget oziq-ovqat 2000000`, `/budget jami 8mln` | Oylik byudjet; 80% va 100% da ogohlantiradi. `/budget` — holati, `/budget kafe off` — o'chirish |
+| `/export`, `/export 7`, `/export all` | Excel'da ochiladigan CSV fayl |
+
+**Avtomatik hisobotlar** `FINANCE_REPORT_TIME` (standart 22:00) da: har kuni — kunlik, har 3 kunda — 3 kunlik,
+`FINANCE_WEEK_DAY` kuni (standart yakshanba) — haftalik, oyning oxirgi kuni — oylik. Bugun hech narsa
+yozilmagan bo'lsa — eslatma keladi. O'chirish: `FINANCE_ENABLED=false`.
+
 ## 7. Ishga tushirish va to'xtatish
 
 | Nima | Buyruq |

@@ -6,9 +6,11 @@ import time
 
 from telethon import Button, TelegramClient, events
 
+import ai
 import availability
 import bio_updater
 import config
+import finance
 import report
 import runtime
 import saver
@@ -39,6 +41,16 @@ HELP = (
     "/bio on | off | now | restore — yoqish, to'xtatish, hozir yangilash, asl bio'ni qaytarish\n"
     "/quote &lt;matn&gt; — doimiy iqtibos, /quote auto — har kuni almashadi, /quote off — iqtibossiz\n"
     "/online on | off — akkauntni online ko'rsatish\n\n"
+    "<b>💰 Shaxsiy buxgalter</b>\n"
+    "Botga oddiy yozing yoki <b>ovozli xabar</b> yuboring: «bugun nonga 25 ming, zapravkaga 30 ming "
+    "ishlatdim», «Alidan 200 ming oldim», «Valiga 100 ming qarz berdim» — kirim/chiqim avtomatik yoziladi.\n"
+    "/fin — moliya paneli\n"
+    "/today, /days3, /week, /month — bugungi, 3 kunlik, haftalik, oylik hisobot\n"
+    "/balance — umumiy balans va qarzlar\n"
+    "/history — oxirgi yozuvlar (o'chirish tugmasi bilan)\n"
+    "/undo — oxirgi yozuvni bekor qilish\n"
+    "/budget &lt;kategoriya|jami&gt; &lt;summa&gt; — oylik byudjet, /budget — holati\n"
+    "/export [7|30|month|all] — Excel (CSV) fayl\n\n"
     "<b>Boshqa</b>\n"
     "/inbox — javob berilmagan xabarlar\n"
     "/reply &lt;chat_id&gt; &lt;matn&gt; — sizning nomingizdan javob yozish\n"
@@ -237,6 +249,16 @@ BOT_COMMANDS = [
     ("off", "⚪️ Avtojavobni o'chirish"),
     ("inbox", "📬 Javob kutayotgan xabarlar"),
     ("report", "📈 Bugungi hisobot"),
+    ("fin", "💰 Moliya paneli: kirim-chiqim hisobotlari"),
+    ("today", "📒 Bugungi kirim-chiqim"),
+    ("days3", "📒 3 kunlik moliya hisoboti"),
+    ("week", "📒 Haftalik moliya hisoboti"),
+    ("month", "📒 Oylik moliya hisoboti"),
+    ("balance", "💼 Umumiy balans va qarzlar"),
+    ("history", "🧾 Oxirgi kirim-chiqim yozuvlari"),
+    ("undo", "↩️ Oxirgi moliya yozuvini bekor qilish"),
+    ("budget", "🎯 Oylik byudjet: /budget oziq-ovqat 2000000"),
+    ("export", "📤 Kirim-chiqimni Excel (CSV) faylga"),
     ("unmute", "🔊 Chatda kotibani qayta yoqish: /unmute id"),
     ("save", "💾 Havoladagi mediani Saqlangan xabarlarga joylash"),
     ("bio", "🕒 Bio, iqtibos va online — tugmali panel"),
@@ -357,6 +379,134 @@ async def _send_panel(event, extra: str = "") -> None:
     if extra:
         text += f"\n\n{extra}"
     await event.respond(text, parse_mode="html", buttons=buttons)
+
+
+# ---------- shaxsiy buxgalter ----------
+FIN_PERIOD_CMDS = {"today": "today", "days3": "3", "week": "7", "month": "month"}
+
+
+async def _fin_parse(text: str) -> dict:
+    """AI bilan tahlil; kunlik AI limiti tugagan yoki AI ishlamasa — taxminiy (qoidalar bilan)."""
+    try:
+        st = await storage.get_stats()
+        if config.AI_DAILY_LIMIT and st.get("ai_requests", 0) >= config.AI_DAILY_LIMIT:
+            return finance.local_parse(text)
+    except Exception:
+        pass
+    try:
+        res = await finance.parse(text)
+    except Exception as e:
+        log.warning("Moliya: AI tahlil qila olmadi (%s) — taxminiy tahlil", type(e).__name__)
+        return finance.local_parse(text)
+    try:
+        await storage.stat_inc(ai_requests=1, ai_finance=1, ai_tokens=res.get("tokens", 0))
+    except Exception:
+        pass
+    return res
+
+
+def _fin_confirm(docs: list[dict], ids: list[str], batch: str, today_rows: list[dict], ai_used: bool,
+                 alerts: list[str]) -> tuple[str, list]:
+    lines = ["✅ <b>Yozildi:</b>"]
+    today = finance.day_key(finance.now().date())
+    for d in docs:
+        when = "" if d["day"] == today else f" <i>({d['day']})</i>"
+        cat = f" · {d['category']}" if d["type"] in ("expense", "income") else ""
+        lines.append(f"{finance.row_line(d)}{cat}{when}")
+    s = finance.summarize(today_rows)
+    lines += ["", f"📒 Bugun: 🔻 {finance.fmt_sum(s['expense'])} | 🟢 {finance.fmt_sum(s['income'])}"]
+    if not ai_used:
+        lines.append("⚠️ AI'siz taxminiy tahlil — tekshirib qo'ying (✏️ / ↩️).")
+    lines += alerts
+    edit = [Button.inline(f"✏️ {i + 1}" if len(ids) > 1 else "✏️ Kategoriya", f"fin:cat:{tx}".encode())
+            for i, (tx, d) in enumerate(zip(ids, docs)) if d["type"] in ("expense", "income")][:6]
+    buttons = [[Button.inline("↩️ Bekor qilish", f"fin:undo:{batch}".encode()),
+                Button.inline("📒 Bugun", b"fin:rep:today")]]
+    if edit:
+        buttons.insert(0, edit)
+    return "\n".join(lines), buttons
+
+
+async def _fin_record(event, text: str, source: str) -> bool:
+    """Matnni kirim-chiqim sifatida yozishga urinadi. Moliyaga oid bo'lmasa — False."""
+    if not finance.looks_financial(text):
+        return False
+    res = await _fin_parse(text)
+    if not res["finance"]:
+        return False
+    if not res["items"]:
+        await event.respond("🤔 Pul haqida ekanini tushundim, lekin summani aniqlay olmadim. "
+                            "Masalan: «nonga 25 ming ishlatdim».")
+        return True
+    docs = finance.make_docs(res["items"], source, text)
+    today = finance.now().date()
+    month_start = finance.day_key(today.replace(day=1))
+    budget = await storage.get_budget()
+    before = await storage.list_transactions(month_start) if budget else []
+    batch, ids = await storage.add_transactions(docs)
+    alerts = []
+    if budget:
+        alerts = finance.budget_alerts(budget, before, await storage.list_transactions(month_start))
+    today_rows = await storage.list_transactions(finance.day_key(today), finance.day_key(today))
+    body, buttons = _fin_confirm(docs, ids, batch, today_rows, res.get("ai", True), alerts)
+    await event.respond(body, parse_mode="html", buttons=buttons)
+    return True
+
+
+def _fin_panel_buttons() -> list:
+    return [
+        [Button.inline("📒 Bugun", b"fin:rep:today"), Button.inline("3 kun", b"fin:rep:3"),
+         Button.inline("Hafta", b"fin:rep:7"), Button.inline("Oy", b"fin:rep:month")],
+        [Button.inline("💼 Balans va qarzlar", b"fin:balance"), Button.inline("🧾 Tarix", b"fin:history")],
+        [Button.inline("📤 Excel (oy)", b"fin:export:month"), Button.inline("🎯 Byudjet", b"fin:budget")],
+    ]
+
+
+async def _fin_history() -> tuple[str, list | None]:
+    rows = await storage.last_transactions(15)
+    if not rows:
+        return "🧾 Hali hech narsa yozilmagan. Masalan: «nonga 25 ming ishlatdim»", None
+    lines = ["🧾 <b>Oxirgi yozuvlar</b> (🗑 — o'chirish)", ""]
+    for i, r in enumerate(rows, 1):
+        lines.append(f"{i}. <i>{r['day'][5:]}</i> {finance.row_line(r)}")
+    btns = [Button.inline(f"🗑 {i}", f"fin:del:{r['id']}".encode()) for i, r in enumerate(rows, 1)]
+    return "\n".join(lines), [btns[i:i + 5] for i in range(0, len(btns), 5)]
+
+
+async def _fin_budget_text() -> str:
+    budget = await storage.get_budget()
+    if not budget:
+        return ("🎯 Byudjet qo'yilmagan.\nMasalan: <code>/budget oziq-ovqat 2000000</code> yoki "
+                "<code>/budget jami 8000000</code>\nO'chirish: <code>/budget oziq-ovqat off</code>\n"
+                f"Kategoriyalar: {', '.join(finance.EXPENSE_CATS)}")
+    today = finance.now().date()
+    rows = await storage.list_transactions(finance.day_key(today.replace(day=1)), finance.day_key(today))
+    return "🎯 <b>Oylik byudjet</b>\n\n" + "\n".join(finance.budget_lines(budget, rows))
+
+
+async def _fin_export(name: str) -> tuple[bytes, str]:
+    today = finance.now().date()
+    if name == "all":
+        rows = await storage.list_transactions()
+        fname = "moliya_hammasi.csv"
+    else:
+        start, end, _, _ = finance.period_range(name, today)
+        rows = await storage.list_transactions(finance.day_key(start), finance.day_key(end))
+        fname = f"moliya_{finance.day_key(start)}_{finance.day_key(end)}.csv"
+    return finance.to_csv(rows), fname
+
+
+async def _send_export(name: str) -> None:
+    data, fname = await _fin_export(name)
+    f = io.BytesIO(data)
+    f.name = fname
+    await ctx.bot.send_file(ctx.owner_id, f, caption="📤 Kirim-chiqim (Excel'da ochiladi)", force_document=True)
+
+
+def _parse_budget_amount(raw: str) -> int:
+    """"2000000", "2mln", "500ming", "2 000 000" -> butun son (noto'g'ri bo'lsa 0)."""
+    parsed = finance.local_parse(raw + (" so'm" if raw.replace(" ", "").isdigit() else ""))
+    return int(parsed["items"][0]["amount"]) if parsed["items"] else 0
 
 
 def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
@@ -570,6 +720,148 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         else:
             await _send_panel(event)
 
+    # ---------- shaxsiy buxgalter ----------
+    # Egasining ovozli xabari: matnga o'giriladi va kirim-chiqim sifatida yoziladi
+    @bot.on(events.NewMessage(func=lambda e: is_owner(e) and (e.voice or e.audio or e.video_note)))
+    async def _fin_voice(event):
+        if not config.FINANCE_ENABLED:
+            return
+        status = await event.respond("🎤 Tinglayapman...")
+        try:
+            data = await event.download_media(file=bytes)
+            ext = "mp4" if event.video_note else "ogg" if event.voice else "mp3"
+            text = await ai.transcribe(data, f"voice.{ext}")
+            await storage.stat_inc(ai_requests=1, ai_voice=1)
+        except Exception as e:
+            log.warning("Ovozli xabar matnga o'girilmadi (%s)", type(e).__name__)
+            await status.edit("❌ Ovozni matnga o'gira olmadim. Yozib yuboring yoki qayta urinib ko'ring.")
+            return
+        if not text:
+            await status.edit("🤔 Ovozda gap eshitilmadi.")
+            return
+        await status.edit(f"🎤 Eshitdim: <i>{html.escape(text[:500])}</i>", parse_mode="html")
+        if not await _fin_record(event, text, "voice"):
+            await event.respond("Bu kirim-chiqimga o'xshamadi. Masalan: «nonga 25 ming ishlatdim» "
+                                "yoki «Alidan 200 ming oldim».")
+
+    @bot.on(events.NewMessage(pattern=r"^/fin$", func=is_owner))
+    async def _fin(event):
+        await event.respond(await finance.make_report("today"), parse_mode="html", buttons=_fin_panel_buttons())
+
+    @bot.on(events.NewMessage(pattern=r"^/(today|days3|week|month)$", func=is_owner))
+    async def _fin_period(event):
+        name = FIN_PERIOD_CMDS[event.pattern_match.group(1)]
+        await event.respond(await finance.make_report(name), parse_mode="html", buttons=_fin_panel_buttons())
+
+    @bot.on(events.NewMessage(pattern=r"^/balance$", func=is_owner))
+    async def _fin_balance(event):
+        await event.respond(await finance.make_balance(), parse_mode="html")
+
+    @bot.on(events.NewMessage(pattern=r"^/history$", func=is_owner))
+    async def _fin_hist(event):
+        text, buttons = await _fin_history()
+        await event.respond(text, parse_mode="html", buttons=buttons)
+
+    @bot.on(events.NewMessage(pattern=r"^/undo$", func=is_owner))
+    async def _fin_undo(event):
+        batch = await storage.last_batch()
+        n = await storage.delete_batch(batch) if batch else 0
+        await event.respond(f"↩️ Oxirgi yozuv bekor qilindi ({n} ta)." if n else "Bekor qiladigan yozuv yo'q.")
+
+    @bot.on(events.NewMessage(pattern=r"^/budget(?:\s+(\S+)(?:\s+(.+))?)?$", func=is_owner))
+    async def _fin_budget(event):
+        cat, raw = event.pattern_match.group(1), event.pattern_match.group(2)
+        if not cat:
+            await event.respond(await _fin_budget_text(), parse_mode="html")
+            return
+        cat = "jami" if cat.lower() in ("jami", "total", "umumiy") else finance._norm_cat("expense", cat)
+        if raw is None:
+            await event.respond("Summa yozing: <code>/budget oziq-ovqat 2000000</code>", parse_mode="html")
+            return
+        if raw.strip().lower() in ("off", "0", "-", "o'chir"):
+            await storage.set_budget(cat, None)
+            await event.respond(f"🗑 «{cat}» byudjeti olib tashlandi.")
+            return
+        amount = _parse_budget_amount(raw.strip())
+        if amount <= 0:
+            await event.respond("Summa noto'g'ri. Masalan: 2000000 yoki 2mln")
+            return
+        await storage.set_budget(cat, amount)
+        await event.respond(f"🎯 «{cat}» oylik byudjeti: {finance.fmt_sum(amount)}\n\n"
+                            + await _fin_budget_text(), parse_mode="html")
+
+    @bot.on(events.NewMessage(pattern=r"^/export(?:\s+(\S+))?$", func=is_owner))
+    async def _fin_export_cmd(event):
+        name = (event.pattern_match.group(1) or "month").lower()
+        name = {"hafta": "7", "week": "7", "oy": "month", "hammasi": "all"}.get(name, name)
+        if name not in ("3", "7", "30", "month", "all", "today"):
+            await event.respond("Foydalanish: /export, /export 7, /export 30, /export all")
+            return
+        await _send_export(name)
+
+    @bot.on(events.CallbackQuery(pattern=rb"^fin:", func=is_owner))
+    async def _fin_callback(event):
+        parts = event.data.decode().split(":")
+        action, arg = parts[1], parts[2] if len(parts) > 2 else ""
+        if action == "rep" and arg in finance.PERIODS:
+            await event.answer()
+            await event.respond(await finance.make_report(arg), parse_mode="html", buttons=_fin_panel_buttons())
+        elif action == "balance":
+            await event.answer()
+            await event.respond(await finance.make_balance(), parse_mode="html")
+        elif action == "history":
+            await event.answer()
+            text, buttons = await _fin_history()
+            await event.respond(text, parse_mode="html", buttons=buttons)
+        elif action == "budget":
+            await event.answer()
+            await event.respond(await _fin_budget_text(), parse_mode="html")
+        elif action == "export":
+            await event.answer("Tayyorlanmoqda...")
+            await _send_export(arg)
+        elif action == "undo":
+            n = await storage.delete_batch(arg)
+            await event.answer(f"Bekor qilindi ({n} ta)" if n else "Allaqachon o'chirilgan")
+            if n:
+                try:
+                    await event.edit("↩️ <s>Bekor qilindi</s>", parse_mode="html")
+                except Exception:
+                    pass
+        elif action == "del":
+            ok = await storage.delete_transaction(arg)
+            await event.answer("🗑 O'chirildi" if ok else "Allaqachon o'chirilgan")
+            text, buttons = await _fin_history()
+            try:
+                await event.edit(text, parse_mode="html", buttons=buttons)
+            except Exception:
+                pass
+        elif action == "cat":
+            tx = await storage.get_transaction(arg)
+            if not tx:
+                await event.answer("Yozuv topilmadi")
+                return
+            cats = list(finance.cats_for(tx["type"]))
+            btns = [Button.inline(f"{finance.cat_icon(tx['type'], c)} {c}", f"fin:setc:{arg}:{i}".encode())
+                    for i, c in enumerate(cats)]
+            await event.answer()
+            await event.respond(f"✏️ «{html.escape(tx.get('note') or '')}» uchun kategoriya:",
+                                parse_mode="html", buttons=[btns[i:i + 3] for i in range(0, len(btns), 3)])
+        elif action == "setc":
+            tx = await storage.get_transaction(arg)
+            cats = list(finance.cats_for(tx["type"])) if tx else []
+            idx = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else -1
+            if not tx or not 0 <= idx < len(cats):
+                await event.answer("Yozuv topilmadi")
+                return
+            await storage.update_transaction(arg, category=cats[idx])
+            await event.answer(f"✅ {cats[idx]}")
+            try:
+                await event.edit(f"✅ «{html.escape(tx.get('note') or '')}» → {cats[idx]}", parse_mode="html")
+            except Exception:
+                pass
+        else:
+            await event.answer()
+
     # Panel tugmalari: cfg:<amal>
     @bot.on(events.CallbackQuery(pattern=rb"^cfg:", func=is_owner))
     async def _cfg_callback(event):
@@ -596,6 +888,9 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                 return
         if chat_id is None:
             chat_id = _awaiting_reply.pop("chat", None)
+        # Hech kimga javob kutilmayapti -> balki bu kirim-chiqim ("nonga 25 ming ishlatdim")
+        if chat_id is None and config.FINANCE_ENABLED and await _fin_record(event, event.text, "text"):
+            return
         if chat_id is None:
             await event.respond("Kimga javob yozmoqchisiz? Xulosa xabariga reply qiling "
                                 "yoki «✍️ Javob berish» tugmasini bosing.")

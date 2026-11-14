@@ -44,6 +44,60 @@ class FakeStorage:
         self.d_bio: dict = {}
         self.d_ignored: set[int] = set()
         self.d_ping_error: Exception | None = None
+        self.d_tx: list[dict] = []
+        self.d_budget: dict = {}
+        self._tx_seq = 0
+
+    # --- shaxsiy buxgalter ---
+    async def add_transactions(self, docs):
+        self._tx_seq += 1
+        batch = f"b{self._tx_seq}"
+        ids = []
+        for d in docs:
+            self._tx_seq += 1
+            ids.append(f"{self._tx_seq:024x}")
+            self.d_tx.append({**d, "batch": batch, "id": ids[-1]})
+        return batch, ids
+
+    async def list_transactions(self, start_day=None, end_day=None):
+        return sorted((dict(r) for r in self.d_tx
+                       if (not start_day or r["day"] >= start_day) and (not end_day or r["day"] <= end_day)),
+                      key=lambda r: (r["day"], r.get("ts", 0)))
+
+    async def last_transactions(self, n=15):
+        return [dict(r) for r in reversed(self.d_tx)][:n]
+
+    async def get_transaction(self, tx_id):
+        return next((dict(r) for r in self.d_tx if r["id"] == tx_id), None)
+
+    async def delete_transaction(self, tx_id):
+        before = len(self.d_tx)
+        self.d_tx = [r for r in self.d_tx if r["id"] != tx_id]
+        return len(self.d_tx) < before
+
+    async def delete_batch(self, batch):
+        before = len(self.d_tx)
+        self.d_tx = [r for r in self.d_tx if r["batch"] != batch]
+        return before - len(self.d_tx)
+
+    async def last_batch(self):
+        return self.d_tx[-1]["batch"] if self.d_tx else None
+
+    async def update_transaction(self, tx_id, **fields):
+        for r in self.d_tx:
+            if r["id"] == tx_id:
+                r.update(fields)
+                return True
+        return False
+
+    async def get_budget(self):
+        return dict(self.d_budget)
+
+    async def set_budget(self, category, limit):
+        if limit:
+            self.d_budget[category] = limit
+        else:
+            self.d_budget.pop(category, None)
 
     async def acquire_lock(self, owner, ttl):
         holder = getattr(self, "d_lock", None)
