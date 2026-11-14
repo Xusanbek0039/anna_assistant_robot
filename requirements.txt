@@ -5,3 +5,5 @@ pymongo>=4.13
 tzdata>=2024.1
 icalendar>=6.0
 recurring-ical-events>=3.0
+edge-tts>=7.0
+av>=12.0

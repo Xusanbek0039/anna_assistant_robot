@@ -212,9 +212,17 @@ Butun kunlik tadbirlar va "Bo'sh" (*Free*) deb belgilanganlar bandlik hisoblanma
 
 ### Ovozli javob
 
-Ovozli xabar yoki video-xabarga kotiba **ovozli xabar** bilan javob beradi (`VOICE_REPLY_ENABLED`, ovoz: `TTS_VOICE`).
-Ovoz yaratib bo'lmasa, matn yuboriladi. O'zbek tilida talaffuz biroz chet el aksentli bo'lishi mumkin —
-yoqmasa `VOICE_REPLY_ENABLED=false`.
+Ovozli xabar yoki video-xabarga kotiba **ovozli xabar** bilan javob beradi (`VOICE_REPLY_ENABLED`).
+
+- **Haqiqiy o'zbek ovozi** — Microsoft neyron ovozlari (`TTS_PROVIDER=edge`, API kalit kerak emas):
+  `uz-UZ-MadinaNeural` (ayol, standart) yoki `uz-UZ-SardorNeural` (erkak) — `TTS_VOICE_UZ`.
+- Matn o'qishdan oldin tayyorlanadi: `25 000 so'm` → «yigirma besh ming soʻm», `15:00 dan` → «oʻn beshdan»,
+  `14-noyabr` → «oʻn toʻrtinchi noyabr», `o'`/`g'` → `oʻ`/`gʻ`, emoji va havolalar olib tashlanadi,
+  kirillcha o'zbek matni lotinga o'giriladi.
+- Javob ruscha yoki inglizcha bo'lsa — shu tildagi ovoz (`TTS_VOICE_RU`, `TTS_VOICE_EN`).
+- Sur'at: `TTS_RATE` (standart `-5%`, aniqroq eshitiladi).
+- Microsoft xizmati ishlamasa — avtomatik OpenAI ovozi (`TTS_VOICE`), u ham bo'lmasa — matn yuboriladi.
+- O'chirish: `VOICE_REPLY_ENABLED=false`.
 
 ## 5. Online holat
 

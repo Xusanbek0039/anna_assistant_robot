@@ -8,7 +8,7 @@ import re
 from openai import AsyncOpenAI
 
 from config import (ASSISTANT_NAME, OPENAI_API_KEY, OPENAI_MODEL, OPENAI_TRANSCRIBE_MODEL,
-                    OWNER_CALL_NAME, OWNER_NAME, OWNER_PROFILE_FILE, TTS_MODEL, TTS_VOICE)
+                    OWNER_CALL_NAME, OWNER_NAME, OWNER_PROFILE_FILE)
 
 log = logging.getLogger("ai")
 _client: AsyncOpenAI | None = None
@@ -198,11 +198,12 @@ async def generate(history: list[dict], context: str = "") -> dict:
 
 
 async def speak(text: str) -> bytes:
-    """Matnni ovozga aylantiradi (OGG/Opus — Telegram ovozli xabar formati)."""
-    resp = await _get_client().audio.speech.create(
-        model=TTS_MODEL, voice=TTS_VOICE, input=text[:1000], response_format="opus",
-    )
-    return resp.content
+    """Matnni ovozga aylantiradi (OGG/Opus — Telegram ovozli xabar formati). Tafsilotlar: tts.py"""
+    import tts
+
+    audio, provider = await tts.synthesize(text)
+    log.info("Ovozli javob tayyor (%s, %d KB)", provider, len(audio) // 1024)
+    return audio
 
 
 async def check_key() -> str | None:

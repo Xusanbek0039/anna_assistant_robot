@@ -116,6 +116,14 @@ HEALTH_CHECK_SECONDS = max(60, _int("HEALTH_CHECK_SECONDS", 300))
 
 # --- Ovozli javob ---
 VOICE_REPLY_ENABLED = _bool("VOICE_REPLY_ENABLED", True)  # ovozli xabarga ovoz bilan javob
+# edge — Microsoft neyron ovozlari (haqiqiy o'zbek ovozi, kalit kerak emas); openai — OpenAI TTS
+TTS_PROVIDER = _str("TTS_PROVIDER", "edge").lower()
+TTS_VOICE_UZ = _str("TTS_VOICE_UZ", "uz-UZ-MadinaNeural")  # ayol; erkak: uz-UZ-SardorNeural
+TTS_VOICE_RU = _str("TTS_VOICE_RU", "ru-RU-SvetlanaNeural")
+TTS_VOICE_EN = _str("TTS_VOICE_EN", "en-US-JennyNeural")
+TTS_RATE = _str("TTS_RATE", "-5%")    # sur'at: -10% sekinroq, +10% tezroq
+TTS_PITCH = _str("TTS_PITCH", "+0Hz")
+# OpenAI (zaxira yoki TTS_PROVIDER=openai)
 TTS_MODEL = _str("TTS_MODEL", "gpt-4o-mini-tts")
 TTS_VOICE = _str("TTS_VOICE", "nova")
 MAX_REPLIES_PER_MINUTE = _int("MAX_REPLIES_PER_MINUTE", 4)
