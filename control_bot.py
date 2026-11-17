@@ -550,11 +550,12 @@ async def _find_in(event, chat_id: int | None, title: str, username: str | None,
     try:
         # 1) username / raqam / havola / email / karta — xabarlardan aniq ajratib olinadi
         if chat_id is not None and q.kind in finder.KINDS:
-            hits, scanned = await finder.search_chat(ctx.user, chat_id, q.kind, q.only_them)
-            only_them = q.only_them
-            if not hits and only_them:  # balki o'zingiz yuborgansiz
-                hits, scanned = await finder.search_chat(ctx.user, chat_id, q.kind, False)
-                only_them = False
+            async def progress(n: int) -> None:
+                await status.edit(f"🔎 {where} qidiryapman... {n:,} ta xabar ko'rildi".replace(",", " "))
+
+            # butun tarix bir marta o'qiladi; «menga tashlagan» bo'lsa keyin ajratiladi
+            hits, scanned = await finder.search_chat(ctx.user, chat_id, q.kind, progress=progress)
+            hits, only_them = finder.only_from_them(hits, q.only_them)
             if hits or not use_ai:
                 await status.edit(finder.format_hits(title, hits, q.kind, scanned, only_them), parse_mode="html")
                 return
