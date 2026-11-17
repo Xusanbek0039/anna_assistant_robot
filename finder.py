@@ -43,7 +43,7 @@ _KIND_WORD = re.compile(r"[\w'ʻ’@]+", re.UNICODE)
 # Chat nomini ajratishda e'tiborga olinmaydigan so'zlar
 _STOP = {
     "menga", "men", "mening", "meni", "bilan", "chat", "chatdan", "chatidan", "chatda", "dan", "ni", "ga",
-    "tashlagan", "tashlagandi", "tashlab", "yuborgan", "yuborgandi", "yozgan", "yozgandi", "bergan",
+    "tashlagan", "tashlagandi", "tashlab", "kelgan", "kelgandi", "jo'natgandi", "yuborgan", "yuborgandi", "yozgan", "yozgandi", "bergan",
     "bergandi", "jo'natgan", "jonatgan", "otgan", "bitta", "bir", "osha", "o'sha", "oshani", "o'shani",
     "shu", "shuni", "u", "uni", "edi", "ekan", "qachonlardir", "oldin", "avval", "iltimos", "pls",
     "top", "topib", "ber", "topibber", "qidir", "qidirib", "izla", "izlab", "find", "search", "kerak",
