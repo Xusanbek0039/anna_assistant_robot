@@ -107,3 +107,152 @@ def test_find_chats_and_search():
     text = finder.format_hits("Ali Valiyev", hits, "username", 4, False)
     assert "@new_user" in text and "Ali Valiyev" in text
     assert "topilmadi" in finder.format_hits("Ali", [], "phone", 10, True)
+
+
+# ---------- aqlli qidiruv ----------
+import json  # noqa: E402
+
+import control_bot  # noqa: E402
+
+
+def test_looks_like_search_anything():
+    assert finder.looks_like_search("Ali menga manzil tashlagandi topib ber")
+    assert finder.looks_like_search("wifi parolini qidir")
+    assert finder.looks_like_search("Sardor kecha tashlagan pdf faylni top")
+    assert finder.looks_like_search("Ali qachon uchrashamiz degandi, top")
+    assert not finder.looks_like_search("Alidan 200 ming topib oldim")  # bu — buxgalterga
+    assert finder.parse_query("Sardor tashlagan rasmni top").media == "photo"
+    assert finder.parse_query("Ali lokatsiya yuborgandi top").media == "location"
+
+
+def test_stem_and_local_keywords():
+    assert finder.stem("manzilni") == "manzil"
+    assert finder.stem("kitoblarni") == "kitob"
+    q = finder.parse_query("Ali yuborgan manzilni top")
+    assert finder.keywords_for(q, "Ali Valiyev") == ["manzil"]  # ism kalit so'zga kirmaydi
+
+
+class SearchClient:
+    """iter_messages: search= bo'yicha matndan, filter= bo'yicha media turidan, aks holda oxirgilar."""
+
+    def __init__(self, msgs):
+        self.msgs, self.calls = msgs, []
+
+    async def iter_messages(self, chat_id, limit=None, search=None, filter=None):
+        self.calls.append((chat_id, search, type(filter).__name__ if filter else None))
+        for m in self.msgs:
+            if search and search.lower() not in (m.message or "").lower():
+                continue
+            if filter is not None and getattr(m, "photo", None) is None:
+                continue
+            yield m
+
+
+def _m(id_, text, out=False, day=1, **kw):
+    base = dict(id=id_, message=text, out=out, chat_id=5, entities=None, media=None,
+                date=datetime(2026, 11, day, tzinfo=timezone.utc))
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_collect_keywords_media_recent_and_days():
+    msgs = [_m(4, "rasm", photo=object(), day=10), _m(3, "uchrashuv manzili: Chilonzor 5", day=9),
+            _m(2, "salom", day=5), _m(1, "eski manzil", day=1, out=True)]
+    c = SearchClient(msgs)
+    q = finder.Query(name="Ali", media="photo", days=3, only_them=True)
+    got = run(finder.collect(c, 5, q, ["manzil"], now=datetime(2026, 11, 11, tzinfo=timezone.utc)))
+    assert [f.id for f in got] == [4, 3]  # 1 — eski va o'zi yuborgan
+    assert got[0].media == "📷 rasm"
+    assert ("InputMessagesFilterPhotos" in [x[2] for x in c.calls])
+
+    # hech narsa topilmasa — oxirgi xabarlar (AI tanlashi uchun)
+    got = run(finder.collect(c, 5, finder.Query(name="Ali"), ["yoq_narsa"]))
+    assert [f.id for f in got] == [4, 3, 2, 1]
+
+
+def test_media_label_location():
+    geo = SimpleNamespace(lat=41.3, long=69.2)
+    m = SimpleNamespace(geo=geo, venue=None)
+    assert "maps.google.com/?q=41.3,69.2" in finder.media_label(m)
+
+
+def _fake_ai(monkeypatch, *payloads):
+    import ai
+    queue = list(payloads)
+
+    class Completions:
+        async def create(self, **kw):
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(queue.pop(0))))],
+                                   usage=SimpleNamespace(total_tokens=50))
+
+    monkeypatch.setattr(ai, "_get_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=Completions())))
+
+
+def test_ai_parse_and_pick(monkeypatch):
+    _fake_ai(monkeypatch,
+             {"contact": "Ali", "kind": "other", "media": "location", "keywords": ["manzil", "адрес"],
+              "only_them": True, "days": 7, "what": "uchrashuv manzili"},
+             {"answer": "Chilonzor 5", "ids": [2, 99, "x"]})
+    q, tokens = run(finder.ai_parse("Ali menga o'tgan hafta uchrashuv manzilini tashlagandi"))
+    assert (q.name, q.kind, q.media, q.days, q.only_them, q.ai) == ("Ali", "all", "location", 7, True, True)
+    assert finder.keywords_for(q, "Ali") == ["manzil", "адрес"] and tokens == 50
+    items = [finder.Found(5, 1, None, False, "salom"), finder.Found(5, 2, None, False, "Chilonzor 5")]
+    answer, picked, _ = run(finder.ai_pick(q.text, items))
+    assert answer == "Chilonzor 5" and [f.id for f in picked] == [2]
+    text = finder.format_found("Ali", q, answer, picked, 2)
+    assert "Chilonzor 5" in text and "uchrashuv manzili" in text
+
+
+def test_local_pick():
+    items = [finder.Found(5, 1, None, False, "salom"), finder.Found(5, 2, None, False, "wifi parol: 1234")]
+    assert [f.id for f in finder.local_pick(items, ["parol"])] == [2]
+
+
+# ---------- bot oqimi ----------
+class _Status:
+    def __init__(self, ev):
+        self.ev = ev
+
+    async def edit(self, text, **kw):
+        self.ev.edits.append((text, kw))
+
+
+class _Ev:
+    def __init__(self):
+        self.sent, self.edits = [], []
+
+    async def respond(self, text, **kw):
+        self.sent.append((text, kw))
+        return _Status(self)
+
+
+def test_run_find_without_ai(fake_storage, monkeypatch):
+    msgs = [_m(2, "wifi paroli: qwerty123"), _m(1, "salom")]
+    client = SearchClient(msgs)
+    client.iter_dialogs = FakeClient([_dlg(5, "Ali Valiyev")], {}).iter_dialogs
+    monkeypatch.setattr(control_bot.ctx, "user", client, raising=False)
+
+    async def no_ai():
+        return False
+    monkeypatch.setattr(control_bot, "_ai_ok", no_ai)
+    ev = _Ev()
+    run(control_bot._run_find(ev, "Ali yuborgan wifi parolini top"))
+    text, kw = ev.edits[-1]
+    assert "qwerty123" in text and "Ali Valiyev" in text
+    data = kw["buttons"][0][0].data
+    assert data.startswith(b"fsave:") and len(data) <= 64
+    assert control_bot._find_saved[data.decode().split(":")[1]] == [(5, 2)]
+
+
+def test_run_find_global_when_no_name(fake_storage, monkeypatch):
+    client = SearchClient([_m(7, "wifi parol 555")])
+    monkeypatch.setattr(control_bot.ctx, "user", client, raising=False)
+    _fake_ai(monkeypatch,
+             {"contact": "", "kind": "other", "media": "none", "keywords": ["wifi"], "what": "wifi paroli"},
+             {"answer": "555", "ids": [1]})
+    ev = _Ev()
+    run(control_bot._run_find(ev, "wifi parolini qidir"))
+    text, _ = ev.edits[-1]
+    assert "barcha chatlardan" in text and "555" in text
+    assert client.calls[0][0] is None  # global qidiruv
+    assert fake_storage.d_stats["ai_find"] == 2
