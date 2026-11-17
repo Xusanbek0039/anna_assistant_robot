@@ -11,6 +11,7 @@ import availability
 import bio_updater
 import config
 import finance
+import finder
 import report
 import runtime
 import saver
@@ -36,6 +37,10 @@ HELP = (
     "<b>Saqlash</b>\n"
     "/save &lt;havola&gt; — kanal/guruh xabaridagi mediani Saqlangan xabarlaringizga joylaydi. "
     "Havolaning o'zini yuborsangiz ham bo'ladi (akkauntingiz o'sha kanal a'zosi bo'lishi kerak)\n\n"
+    "<b>🔎 Chatlardan qidirish</b>\n"
+    "Botga oddiy yozing: «Ali menga tashlagan usernameni top», «Vali yuborgan raqamni topib ber», "
+    "«Sardor bilan chatdan havolani qidir» — o'sha chat xabarlaridan topib beradi.\n"
+    "/find &lt;ism&gt; [username|raqam|havola|email|karta] — buyruq bilan\n\n"
     "<b>Profil</b>\n"
     "/bio — joriy bio va holat\n"
     "/bio on | off | now | restore — yoqish, to'xtatish, hozir yangilash, asl bio'ni qaytarish\n"
@@ -76,6 +81,8 @@ STRANGER_REPLY_COOLDOWN = 3600
 _notif_map: dict[int, int] = {}
 # egasi "Javob berish" tugmasini bosgandan keyin kutilayotgan chat
 _awaiting_reply: dict[str, int] = {}
+# qidiruvda tanlash uchun ko'rsatilgan chatlar: chat_id -> nomi
+_find_titles: dict[int, str] = {}
 
 
 class Ctx:
@@ -260,6 +267,7 @@ BOT_COMMANDS = [
     ("budget", "🎯 Oylik byudjet: /budget oziq-ovqat 2000000"),
     ("export", "📤 Kirim-chiqimni Excel (CSV) faylga"),
     ("unmute", "🔊 Chatda kotibani qayta yoqish: /unmute id"),
+    ("find", "🔎 Chatdan username/raqam/havola topish"),
     ("save", "💾 Havoladagi mediani Saqlangan xabarlarga joylash"),
     ("bio", "🕒 Bio, iqtibos va online — tugmali panel"),
     ("quote", "💬 Iqtibos: /quote matn | auto | off"),
@@ -503,6 +511,48 @@ async def _send_export(name: str) -> None:
     await ctx.bot.send_file(ctx.owner_id, f, caption="📤 Kirim-chiqim (Excel'da ochiladi)", force_document=True)
 
 
+# ---------- chatlardan qidirish ----------
+async def _find_in(event, chat_id: int, title: str, kind: str, only_them: bool) -> None:
+    status = await event.respond(f"🔎 «{title}» chatidan qidiryapman...")
+    try:
+        hits, scanned = await finder.search_chat(ctx.user, chat_id, kind, only_them)
+        if not hits and only_them:  # balki o'zingiz yuborgansiz — hammasidan qidiramiz
+            hits, scanned = await finder.search_chat(ctx.user, chat_id, kind, False)
+            only_them = False
+    except Exception as e:
+        log.warning("Chatdan qidirib bo'lmadi (%s)", type(e).__name__)
+        await status.edit(f"❌ Chatni o'qib bo'lmadi: {type(e).__name__}")
+        return
+    await status.edit(finder.format_hits(title, hits, kind, scanned, only_them), parse_mode="html")
+
+
+async def _run_find(event, text: str) -> None:
+    q = finder.parse_query(text)
+    if not q.name:
+        await event.respond("Kimning chatidan qidiray? Masalan: «Ali menga tashlagan usernameni top» yoki "
+                            "<code>/find Ali username</code>", parse_mode="html")
+        return
+    try:
+        cands = await finder.find_chats(ctx.user, q.name)
+    except Exception as e:
+        log.warning("Chatlar ro'yxati olinmadi (%s)", type(e).__name__)
+        await event.respond(f"❌ Chatlar ro'yxatini olib bo'lmadi: {type(e).__name__}")
+        return
+    if not cands:
+        await event.respond(f"🤷 «{html.escape(q.name)}» nomli chat topilmadi. Ismni kontaktda qanday "
+                            "saqlangan bo'lsa, shunday yozing yoki @username bering.", parse_mode="html")
+        return
+    best = cands[0]
+    if len(cands) == 1 or best.score >= cands[1].score + 1:
+        await _find_in(event, best.id, best.title, q.kind, q.only_them)
+        return
+    flag = int(q.only_them)
+    _find_titles.update({c.id: c.title for c in cands[:6]})
+    buttons = [[Button.inline(c.title[:40] + (f" (@{c.username})" if c.username else ""),
+                              f"find:{c.id}:{q.kind}:{flag}".encode())] for c in cands[:6]]
+    await event.respond("Qaysi chatdan qidiray?", buttons=buttons)
+
+
 def _parse_budget_amount(raw: str) -> int:
     """"2000000", "2mln", "500ming", "2 000 000" -> butun son (noto'g'ri bo'lsa 0)."""
     parsed = finance.local_parse(raw + (" so'm" if raw.replace(" ", "").isdigit() else ""))
@@ -613,6 +663,23 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                                 parse_mode="html")
             return
         await _save_links(event, links)
+
+    @bot.on(events.NewMessage(pattern=r"^/find(?:\s+([\s\S]+))?$", func=is_owner))
+    async def _find_cmd(event):
+        arg = (event.pattern_match.group(1) or "").strip()
+        if not arg:
+            await event.respond("Foydalanish: <code>/find Ali username</code>, <code>/find Vali raqam</code>, "
+                                "<code>/find Sardor havola</code>, <code>/find Ali</code> (hammasi).\n"
+                                "Yoki oddiy yozing: «Ali menga tashlagan usernameni top».", parse_mode="html")
+            return
+        await _run_find(event, arg)
+
+    @bot.on(events.CallbackQuery(pattern=rb"^find:", func=is_owner))
+    async def _find_callback(event):
+        _, raw_id, kind, flag = event.data.decode().split(":")
+        await event.answer()
+        chat_id = int(raw_id)
+        await _find_in(event, chat_id, _find_titles.get(chat_id, raw_id), kind, flag == "1")
 
     @bot.on(events.NewMessage(pattern=r"^/unmute(?:\s+(\S+))?$", func=is_owner))
     async def _unmute(event):
@@ -740,6 +807,9 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await status.edit("🤔 Ovozda gap eshitilmadi.")
             return
         await status.edit(f"🎤 Eshitdim: <i>{html.escape(text[:500])}</i>", parse_mode="html")
+        if finder.looks_like_search(text):
+            await _run_find(event, text)
+            return
         if not await _fin_record(event, text, "voice"):
             await event.respond("Bu kirim-chiqimga o'xshamadi. Masalan: «nonga 25 ming ishlatdim» "
                                 "yoki «Alidan 200 ming oldim».")
@@ -888,6 +958,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                 return
         if chat_id is None:
             chat_id = _awaiting_reply.pop("chat", None)
+        # «Ali menga tashlagan usernameni top» -> chatdan qidirish
+        if chat_id is None and finder.looks_like_search(event.text):
+            await _run_find(event, event.text)
+            return
         # Hech kimga javob kutilmayapti -> balki bu kirim-chiqim ("nonga 25 ming ishlatdim")
         if chat_id is None and config.FINANCE_ENABLED and await _fin_record(event, event.text, "text"):
             return
