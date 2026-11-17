@@ -120,3 +120,68 @@ def test_tts_voicelab_no_fallback(monkeypatch):
     with pytest.raises(voicelab.VoiceLabError) as ei:
         run(tts.synthesize("Assalomu alaykum"))
     assert "kredit tugagan" in voicelab.explain_error(ei.value)
+
+
+# ---------- bir nechta kalit ----------
+def test_switches_to_next_key_when_credits_run_out(monkeypatch, fast_sleep):
+    monkeypatch.setattr(config, "VOICELAB_API_KEY", "vlk_aaaa1111, vlk_bbbb2222,vlk_cccc3333")
+    monkeypatch.setattr(voicelab, "_exhausted", {})
+    used, alerts = [], []
+
+    def fake(method, path, body=None, headers=None, timeout=60):
+        key = voicelab._current_key.get()
+        used.append(key)
+        if key == "vlk_aaaa1111":
+            raise voicelab.VoiceLabError(402, "insufficient_credits")
+        return 200, {"_raw": b"RIFF-" + key.encode()}, {}
+
+    async def notify(text):
+        alerts.append(text)
+    monkeypatch.setattr(voicelab, "_request", fake)
+    monkeypatch.setattr(voicelab, "_notify_owner", notify)
+
+    assert run(voicelab.synthesize("Salom")) == b"RIFF-vlk_bbbb2222"
+    assert used == ["vlk_aaaa1111", "vlk_bbbb2222"]
+    assert len(alerts) == 1 and "1-kalit" in alerts[0] and "2-kalit" in alerts[0]
+
+    used.clear()  # keyingi so'rov — darhol 2-kalit, xabar takrorlanmaydi
+    assert run(voicelab.synthesize("Salom")) == b"RIFF-vlk_bbbb2222"
+    assert used == ["vlk_bbbb2222"] and len(alerts) == 1
+
+    # 6 soatdan keyin 1-kalit yana birinchi sinaladi (oylik yangilanish)
+    monkeypatch.setattr(voicelab, "_exhausted", {"vlk_aaaa1111": 0})
+    used.clear()
+    run(voicelab.synthesize("Salom"))
+    assert used[0] == "vlk_aaaa1111"
+
+
+def test_all_keys_exhausted_raises(monkeypatch, fast_sleep):
+    monkeypatch.setattr(config, "VOICELAB_API_KEY", "vlk_a,vlk_b")
+    monkeypatch.setattr(voicelab, "_exhausted", {})
+    alerts = []
+
+    def fake(*a, **kw):
+        raise voicelab.VoiceLabError(402, "insufficient_credits")
+
+    async def notify(text):
+        alerts.append(text)
+    monkeypatch.setattr(voicelab, "_request", fake)
+    monkeypatch.setattr(voicelab, "_notify_owner", notify)
+    with pytest.raises(voicelab.VoiceLabError) as ei:
+        run(voicelab.synthesize("Salom"))
+    assert ei.value.code == "insufficient_credits" and "barcha 2 ta" in str(ei.value)
+    assert "qolmadi" in alerts[-1]
+
+
+def test_other_errors_do_not_switch_key(monkeypatch, fast_sleep):
+    monkeypatch.setattr(config, "VOICELAB_API_KEY", "vlk_a,vlk_b")
+    monkeypatch.setattr(voicelab, "_exhausted", {})
+    used = []
+
+    def fake(*a, **kw):
+        used.append(voicelab._current_key.get())
+        raise voicelab.VoiceLabError(400, "invalid_voice")
+    monkeypatch.setattr(voicelab, "_request", fake)
+    with pytest.raises(voicelab.VoiceLabError):
+        run(voicelab.synthesize("Salom"))
+    assert used == ["vlk_a"]

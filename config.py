@@ -86,7 +86,7 @@ OPENAI_API_KEY = _str("OPENAI_API_KEY")
 OPENAI_MODEL = _str("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TRANSCRIBE_MODEL = _str("OPENAI_TRANSCRIBE_MODEL", "whisper-1")  # ovozli xabarlar uchun
 # --- Ovozni matnga o'girish: VoiceLab (voicelab.uz) — kalit bo'lsa asosiy, ishlamasa OpenAI zaxira ---
-VOICELAB_API_KEY = _str("VOICELAB_API_KEY")  # vlk_... (maxfiy!)
+VOICELAB_API_KEY = _str("VOICELAB_API_KEY")  # vlk_... (maxfiy!); bir nechta: kalit1,kalit2,kalit3
 VOICELAB_BASE_URL = _str("VOICELAB_BASE_URL", "https://api.voicelab.uz")
 VOICELAB_LANGUAGE = _str("VOICELAB_LANGUAGE", "auto")  # auto | uz | ru | en ...
 VOICELAB_TIMEOUT = max(15, _int("VOICELAB_TIMEOUT", 120))  # natijani kutish (soniya)

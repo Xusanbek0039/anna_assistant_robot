@@ -222,6 +222,9 @@ Ovozli xabar yoki video-xabarga kotiba **ovozli xabar** bilan javob beradi (`VOI
   kirillcha o'zbek matni lotinga o'giriladi.
 - VoiceLab ishlamasa (kalit, kredit, tarmoq...) — suhbatdoshga matn yuboriladi va boshqaruv boti sizga
   muammo sababini yozadi (bir xil xato 30 daqiqada bir martadan ko'p emas).
+- **Bir nechta VoiceLab kaliti:** `VOICELAB_API_KEY=kalit1,kalit2,kalit3`. Birida kredit tugasa (yoki kalit
+  yaroqsiz bo'lsa) so'rov darhol keyingisi bilan qayta yuboriladi va bot sizga yozadi. Tugagan kalit 6 soatdan
+  keyin yana birinchi navbatga qaytadi — oylik kredit yangilansa, bot o'zi unga qaytadi.
 - O'chirish: `VOICE_REPLY_ENABLED=false`.
 
 ## 5. Online holat

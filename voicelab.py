@@ -9,6 +9,7 @@ Jarayon (https://docs.voicelab.uz/api/stt):
 Qo'shimcha kutubxona kerak emas: standart urllib, alohida oqimda (asyncio.to_thread).
 """
 import asyncio
+import contextvars
 import json
 import logging
 import mimetypes
@@ -35,7 +36,74 @@ class VoiceLabError(Exception):
 
 
 def enabled() -> bool:
-    return bool(config.VOICELAB_API_KEY)
+    return bool(keys())
+
+
+# ---------- bir nechta kalit: birida kredit tugasa — keyingisiga o'tish ----------
+SWITCH_CODES = {"insufficient_credits": "kredit tugadi", "invalid_api_key": "kalit noto'g'ri yoki bekor qilingan"}
+KEY_RETRY_AFTER = 6 * 3600   # tugagan kalit shu vaqtdan keyin yana birinchi navbatga qaytadi (oylik yangilanish)
+_exhausted: dict[str, float] = {}  # kalit -> qachongacha chetga qo'yilgan
+_current_key: contextvars.ContextVar[str | None] = contextvars.ContextVar("voicelab_key", default=None)
+
+
+def keys() -> list[str]:
+    """VOICELAB_API_KEY=kalit1,kalit2,kalit3 — tartib bo'yicha ishlatiladi."""
+    return [k.strip() for k in (config.VOICELAB_API_KEY or "").replace(";", ",").split(",") if k.strip()]
+
+
+def _label(key: str) -> str:
+    ks = keys()
+    n = ks.index(key) + 1 if key in ks else "?"
+    return f"{n}-kalit (…{key[-4:]})"
+
+
+def _candidates() -> list[str]:
+    """Avval ishlayotgan kalitlar (tartib bilan), keyin chetga qo'yilganlar — ular ham baribir sinab ko'riladi
+    (402 kredit yechmaydi), shunda hamma kalit tugagan bo'lsa ham yangilangani darhol ishlay boshlaydi."""
+    now = time.time()
+    ks = keys()
+    return [k for k in ks if _exhausted.get(k, 0) <= now] + [k for k in ks if _exhausted.get(k, 0) > now]
+
+
+async def _notify_owner(text: str) -> None:
+    try:
+        import control_bot
+        await control_bot.alert(text)
+    except Exception:
+        log.warning("Egasiga xabar yuborilmadi: %s", text)
+
+
+async def _with_keys(fn):
+    """fn() ni navbatdagi kalit bilan bajaradi; kredit tugasa / kalit yaroqsiz bo'lsa — keyingi kalit bilan."""
+    ks = _candidates()
+    if not ks:
+        raise VoiceLabError(0, "no_api_key", "VOICELAB_API_KEY yo'q")
+    last = None
+    for i, key in enumerate(ks):
+        token = _current_key.set(key)
+        try:
+            result = await fn()
+            if _exhausted.pop(key, None) is not None:
+                log.info("VoiceLab %s yana ishlayapti", _label(key))
+            return result
+        except VoiceLabError as e:
+            if e.code not in SWITCH_CODES:
+                raise
+            last = e
+            now = time.time()
+            was_ok = _exhausted.get(key, 0) <= now
+            _exhausted[key] = now + KEY_RETRY_AFTER
+            if was_ok:  # faqat holat o'zgarganda xabar beramiz
+                nxt = next((k for k in ks[i + 1:] if _exhausted.get(k, 0) <= now), None)
+                msg = f"⚠️ VoiceLab {_label(key)}: {SWITCH_CODES[e.code]}."
+                msg += f" {_label(nxt)} ga o'tildi." if nxt else " Ishlaydigan boshqa kalit qolmadi!"
+                log.warning(msg)
+                await _notify_owner(msg)
+        finally:
+            _current_key.reset(token)
+    if len(ks) > 1:
+        raise VoiceLabError(last.status, last.code, f"barcha {len(ks)} ta kalitda: {SWITCH_CODES[last.code]}")
+    raise last
 
 
 def audio_tools_problem() -> str | None:
@@ -50,7 +118,7 @@ def audio_tools_problem() -> str | None:
 
 def describe() -> str:
     """Ovoz qaysi xizmat orqali ishlayotgani (log va /health uchun; kalit ko'rsatilmaydi)."""
-    stt = f"VoiceLab (til: {config.VOICELAB_LANGUAGE})" if enabled() else "OpenAI (VOICELAB_API_KEY yo'q)"
+    stt = f"VoiceLab (til: {config.VOICELAB_LANGUAGE}, kalitlar: {len(keys())})" if enabled() else "OpenAI (VOICELAB_API_KEY yo'q)"
     tts = f"VoiceLab ({config.VOICELAB_TTS_VOICE})" if enabled() else "o'chiq (VOICELAB_API_KEY yo'q)"
     problem = audio_tools_problem()
     return f"ovoz -> matn: {stt}; javob ovozi: {tts}" + (f"\n⚠️ {problem}" if problem else "")
@@ -71,7 +139,7 @@ def _request(method: str, path: str, body: bytes | None = None, headers: dict | 
              timeout: float = 60) -> tuple[int, dict, dict]:
     """(HTTP status, JSON javob, sarlavhalar). 4xx/5xx — VoiceLabError."""
     req = urllib.request.Request(config.VOICELAB_BASE_URL.rstrip("/") + path, data=body, method=method)
-    req.add_header("Authorization", f"Bearer {config.VOICELAB_API_KEY}")
+    req.add_header("Authorization", f"Bearer {_current_key.get() or next(iter(keys()), '')}")
     req.add_header("User-Agent", USER_AGENT)
     req.add_header("Accept", "application/json")
     for k, v in (headers or {}).items():
@@ -110,8 +178,10 @@ async def _call(*args, **kw):
 
 async def transcribe(data: bytes, filename: str = "voice.ogg", language: str | None = None) -> str:
     """Audio -> matn. Gap topilmasa "" qaytaradi. Boshqa xatolarda VoiceLabError/OSError."""
-    if not enabled():
-        raise VoiceLabError(0, "no_api_key", "VOICELAB_API_KEY yo'q")
+    return await _with_keys(lambda: _transcribe(data, filename, language))
+
+
+async def _transcribe(data: bytes, filename: str, language: str | None) -> str:
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "ogg"
     mime = _MIME.get(ext) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
     body, ctype = _multipart({"language": language or config.VOICELAB_LANGUAGE, "include_speakers": "false"},
@@ -166,8 +236,8 @@ async def transcribe(data: bytes, filename: str = "voice.ogg", language: str | N
                 log.debug("VoiceLab yozuvi o'chirilmadi (%s)", type(e).__name__)
 
 
-async def check_key() -> str | None:
-    """Kalit ishlayaptimi (holat nazorati uchun). None — hammasi joyida, aks holda muammo matni."""
+async def _check_one(key: str) -> str | None:
+    token = _current_key.set(key)
     try:
         _, res, _ = await _call("GET", "/v1/stt/preflight", timeout=20)  # kredit sarflamaydi
         return None if res.get("can_upload", True) else "yuklash mumkin emas (kredit tugaganmi?)"
@@ -176,6 +246,22 @@ async def check_key() -> str | None:
                 "insufficient_credits": "kredit tugagan"}.get(e.code, str(e))
     except OSError as e:
         return f"ulanib bo'lmadi ({type(e).__name__})"
+    finally:
+        _current_key.reset(token)
+
+
+async def check_key() -> str | None:
+    """Kalitlar ishlayaptimi (holat nazorati uchun). Kamida bittasi ishlasa — None, aks holda muammo matni."""
+    ks = keys()
+    if not ks:
+        return "VOICELAB_API_KEY yo'q"
+    problems = []
+    for k in ks:
+        p = await _check_one(k)
+        if p is None:
+            return None
+        problems.append(f"{_label(k)}: {p}")
+    return "; ".join(problems)
 
 
 # ---------- TTS: matn -> o'zbekcha ovoz ----------
@@ -183,7 +269,7 @@ _TTS_HINTS = {
     "no_api_key": "VOICELAB_API_KEY .env da yo'q",
     "invalid_api_key": "API kalit noto'g'ri yoki bekor qilingan — voicelab.uz/app/developer/api-keys",
     "insufficient_scope": "kalitda TTS ruxsati yo'q",
-    "insufficient_credits": "kredit tugagan — voicelab.uz da hisobni to'ldiring",
+    "insufficient_credits": "kredit tugagan (barcha kalitlarda) — voicelab.uz da hisobni to'ldiring",
     "timeout": "VoiceLab javobi juda kechikdi",
     "tts_failed": "VoiceLab ovozni yarata olmadi",
 }
@@ -215,8 +301,10 @@ def _download(url: str, timeout: float = 60) -> bytes:
 async def synthesize(text: str, language: str = "uz", voice_id: str | None = None,
                      speed: float | None = None) -> bytes:
     """Matn -> WAV audio (24 kHz, mono). Qisqa matn darhol qaytadi; uzoq davom etsa — tayyor bo'lguncha kutiladi."""
-    if not enabled():
-        raise VoiceLabError(0, "no_api_key", "VOICELAB_API_KEY yo'q")
+    return await _with_keys(lambda: _synthesize(text, language, voice_id, speed))
+
+
+async def _synthesize(text: str, language: str, voice_id: str | None, speed: float | None) -> bytes:
     payload = {"text": text[:5000], "language": language,
                "voice_id": voice_id or config.VOICELAB_TTS_VOICE,
                "speed": max(0.5, min(2.0, speed or config.VOICELAB_TTS_SPEED))}

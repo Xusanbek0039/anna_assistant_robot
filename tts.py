@@ -219,6 +219,6 @@ async def synthesize(text: str) -> tuple[bytes, str]:
     spoken = prepare_text(text, lang)
     if not spoken:
         raise ValueError("o'qiladigan matn yo'q")
-    if not config.VOICELAB_API_KEY:
+    if not voicelab.enabled():
         raise voicelab.VoiceLabError(0, "no_api_key", "VOICELAB_API_KEY yo'q")
     return await _voicelab(spoken, lang), "voicelab"
