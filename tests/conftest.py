@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 os.environ.update({
     "API_ID": "1", "API_HASH": "testhash12345", "PHONE": "", "BOT_TOKEN": "1:testtoken",
-    "OPENAI_API_KEY": "sk-test-key", "MONGODB_URI": "", "CALENDAR_ICS_URL": "",
+    "OPENAI_API_KEY": "sk-test-key", "VOICELAB_API_KEY": "", "MONGODB_URI": "", "CALENDAR_ICS_URL": "",
     "DRY_RUN": "true", "BIO_ENABLED": "true", "BIO_PREFIX": "Full Stack Developer",
     "BIO_TEMPLATE": "{prefix} | 🕒 {time} | {icon} {temp}°C", "BIO_MAX_LENGTH": "0",
     "BIO_QUOTE": "", "BIO_QUOTE_ENABLED": "true", "NAME_CLOCK_ENABLED": "true",

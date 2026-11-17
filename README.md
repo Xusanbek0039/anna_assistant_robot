@@ -20,6 +20,7 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `bio_updater.py` | Avtomatik bio (alohida ham ishga tushirsa bo'ladi) |
 | `tg_client.py` | Telegram login va maxfiy ma'lumotlarni yashiradigan logging |
 | `userbot.py`, `control_bot.py`, `ai.py` | Avtojavob kotiba |
+| `voicelab.py` | Ovozli xabarlarni matnga o'girish — VoiceLab (voicelab.uz), ishlamasa OpenAI zaxira |
 | `finder.py` | Chatlardan aqlli qidirish: «Ali yuborgan manzilni top», «wifi parolini qidir» — matn, username, raqam, havola, rasm, fayl, lokatsiya (ism aytilmasa — barcha chatlardan) |
 | `storage.py` | MongoDB Atlas bilan ishlash |
 | `config.py` | `.env` dan sozlamalarni o'qish |
