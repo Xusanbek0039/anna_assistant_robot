@@ -61,11 +61,59 @@ CARD_RE = re.compile(r"(?<![\d+])(?:\d{4}[ \-]?){3}\d{4}(?!\d)")
 PHONE_RE = re.compile(r"(?<![\w+])(\+?\d[\d \-()]{6,18}\d)(?!\w)")
 
 
+# Telegram'ning o'z qidiruv filtrlari (butun tarix bo'yicha, server tomonida)
+MEDIA_FILTERS = {
+    "photo": "InputMessagesFilterPhotos", "video": "InputMessagesFilterVideo",
+    "document": "InputMessagesFilterDocument", "voice": "InputMessagesFilterVoice",
+    "round": "InputMessagesFilterRoundVideo", "location": "InputMessagesFilterGeo",
+    "contact": "InputMessagesFilterContacts", "music": "InputMessagesFilterMusic",
+    "gif": "InputMessagesFilterGif", "link": "InputMessagesFilterUrl",
+}
+MEDIA_NAMES = {
+    "photo": "rasm", "video": "video", "document": "fayl", "voice": "ovozli xabar", "round": "video-xabar",
+    "location": "lokatsiya", "contact": "kontakt", "music": "musiqa", "gif": "GIF", "link": "havola",
+}
+MEDIA_WORDS = {
+    "photo": ("rasm", "foto", "surat", "skrin", "screenshot", "фото", "картин", "скрин", "photo"),
+    "video": ("video", "видео"),
+    "document": ("fayl", "hujjat", "dokument", "pdf", "файл", "документ", "document"),
+    "voice": ("ovozli", "golos", "голосов", "voice"),
+    "round": ("krujok", "кружок"),
+    "location": ("lokatsiya", "lokatsya", "geolokatsiya", "geo", "joylashuv", "локац", "геолок", "location"),
+    "contact": ("kontakt", "контакт"),
+    "music": ("qo'shiq", "qoshiq", "musiqa", "muzika", "песн", "трек", "музык"),
+    "gif": ("gif", "гиф"),
+}
+# Pul haqidagi gap (buxgalterga tegishli) — qidiruv deb olinmaydi
+_FIN_HINT = re.compile(r"\bming\b|\bmln\b|million|so['ʻ’`]?m\b|dollar|\$|qarz|\boldim\b|\bberdim\b|ishlatdim",
+                       re.IGNORECASE)
+_UZ_SUFFIXES = ("larini", "larni", "lardan", "larga", "laridan", "ning", "dan", "ini", "sini", "ni", "ga",
+                "da", "lar", "imni", "ingni", "im", "ing")
+
+
 @dataclass
 class Query:
-    name: str              # chat/kontakt nomi (bo'sh bo'lishi mumkin)
-    kind: str = "all"      # username | phone | link | email | card | all
+    name: str              # chat/kontakt nomi (bo'sh bo'lishi mumkin — unda barcha chatlardan)
+    kind: str = "all"      # username | phone | link | email | card | all (all = istalgan narsa)
     only_them: bool = False  # «menga tashlagan» — faqat suhbatdosh yuborganlari
+    media: str | None = None  # photo | video | document | voice | location | ...
+    keywords: list[str] = field(default_factory=list)  # xabarlarda uchrashi mumkin bo'lgan so'zlar
+    days: int | None = None   # faqat oxirgi N kun ichida
+    what: str = ""            # nima qidirilayotgani (odam tilida)
+    words: list[str] = field(default_factory=list)  # AI'siz tahlilda ism/so'z aralash qolgan so'zlar
+    ai: bool = False          # so'rov AI bilan tahlil qilinganmi
+    text: str = ""            # asl so'rov
+
+
+@dataclass
+class Found:
+    chat_id: int
+    id: int
+    date: datetime | None
+    mine: bool
+    text: str
+    media: str = ""
+    chat_title: str = ""
 
 
 @dataclass
@@ -103,25 +151,126 @@ def detect_kind(text: str) -> str:
     return "all"
 
 
+def _media_word(word: str) -> str | None:
+    for media, stems in MEDIA_WORDS.items():
+        if any(word.startswith(s) for s in stems):
+            return media
+    return None
+
+
+def detect_media(text: str) -> str | None:
+    for w in _KIND_WORD.findall(_norm(text)):
+        m = _media_word(w.strip("'@"))
+        if m:
+            return m
+    return None
+
+
 def looks_like_search(text: str) -> bool:
-    """«... top», «... qidirib ber» va unda nima qidirilayotgani (username, raqam...) aytilgan bo'lsa."""
+    """«... top», «... qidirib ber», «... izla». Pul haqidagi gap («200 ming topib berdim») — buxgalterga."""
     t = text or ""
-    return bool(_SEARCH_VERB.search(t)) and detect_kind(t) != "all"
+    if not _SEARCH_VERB.search(t):
+        return False
+    if detect_kind(t) != "all" or detect_media(t):
+        return True
+    return not _FIN_HINT.search(t)
+
+
+def stem(word: str) -> str:
+    """«manzilni» -> «manzil», «kitoblarni» -> «kitob» (Telegram qidiruvi o'zak bilan yaxshiroq topadi)."""
+    w = _norm(word).strip("'.,!?")
+    for suf in _UZ_SUFFIXES:
+        if w.endswith(suf) and len(w) - len(suf) >= 3:
+            return w[: -len(suf)]
+    return w
 
 
 def parse_query(text: str) -> Query:
+    """AI'siz tahlil. Ism va qidirilayotgan so'zlarni ajratib bo'lmaydi — ikkalasi `words` da qoladi,
+    chat tanlangach chat nomiga mos kelmaganlari kalit so'z bo'ladi (`keywords_for`)."""
     low = _norm(text)
     only_them = bool(re.search(r"\bmenga\b|\bменя\b|\bмне\b", low))
     kind = detect_kind(low)
+    media = detect_media(low)
     words = []
     for w in re.findall(r"[\w'@.]+", text or "", re.UNICODE):
         n = _norm(w).strip("'.")
-        if not n or n in _STOP or n in KIND_ALIASES or _SEARCH_VERB.fullmatch(n):
+        if not n or n in _STOP or n in KIND_ALIASES or _SEARCH_VERB.fullmatch(n) or _media_word(n):
             continue
         if any(n.startswith(a) for a in KIND_ALIASES if len(a) >= 4):
             continue  # «usernameni», «raqamini»
         words.append(w.strip(".,!?"))
-    return Query(name=" ".join(words).strip(), kind=kind, only_them=only_them)
+    return Query(name=" ".join(words).strip(), kind=kind, only_them=only_them, media=media,
+                 words=words, text=text or "")
+
+
+def keywords_for(q: Query, title: str = "", username: str | None = None) -> list[str]:
+    """Qidiruv so'zlari: AI bergani yoki (AI'siz) chat nomiga tegishli bo'lmagan so'zlar."""
+    if q.ai:
+        return q.keywords
+    out = []
+    for w in q.words:
+        if title and score_name(w, title, username) > 0:
+            continue  # bu — chat egasining ismi
+        s = stem(w)
+        if len(s) >= 3 and s not in out:
+            out.append(s)
+    return out
+
+
+PARSE_PROMPT = """Sen Telegram chatlaridan qidiruv so'rovini tahlil qilasan. Akkaunt egasi o'z chatlaridan
+nimanidir topmoqchi (o'zbek, rus yoki ingliz tilida, ovozdan o'girilgan bo'lsa xatolari bo'lishi mumkin).
+Faqat JSON qaytar:
+{"contact": "", "kind": "other", "media": "none", "keywords": [], "only_them": false, "days": null, "what": ""}
+- contact: kimning chatidan qidirish kerak — kontakt nomi yoki @username, qo'shimchalarsiz
+  ("Alidan" -> "Ali", "Sardor akaning" -> "Sardor aka", "ishxona guruhidan" -> "ishxona"). Aytilmagan bo'lsa "".
+- kind: aynan username | phone | link | email | card qidirilsa — shu; boshqa HAMMA narsa uchun "other".
+- media: photo | video | document | voice | round | location | contact | music | gif | link | none.
+  "manzil/lokatsiya tashlagandi" -> location (manzil matn bo'lishi ham mumkin — keywords ga ham qo'sh).
+- keywords: xabar MATNIDA uchrashi mumkin bo'lgan 0-8 ta qisqa so'z: o'zak shaklida (qo'shimchasiz),
+  sinonimlari, lotin/kirill va rus/ingliz variantlari bilan. Kontakt ismini, "top/yubordi/tashladi" kabi
+  so'zlarni QO'SHMA. Masalan "uchrashuv joyi" -> ["uchrash", "joy", "manzil", "adres", "адрес", "встреч"];
+  "wifi paroli" -> ["wifi", "parol", "пароль", "password"]. Faqat media qidirilsa [] bo'lishi mumkin.
+- only_them: "menga yubordi/tashladi/aytdi" -> true; "men yuborgandim" yoki noaniq -> false.
+- days: vaqt aytilgan bo'lsa necha kun ichida (bugun -> 1, kecha -> 2, shu hafta -> 7, o'tgan hafta -> 14,
+  o'tgan oy -> 62), aks holda null.
+- what: nima qidirilayotgani, qisqa o'zbekcha (masalan "uchrashuv manzili", "wifi paroli")."""
+
+PICK_PROMPT = """Sen akkaunt egasiga uning Telegram chatlaridagi xabarlardan kerakli narsani topib berasan.
+Har bir xabar: [id] sana, kim (chat): matn. Faqat JSON qaytar: {"answer": "", "ids": []}
+- answer: savolga qisqa va aniq javob (o'zbekcha, 1-3 gap). Topilgan qiymatni AYNAN keltir (username, raqam,
+  manzil, nom, parol, summa, sana, havola...). Rasm/fayl/lokatsiya bo'lsa, qaysi xabar ekanini ayt.
+  Javob topilmasa "".
+- ids: javobga tegishli eng mos 1-5 ta xabar id si, eng mosi birinchi. Hech biri mos bo'lmasa [].
+Xabarlarda yo'q narsani o'ylab topma."""
+
+
+async def ai_parse(text: str) -> tuple[Query, int]:
+    """So'rovni AI bilan tahlil qiladi. (Query, tokenlar). AI xatosida istisno chiqaradi."""
+    import json
+
+    import ai
+    import config
+
+    resp = await ai._get_client().chat.completions.create(
+        model=config.OPENAI_MODEL,
+        messages=[{"role": "system", "content": PARSE_PROMPT}, {"role": "user", "content": text[:1000]}],
+        response_format={"type": "json_object"}, temperature=0, max_tokens=300,
+    )
+    data = json.loads(resp.choices[0].message.content or "{}")
+    local = parse_query(text)
+    kind = data.get("kind") if data.get("kind") in KINDS else "all"
+    media = data.get("media") if data.get("media") in MEDIA_FILTERS else None
+    kws = []
+    for k in data.get("keywords") or []:
+        k = str(k).strip()
+        if 2 <= len(k) <= 40 and k.lower() not in (x.lower() for x in kws):
+            kws.append(k)
+    days = data.get("days")
+    days = int(days) if isinstance(days, (int, float)) and 0 < days <= 3650 else None
+    q = Query(name=str(data.get("contact") or "").strip(), kind=kind, only_them=bool(data.get("only_them")), media=media or local.media,
+              keywords=kws[:8], days=days, what=str(data.get("what") or "")[:100], ai=True, text=text)
+    return q, getattr(resp.usage, "total_tokens", 0) or 0
 
 
 # ---------- chatni topish ----------
