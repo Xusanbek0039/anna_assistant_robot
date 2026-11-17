@@ -44,20 +44,15 @@ def audio_tools_problem() -> str | None:
         import av  # noqa: F401
         return None
     except Exception as e:
-        return (f"`av` kutubxonasi ishlamayapti ({type(e).__name__}) — ovozli javob VoiceLab/Microsoft o'rniga "
-                "OpenAI'ga o'tadi. Serverda: pip install -r requirements.txt")
+        return (f"`av` kutubxonasi ishlamayapti ({type(e).__name__}) — ovozli javob ishlamaydi (matn yuboriladi). "
+                "Serverda: pip install -r requirements.txt")
 
 
 def describe() -> str:
     """Ovoz qaysi xizmat orqali ishlayotgani (log va /health uchun; kalit ko'rsatilmaydi)."""
     stt = f"VoiceLab (til: {config.VOICELAB_LANGUAGE})" if enabled() else "OpenAI (VOICELAB_API_KEY yo'q)"
-    if config.TTS_PROVIDER == "voicelab" and enabled():
-        tts = f"VoiceLab ({config.VOICELAB_TTS_VOICE})"
-    elif config.TTS_PROVIDER == "voicelab":
-        tts = "Microsoft (VOICELAB_API_KEY yo'q)"
-    else:
-        tts = {"edge": "Microsoft", "openai": "OpenAI"}.get(config.TTS_PROVIDER, config.TTS_PROVIDER)
-    problem = audio_tools_problem() if config.TTS_PROVIDER in ("voicelab", "edge") else None
+    tts = f"VoiceLab ({config.VOICELAB_TTS_VOICE})" if enabled() else "o'chiq (VOICELAB_API_KEY yo'q)"
+    problem = audio_tools_problem()
     return f"ovoz -> matn: {stt}; javob ovozi: {tts}" + (f"\n⚠️ {problem}" if problem else "")
 
 
@@ -184,6 +179,32 @@ async def check_key() -> str | None:
 
 
 # ---------- TTS: matn -> o'zbekcha ovoz ----------
+_TTS_HINTS = {
+    "no_api_key": "VOICELAB_API_KEY .env da yo'q",
+    "invalid_api_key": "API kalit noto'g'ri yoki bekor qilingan — voicelab.uz/app/developer/api-keys",
+    "insufficient_scope": "kalitda TTS ruxsati yo'q",
+    "insufficient_credits": "kredit tugagan — voicelab.uz da hisobni to'ldiring",
+    "timeout": "VoiceLab javobi juda kechikdi",
+    "tts_failed": "VoiceLab ovozni yarata olmadi",
+}
+
+
+def explain_error(e: Exception) -> str:
+    """VoiceLab TTS xatosini egasi uchun tushunarli matnga aylantiradi (kalit ko'rsatilmaydi)."""
+    if isinstance(e, VoiceLabError):
+        hint = _TTS_HINTS.get(e.code)
+        if not hint and e.status == 429:
+            hint = "so'rovlar limiti oshib ketdi (429)"
+        elif not hint and e.status >= 500:
+            hint = f"VoiceLab serverida nosozlik ({e.status})"
+        return f"{hint} [{e}]" if hint else str(e)
+    if isinstance(e, OSError):
+        return f"VoiceLab'ga ulanib bo'lmadi ({type(e).__name__}: {e})"
+    if isinstance(e, ImportError):
+        return audio_tools_problem() or f"kutubxona yo'q ({e})"
+    return f"{type(e).__name__}: {e}"
+
+
 def _download(url: str, timeout: float = 60) -> bytes:
     """Imzolangan audio havolasi — Authorization SIZ yuklanadi (hujjat talabi)."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})

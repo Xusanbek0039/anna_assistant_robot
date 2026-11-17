@@ -122,9 +122,7 @@ HEALTH_CHECK_SECONDS = max(60, _int("HEALTH_CHECK_SECONDS", 300))
 
 # --- Ovozli javob ---
 VOICE_REPLY_ENABLED = _bool("VOICE_REPLY_ENABLED", True)  # ovozli xabarga ovoz bilan javob
-# edge — Microsoft neyron ovozlari (haqiqiy o'zbek ovozi, kalit kerak emas); openai — OpenAI TTS
-# voicelab — VoiceLab o'zbek ovozlari (VOICELAB_API_KEY bo'lsa standart); edge va openai — zaxira
-TTS_PROVIDER = _str("TTS_PROVIDER", "voicelab" if VOICELAB_API_KEY else "edge").lower()
+# Ovozli javob faqat VoiceLab orqali (VOICELAB_API_KEY kerak); zaxira ovoz yo'q
 # VoiceLab ovozi: "Madina — Honey" (o'zbek, ayol, iliq va muloyim). Boshqalari (ayol):
 #   Nozima — Soft: voice_3602ec76-5393-43b6-9e0d-784328cb77ba, Kamola — Silk: voice_47260d60-5635-4fb0-904d-0f3c19c04ce6
 #   Safiya — Reassuring guide: voice_2785aabd-21b5-4cc7-9845-2230186ef7d9, Dilnoza — Velvet: voice_f7179d1c-07ab-4b3d-b5be-84dcf2935388
@@ -132,14 +130,6 @@ TTS_PROVIDER = _str("TTS_PROVIDER", "voicelab" if VOICELAB_API_KEY else "edge").
 VOICELAB_TTS_VOICE = _str("VOICELAB_TTS_VOICE", "voice_4ef06e6b-2229-4023-ad66-c2a7a2b736ff")
 VOICELAB_TTS_SPEED = _float("VOICELAB_TTS_SPEED", 1.0)  # 0.5 — 2.0
 VOICELAB_TTS_MODEL = _str("VOICELAB_TTS_MODEL")  # bo'sh — VoiceLab standarti (lison)
-TTS_VOICE_UZ = _str("TTS_VOICE_UZ", "uz-UZ-MadinaNeural")  # ayol; erkak: uz-UZ-SardorNeural
-TTS_VOICE_RU = _str("TTS_VOICE_RU", "ru-RU-SvetlanaNeural")
-TTS_VOICE_EN = _str("TTS_VOICE_EN", "en-US-JennyNeural")
-TTS_RATE = _str("TTS_RATE", "-5%")    # sur'at: -10% sekinroq, +10% tezroq
-TTS_PITCH = _str("TTS_PITCH", "+0Hz")
-# OpenAI (zaxira yoki TTS_PROVIDER=openai)
-TTS_MODEL = _str("TTS_MODEL", "gpt-4o-mini-tts")
-TTS_VOICE = _str("TTS_VOICE", "nova")
 MAX_REPLIES_PER_MINUTE = _int("MAX_REPLIES_PER_MINUTE", 4)
 REPLY_DELAY_SECONDS = _float("REPLY_DELAY_SECONDS", 3)
 # Kotiba javobni suhbatdoshning aynan o'sha xabariga "reply" qilib yozadi

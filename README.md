@@ -20,7 +20,7 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `bio_updater.py` | Avtomatik bio (alohida ham ishga tushirsa bo'ladi) |
 | `tg_client.py` | Telegram login va maxfiy ma'lumotlarni yashiradigan logging |
 | `userbot.py`, `control_bot.py`, `ai.py` | Avtojavob kotiba |
-| `voicelab.py` | VoiceLab (voicelab.uz): ovozli xabarlarni matnga o'girish va o'zbekcha ayol ovozida javob (Madina) — ishlamasa Microsoft/OpenAI zaxira |
+| `voicelab.py` | VoiceLab (voicelab.uz): ovozli xabarlarni matnga o'girish va o'zbekcha ayol ovozida javob (Madina) — ovozli javob faqat VoiceLab |
 | `finder.py` | Chatlardan aqlli qidirish: «Ali yuborgan manzilni top», «wifi parolini qidir» — matn, username, raqam, havola, rasm, fayl, lokatsiya (ism aytilmasa — barcha chatlardan) |
 | `storage.py` | MongoDB Atlas bilan ishlash |
 | `config.py` | `.env` dan sozlamalarni o'qish |
@@ -216,14 +216,12 @@ Butun kunlik tadbirlar va "Bo'sh" (*Free*) deb belgilanganlar bandlik hisoblanma
 
 Ovozli xabar yoki video-xabarga kotiba **ovozli xabar** bilan javob beradi (`VOICE_REPLY_ENABLED`).
 
-- **Haqiqiy o'zbek ovozi** — Microsoft neyron ovozlari (`TTS_PROVIDER=edge`, API kalit kerak emas):
-  `uz-UZ-MadinaNeural` (ayol, standart) yoki `uz-UZ-SardorNeural` (erkak) — `TTS_VOICE_UZ`.
+- Ovoz faqat **VoiceLab** orqali (o'zbek ayol ovozi «Madina — Honey», `VOICELAB_TTS_VOICE`, `VOICELAB_API_KEY` kerak).
 - Matn o'qishdan oldin tayyorlanadi: `25 000 so'm` → «yigirma besh ming soʻm», `15:00 dan` → «oʻn beshdan»,
   `14-noyabr` → «oʻn toʻrtinchi noyabr», `o'`/`g'` → `oʻ`/`gʻ`, emoji va havolalar olib tashlanadi,
   kirillcha o'zbek matni lotinga o'giriladi.
-- Javob ruscha yoki inglizcha bo'lsa — shu tildagi ovoz (`TTS_VOICE_RU`, `TTS_VOICE_EN`).
-- Sur'at: `TTS_RATE` (standart `-5%`, aniqroq eshitiladi).
-- Microsoft xizmati ishlamasa — avtomatik OpenAI ovozi (`TTS_VOICE`), u ham bo'lmasa — matn yuboriladi.
+- VoiceLab ishlamasa (kalit, kredit, tarmoq...) — suhbatdoshga matn yuboriladi va boshqaruv boti sizga
+  muammo sababini yozadi (bir xil xato 30 daqiqada bir martadan ko'p emas).
 - O'chirish: `VOICE_REPLY_ENABLED=false`.
 
 ## 5. Online holat

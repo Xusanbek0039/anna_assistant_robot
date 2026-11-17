@@ -78,7 +78,7 @@ class FakeUser:
 def env(fake_storage, fast_sleep, monkeypatch):
     for name, value in [("_seq", defaultdict(int)), ("_sent_times", defaultdict(deque)),
                         ("_ai_texts", defaultdict(set)), ("_pending", defaultdict(lambda: deque(maxlen=10))), ("_ai_voice_pending", defaultdict(int)),
-                        ("_last_call", {}), ("_ai_alerted", set())]:
+                        ("_last_call", {}), ("_ai_alerted", set()), ("_voice_alerts", {})]:
         monkeypatch.setattr(userbot, name, value)
     monkeypatch.setattr(availability, "_last_active_mem", 0.0)
     monkeypatch.setattr(usage, "_alerted", set())
@@ -194,6 +194,21 @@ def test_voice_reply_falls_back_to_text_when_limit_reached(env):
     # AI_CHAT_DAILY_LIMIT=2: matnga o'girish + javob limitni tugatadi -> ovoz o'rniga matn
     env.incoming(Ev(401, voice=True))
     assert [s[0] for s in env.user.sent] == ["text"]
+
+
+def test_voicelab_failure_sends_text_and_alerts_owner(env, monkeypatch):
+    import voicelab
+    monkeypatch.setattr(usage.config, "AI_CHAT_DAILY_LIMIT", 10)
+
+    async def broken(text):
+        raise voicelab.VoiceLabError(402, "insufficient_credits")
+    monkeypatch.setattr(ai, "speak", broken)
+    env.incoming(Ev(402, voice=True))
+    assert [s[0] for s in env.user.sent] == ["text"]
+    alerts = [m[1] for m in env.bot if m[0] == "alert"]
+    assert len(alerts) == 1 and "kredit tugagan" in alerts[0]
+    env.incoming(Ev(402, voice=True))  # bir xil xato — qayta yozilmaydi
+    assert len([m for m in env.bot if m[0] == "alert"]) == 1
 
 
 def test_call_owner(env):

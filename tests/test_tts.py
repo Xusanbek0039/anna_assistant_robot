@@ -46,30 +46,23 @@ def test_prepare_text_keeps_russian():
     assert tts.prepare_text("Хусан занят 😊", "ru") == "Хусан занят"
 
 
-def test_synthesize_edge_voice_by_language(monkeypatch):
+def test_synthesize_voicelab_only(monkeypatch):
+    import voicelab
     used = []
 
-    async def edge(text, voice):
-        used.append((text, voice))
+    async def vl(text, lang):
+        used.append((text, lang))
         return b"OggS..."
-    monkeypatch.setattr(config, "TTS_PROVIDER", "edge")
-    monkeypatch.setattr(tts, "_edge", edge)
-    assert run(tts.synthesize("Narxi 25 000 so'm")) == (b"OggS...", "edge")
-    assert run(tts.synthesize("Здравствуйте, Хусан занят"))[1] == "edge"
-    assert used[0] == ("Narxi yigirma besh ming soʻm", config.TTS_VOICE_UZ)
-    assert used[1][1] == config.TTS_VOICE_RU
+    monkeypatch.setattr(config, "VOICELAB_API_KEY", "vlk_test")
+    monkeypatch.setattr(tts, "_voicelab", vl)
+    assert run(tts.synthesize("Narxi 25 000 so'm")) == (b"OggS...", "voicelab")
+    assert run(tts.synthesize("Здравствуйте, Хусан занят"))[1] == "voicelab"
+    assert used[0] == ("Narxi yigirma besh ming soʻm", "uz")
+    assert used[1][1] == "ru"
 
-
-def test_synthesize_falls_back_to_openai(monkeypatch):
-    async def broken(text, voice):
-        raise ConnectionError("tarmoq yo'q")
-
-    async def openai(text, lang):
-        return b"opus"
-    monkeypatch.setattr(config, "TTS_PROVIDER", "edge")
-    monkeypatch.setattr(tts, "_edge", broken)
-    monkeypatch.setattr(tts, "_openai", openai)
-    assert run(tts.synthesize("Salom")) == (b"opus", "openai")
+    monkeypatch.setattr(config, "VOICELAB_API_KEY", "")
+    with pytest.raises(voicelab.VoiceLabError):
+        run(tts.synthesize("Salom"))
 
 
 def test_synthesize_empty_text():

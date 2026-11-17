@@ -104,8 +104,27 @@ async def _send_voice(user: TelegramClient, chat_id: int, text: str, reply_to: i
         log.info("%s ga ovozli javob yuborildi", chat_id)
         return True
     except Exception as e:
-        log.warning("Ovozli javob bo'lmadi (%s) — matn yuboriladi", type(e).__name__)
+        log.warning("Ovozli javob bo'lmadi (%s) — matn yuboriladi", e)
+        await _alert_voice_problem(e)
         return False
+
+
+VOICE_ALERT_COOLDOWN = 30 * 60  # bir xil xato haqida egasiga 30 daqiqada bir martadan ko'p yozilmaydi
+_voice_alerts: dict[str, float] = {}
+
+
+async def _alert_voice_problem(e: Exception) -> None:
+    """VoiceLab ovozli javobi ishlamasa — egasiga boshqaruv boti orqali sababi bilan xabar."""
+    import voicelab
+
+    reason = voicelab.explain_error(e)
+    key = f"{type(e).__name__}:{getattr(e, 'code', '')}"
+    now = time.time()
+    if now - _voice_alerts.get(key, 0) < VOICE_ALERT_COOLDOWN:
+        return
+    _voice_alerts[key] = now
+    await control_bot.alert(f"🎤❌ VoiceLab ovozli javobi ishlamadi — suhbatdoshga matn yuborildi.\n"
+                            f"Sabab: {reason}")
 
 
 _DEFAULT_NAMES = {"rasm": "photo.jpg", "video": "video.mp4", "ovozli xabar": "voice.ogg",

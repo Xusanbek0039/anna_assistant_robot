@@ -1,13 +1,12 @@
 """Ovozli javob: matn -> Telegram ovozli xabari (OGG/Opus).
 
-Asosiy yo'l — VoiceLab (voicelab.uz) o'zbek ayol ovozi "Madina — Honey" (VOICELAB_API_KEY bo'lsa).
-Zaxira — Microsoft neyron ovozlari (edge-tts, API kalit kerak emas). Ularda haqiqiy o'zbek ovozlari
-bor: uz-UZ-MadinaNeural (ayol), uz-UZ-SardorNeural (erkak) — OpenAI ovozlaridagi chet el aksenti yo'q.
-Edge ishlamasa — OpenAI TTS (o'zbekcha talaffuz ko'rsatmasi bilan).
+Faqat VoiceLab (voicelab.uz) o'zbek ayol ovozi "Madina — Honey" ishlatiladi (VOICELAB_API_KEY kerak).
+Boshqa zaxira ovoz yo'q: VoiceLab ishlamasa — istisno ko'tariladi, suhbatdoshga matn yuboriladi
+va egasiga bot orqali muammo haqida xabar boradi (userbot._send_voice).
 
 Ovozga berishdan oldin matn "o'qishga" tayyorlanadi: raqamlar so'z bilan (25 000 -> yigirma besh ming),
 oʻ/gʻ to'g'ri belgilar bilan, emoji va havolalar olib tashlanadi, kirillcha o'zbek matni lotinga o'giriladi.
-Matn ruscha yoki inglizcha bo'lsa — shu tildagi ovoz tanlanadi.
+Matn tili (uz/ru/en) VoiceLab'ga uzatiladi.
 """
 import io
 import logging
@@ -203,44 +202,6 @@ def to_ogg_opus(data: bytes) -> bytes:
     return buf.getvalue()
 
 
-def _voice_for(lang: str) -> str:
-    return {"ru": config.TTS_VOICE_RU, "en": config.TTS_VOICE_EN}.get(lang, config.TTS_VOICE_UZ)
-
-
-async def _edge(text: str, voice: str) -> bytes:
-    import edge_tts
-
-    com = edge_tts.Communicate(text, voice, rate=config.TTS_RATE, pitch=config.TTS_PITCH)
-    chunks = []
-    async for ch in com.stream():
-        if ch["type"] == "audio":
-            chunks.append(ch["data"])
-    mp3 = b"".join(chunks)
-    if not mp3:
-        raise RuntimeError("edge-tts bo'sh audio qaytardi")
-    import asyncio
-    return await asyncio.to_thread(to_ogg_opus, mp3)
-
-
-_OPENAI_INSTRUCTIONS = {
-    "uz": ("Matnni o'zbek tilida, Toshkent adabiy talaffuzida, ona tili o'zbek bo'lgan odamdek o'qi. "
-           "Ovoz iliq, muloyim, aniq; o'rtacha sur'atda. Speak natural native Uzbek, no foreign accent: "
-           "'q' is uvular, 'oʻ' and 'gʻ' are distinct Uzbek sounds, 'x' is like Russian 'х'."),
-    "ru": "Говори по-русски, естественно, тепло и чётко, в среднем темпе.",
-    "en": "Speak natural, warm, clear English at a moderate pace.",
-}
-
-
-async def _openai(text: str, lang: str) -> bytes:
-    import ai
-
-    kwargs = dict(model=config.TTS_MODEL, voice=config.TTS_VOICE, input=text, response_format="opus")
-    if config.TTS_MODEL.startswith("gpt-4o"):  # tts-1 modellarida "instructions" yo'q
-        kwargs["instructions"] = _OPENAI_INSTRUCTIONS.get(lang, _OPENAI_INSTRUCTIONS["uz"])
-    resp = await ai._get_client().audio.speech.create(**kwargs)
-    return resp.content
-
-
 async def _voicelab(text: str, lang: str) -> bytes:
     import asyncio
 
@@ -251,19 +212,13 @@ async def _voicelab(text: str, lang: str) -> bytes:
 
 
 async def synthesize(text: str) -> tuple[bytes, str]:
-    """(OGG/Opus audio, qaysi provayder ishladi). Hech biri ishlamasa — istisno."""
+    """(OGG/Opus audio, "voicelab"). Faqat VoiceLab; ishlamasa — istisno (zaxira ovoz yo'q)."""
+    import voicelab
+
     lang = detect_lang(text)
     spoken = prepare_text(text, lang)
     if not spoken:
         raise ValueError("o'qiladigan matn yo'q")
-    if config.TTS_PROVIDER == "voicelab" and config.VOICELAB_API_KEY:
-        try:
-            return await _voicelab(spoken, lang), "voicelab"
-        except Exception as e:
-            log.warning("VoiceLab ovozi ishlamadi (%s) — Microsoft ovozi ishlatiladi", e)
-    if config.TTS_PROVIDER in ("edge", "voicelab"):
-        try:
-            return await _edge(spoken, _voice_for(lang)), "edge"
-        except Exception as e:
-            log.warning("Microsoft ovozi ishlamadi (%s) — OpenAI ovozi ishlatiladi", type(e).__name__)
-    return await _openai(spoken, lang), "openai"
+    if not config.VOICELAB_API_KEY:
+        raise voicelab.VoiceLabError(0, "no_api_key", "VOICELAB_API_KEY yo'q")
+    return await _voicelab(spoken, lang), "voicelab"

@@ -52,7 +52,7 @@ async def main() -> None:
     else:
         log.info("OpenAI kaliti ishlayapti (model: %s)", config.OPENAI_MODEL)
     log.info("Ovoz sozlamalari: %s", voicelab.describe())
-    if voicelab.audio_tools_problem() and config.TTS_PROVIDER in ("voicelab", "edge"):
+    if voicelab.audio_tools_problem():
         log.error(voicelab.audio_tools_problem())
 
     user = create_user_client()

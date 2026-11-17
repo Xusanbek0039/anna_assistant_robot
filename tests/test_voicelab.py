@@ -105,25 +105,18 @@ def test_tts_async_polls_and_downloads(monkeypatch, fast_sleep):
     assert run(voicelab.synthesize("Salom")) == b"WAV:https://cdn/x.wav"
 
 
-def test_tts_prefers_voicelab_then_falls_back(monkeypatch):
+def test_tts_voicelab_no_fallback(monkeypatch):
     import tts
     monkeypatch.setattr(config, "VOICELAB_API_KEY", "vlk_test")
-    monkeypatch.setattr(config, "TTS_PROVIDER", "voicelab")
-    calls = []
 
     async def vl_ok(text, lang):
-        calls.append(("voicelab", lang))
         return b"OggS-vl"
-
-    async def edge(text, voice):
-        calls.append(("edge", voice))
-        return b"OggS-edge"
     monkeypatch.setattr(tts, "_voicelab", vl_ok)
-    monkeypatch.setattr(tts, "_edge", edge)
     assert run(tts.synthesize("Assalomu alaykum")) == (b"OggS-vl", "voicelab")
 
     async def vl_fail(text, lang):
         raise voicelab.VoiceLabError(402, "insufficient_credits")
     monkeypatch.setattr(tts, "_voicelab", vl_fail)
-    audio, prov = run(tts.synthesize("Assalomu alaykum"))
-    assert prov == "edge" and calls[-1] == ("edge", config.TTS_VOICE_UZ)  # zaxira ham ayol ovozi (Madina)
+    with pytest.raises(voicelab.VoiceLabError) as ei:
+        run(tts.synthesize("Assalomu alaykum"))
+    assert "kredit tugagan" in voicelab.explain_error(ei.value)
