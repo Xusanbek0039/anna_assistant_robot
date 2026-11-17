@@ -25,10 +25,9 @@ KINDS = {
 }
 KIND_ALIASES = {
     "username": "username", "user": "username", "nik": "username", "nick": "username", "niki": "username",
-    "login": "username", "akkaunt": "username", "akk": "username", "profil": "username",
-    "telegram": "username", "юзернейм": "username", "ник": "username",
+    "юзернейм": "username", "ник": "username",
     "phone": "phone", "raqam": "phone", "nomer": "phone", "nomeri": "phone", "telefon": "phone",
-    "tel": "phone", "номер": "phone", "телефон": "phone", "kontakt": "phone",
+    "tel": "phone", "номер": "phone", "телефон": "phone",
     "link": "link", "havola": "link", "ssilka": "link", "silka": "link", "url": "link", "sayt": "link",
     "ссылка": "link", "ссылку": "link",
     "email": "email", "mail": "email", "pochta": "email", "gmail": "email", "почта": "email",
@@ -49,7 +48,7 @@ _STOP = {
     "shu", "shuni", "u", "uni", "edi", "ekan", "qachonlardir", "oldin", "avval", "iltimos", "pls",
     "top", "topib", "ber", "topibber", "qidir", "qidirib", "izla", "izlab", "find", "search", "kerak",
     "akkauntimdan", "akkauntdan", "akkaunt", "chatimdan", "xabar", "xabardan", "xabarlardan", "habar",
-    "habardan", "habarlardan", "anna", "kim", "qaysi", "nima", "va", "yoki", "hakozo", "va hokazo",
+    "habardan", "habarlardan", "anna", "kim", "qaysi", "nima", "va", "yoki", "hakozo", "hokazo", "boshqa",
     "the", "from", "in", "me", "sent", "my", "chatni", "chatini",
 }
 
@@ -97,7 +96,7 @@ def detect_kind(text: str) -> str:
         w = w.strip("'@")
         for alias, kind in KIND_ALIASES.items():
             # «usernameni», «raqamini», «havolani», «nomerini» — qo'shimchalar bilan ham
-            if kind != "all" and len(alias) >= 3 and w.startswith(alias):
+            if kind != "all" and len(alias) >= 4 and w.startswith(alias):
                 return kind
             if w == alias:
                 return kind
