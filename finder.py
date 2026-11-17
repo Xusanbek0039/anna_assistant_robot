@@ -16,7 +16,8 @@ from datetime import datetime
 
 log = logging.getLogger("finder")
 
-SCAN_LIMIT = 3000      # bitta chatda ko'rib chiqiladigan oxirgi xabarlar soni
+SCAN_LIMIT = None      # bitta chatda ko'rib chiqiladigan xabarlar: None — butun tarix (eng birinchisigacha)
+PROGRESS_SECONDS = 3   # uzun chatda «N ta xabar ko'rildi» holatini necha soniyada bir yangilash
 DIALOG_LIMIT = 500     # ism bo'yicha qidiriladigan chatlar soni
 MAX_RESULTS = 20       # javobda ko'rsatiladigan topilmalar
 
@@ -396,16 +397,26 @@ def extract(text: str, entities=None, media=None) -> list[tuple[str, str]]:
     return out
 
 
-async def search_chat(client, chat_id: int, kind: str = "all", only_them: bool = False,
-                      limit: int = SCAN_LIMIT) -> tuple[list[Hit], int]:
-    """Chatdagi oxirgi `limit` ta xabardan topilmalar (yangisi birinchi) va ko'rilgan xabarlar soni."""
+async def search_chat(client, chat_id: int, kind: str = "all", progress=None,
+                      limit: int | None = SCAN_LIMIT) -> tuple[list[Hit], int]:
+    """Chatning BUTUN tarixidan (limit=None) topilmalar — yangisi birinchi — va ko'rilgan xabarlar soni.
+    progress(scanned) — uzun chatlarda vaqti-vaqti bilan chaqiriladi (holatni ko'rsatish uchun)."""
+    import time
+
     hits: list[Hit] = []
     seen: set[tuple[str, str]] = set()
     scanned = 0
-    async for m in client.iter_messages(chat_id, limit=limit):
+    last = time.monotonic()
+    # wait_time=0: Telethon 3000 dan ko'p xabarda har 100 tasidan keyin 1 soniya kutadi — bunga hojat yo'q,
+    # Telegram cheklov qo'ysa (FloodWait) Telethon o'zi kutib, davom etadi.
+    async for m in client.iter_messages(chat_id, limit=limit, wait_time=0):
         scanned += 1
-        if only_them and m.out:
-            continue
+        if progress and time.monotonic() - last >= PROGRESS_SECONDS:
+            last = time.monotonic()
+            try:
+                await progress(scanned)
+            except Exception:
+                pass  # holat xabari muhim emas
         text = m.message or ""
         if not text and not m.media:
             continue
@@ -420,13 +431,22 @@ async def search_chat(client, chat_id: int, kind: str = "all", only_them: bool =
     return hits, scanned
 
 
+def only_from_them(hits: list[Hit], only_them: bool) -> tuple[list[Hit], bool]:
+    """«menga tashlagan» — suhbatdosh yuborganlari; ular orasida yo'q bo'lsa — hammasi (balki o'zingiz yuborgansiz)."""
+    if only_them:
+        theirs = [h for h in hits if not h.mine]
+        if theirs:
+            return theirs, True
+    return hits, False
+
+
 # ---------- javob matni ----------
 def format_hits(title: str, hits: list[Hit], kind: str, scanned: int, only_them: bool) -> str:
     what = KINDS.get(kind, "🔎 Ma'lumot").split(" ", 1)[-1].lower() if kind != "all" else "ma'lumot"
     head = f"🔎 <b>{html.escape(title)}</b> chatidan"
     if not hits:
         return (f"{head} {what} topilmadi.\n"
-                f"<i>Oxirgi {scanned} ta xabar ko'rib chiqildi"
+                f"<i>Chatdagi barcha {scanned} ta xabar ko'rib chiqildi"
                 f"{', faqat u yuborganlari' if only_them else ''}.</i>")
     lines = [f"{head} topildi ({len(hits)} ta):", ""]
     for h in hits[:MAX_RESULTS]:
@@ -437,7 +457,7 @@ def format_hits(title: str, hits: list[Hit], kind: str, scanned: int, only_them:
     if len(hits) > MAX_RESULTS:
         lines.append(f"\n…va yana {len(hits) - MAX_RESULTS} ta. Aniqroq qidiring: "
                      f"<code>/find ism username</code>")
-    lines.append(f"\n<i>Oxirgi {scanned} ta xabar ko'rib chiqildi.</i>")
+    lines.append(f"\n<i>Chatdagi barcha {scanned} ta xabar ko'rib chiqildi.</i>")
     return "\n".join(lines)
 
 
