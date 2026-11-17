@@ -71,3 +71,59 @@ def test_ai_transcribe_uses_openai_without_key(monkeypatch):
         return "openai"
     monkeypatch.setattr(ai, "_openai_transcribe", openai_stt)
     assert run(ai.transcribe(b"x")) == "openai"
+
+
+# ---------- TTS ----------
+def test_tts_sync_wav(monkeypatch, fast_sleep):
+    import json
+    monkeypatch.setattr(config, "VOICELAB_API_KEY", "vlk_test")
+    sent = []
+
+    def fake(method, path, body=None, headers=None, timeout=60):
+        sent.append((method, path, json.loads(body), headers))
+        return 200, {"_raw": b"RIFF....", "_ctype": "audio/wav"}, {}
+    monkeypatch.setattr(voicelab, "_request", fake)
+    assert run(voicelab.synthesize("Salom")) == b"RIFF...."
+    method, path, payload, headers = sent[0]
+    assert (method, path) == ("POST", "/v1/tts")
+    assert payload["language"] == "uz" and payload["voice_id"] == config.VOICELAB_TTS_VOICE
+    assert payload["voice_id"] == "voice_4ef06e6b-2229-4023-ad66-c2a7a2b736ff"  # Madina — o'zbek ayol ovozi
+    assert 8 <= len(headers["Idempotency-Key"]) <= 128
+
+
+def test_tts_async_polls_and_downloads(monkeypatch, fast_sleep):
+    monkeypatch.setattr(config, "VOICELAB_API_KEY", "vlk_test")
+    polls = [{"status": "processing"}, {"status": "completed", "audio_url": "https://cdn/x.wav"}]
+
+    def fake(method, path, body=None, headers=None, timeout=60):
+        if method == "POST":
+            return 202, {"id": "gen_1", "status": "queued"}, {}
+        assert path == "/v1/tts/generations/gen_1"
+        return 200, polls.pop(0), {}
+    monkeypatch.setattr(voicelab, "_request", fake)
+    monkeypatch.setattr(voicelab, "_download", lambda url, timeout=60: b"WAV:" + url.encode())
+    assert run(voicelab.synthesize("Salom")) == b"WAV:https://cdn/x.wav"
+
+
+def test_tts_prefers_voicelab_then_falls_back(monkeypatch):
+    import tts
+    monkeypatch.setattr(config, "VOICELAB_API_KEY", "vlk_test")
+    monkeypatch.setattr(config, "TTS_PROVIDER", "voicelab")
+    calls = []
+
+    async def vl_ok(text, lang):
+        calls.append(("voicelab", lang))
+        return b"OggS-vl"
+
+    async def edge(text, voice):
+        calls.append(("edge", voice))
+        return b"OggS-edge"
+    monkeypatch.setattr(tts, "_voicelab", vl_ok)
+    monkeypatch.setattr(tts, "_edge", edge)
+    assert run(tts.synthesize("Assalomu alaykum")) == (b"OggS-vl", "voicelab")
+
+    async def vl_fail(text, lang):
+        raise voicelab.VoiceLabError(402, "insufficient_credits")
+    monkeypatch.setattr(tts, "_voicelab", vl_fail)
+    audio, prov = run(tts.synthesize("Assalomu alaykum"))
+    assert prov == "edge" and calls[-1] == ("edge", config.TTS_VOICE_UZ)  # zaxira ham ayol ovozi (Madina)

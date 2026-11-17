@@ -1,4 +1,4 @@
-"""VoiceLab (voicelab.uz) orqali ovozni matnga o'girish — o'zbek tiliga moslashtirilgan STT.
+"""VoiceLab (voicelab.uz): ovozni matnga o'girish (STT) va matnni o'zbekcha ovozga aylantirish (TTS).
 
 Jarayon (https://docs.voicelab.uz/api/stt):
   1. POST /v1/stt (multipart: audio, language) -> 202 {"id": "stt_...", "status": "queued"}
@@ -61,6 +61,9 @@ def _request(method: str, path: str, body: bytes | None = None, headers: dict | 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
+            ctype = resp.headers.get("Content-Type", "")
+            if raw and "json" not in ctype:  # masalan TTS: audio/wav
+                return resp.status, {"_raw": raw, "_ctype": ctype}, dict(resp.headers)
             return resp.status, (json.loads(raw) if raw else {}), dict(resp.headers)
     except urllib.error.HTTPError as e:
         raw = e.read() or b"{}"
@@ -155,3 +158,55 @@ async def check_key() -> str | None:
                 "insufficient_credits": "kredit tugagan"}.get(e.code, str(e))
     except OSError as e:
         return f"ulanib bo'lmadi ({type(e).__name__})"
+
+
+# ---------- TTS: matn -> o'zbekcha ovoz ----------
+def _download(url: str, timeout: float = 60) -> bytes:
+    """Imzolangan audio havolasi — Authorization SIZ yuklanadi (hujjat talabi)."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+async def synthesize(text: str, language: str = "uz", voice_id: str | None = None,
+                     speed: float | None = None) -> bytes:
+    """Matn -> WAV audio (24 kHz, mono). Qisqa matn darhol qaytadi; uzoq davom etsa — tayyor bo'lguncha kutiladi."""
+    if not enabled():
+        raise VoiceLabError(0, "no_api_key", "VOICELAB_API_KEY yo'q")
+    payload = {"text": text[:5000], "language": language,
+               "voice_id": voice_id or config.VOICELAB_TTS_VOICE,
+               "speed": max(0.5, min(2.0, speed or config.VOICELAB_TTS_SPEED))}
+    if config.VOICELAB_TTS_MODEL:
+        payload["model_id"] = config.VOICELAB_TTS_MODEL
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    headers = {"Content-Type": "application/json", "Accept": "audio/wav, application/json",
+               "Idempotency-Key": str(uuid.uuid4())}
+    res = {}
+    for attempt in range(1, SUBMIT_RETRIES + 1):
+        try:
+            _, res, _ = await _call("POST", "/v1/tts", body, headers, timeout=90)
+            break
+        except VoiceLabError as e:
+            if e.status not in (429, 500, 503) or attempt == SUBMIT_RETRIES:
+                raise
+            await asyncio.sleep(_retry_after({"Retry-After": getattr(e, "retry_after", None)}, 2.0 * attempt))
+        except OSError:
+            if attempt == SUBMIT_RETRIES:
+                raise
+            await asyncio.sleep(2.0 * attempt)
+    if res.get("_raw"):
+        return res["_raw"]
+    gen_id = res.get("id")
+    if not gen_id:
+        raise VoiceLabError(0, "no_audio", "javobda audio ham, id ham yo'q")
+    deadline = time.monotonic() + config.VOICELAB_TIMEOUT
+    while True:
+        _, job, hdrs = await _call("GET", f"/v1/tts/generations/{gen_id}", timeout=30)
+        status = job.get("status")
+        if status == "completed" and job.get("audio_url"):
+            return await asyncio.to_thread(_download, job["audio_url"])
+        if status == "failed":
+            raise VoiceLabError(200, "tts_failed", "ovoz yaratilmadi")
+        if time.monotonic() > deadline:
+            raise VoiceLabError(0, "timeout", f"{config.VOICELAB_TIMEOUT}s ichida tayyor bo'lmadi")
+        await asyncio.sleep(_retry_after(hdrs, POLL_INTERVAL))
