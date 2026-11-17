@@ -78,7 +78,8 @@ class FakeClient:
         for d in self.dialogs:
             yield d
 
-    async def iter_messages(self, chat_id, limit=None):
+    async def iter_messages(self, chat_id, limit=None, wait_time=None):
+        self.wait_time, self.limit = wait_time, limit
         for m in self.messages.get(chat_id, [])[:limit]:
             yield m
 
@@ -99,10 +100,15 @@ def test_find_chats_and_search():
     cands = run(finder.find_chats(client, "Alidan"))
     assert [c.id for c in cands][:1] == [1]  # shaxsiy chat guruhdan ustun
 
-    hits, scanned = run(finder.search_chat(client, 1, "username", only_them=True))
-    assert scanned == 4 and [h.value for h in hits] == ["@new_user"]
-    hits, _ = run(finder.search_chat(client, 1, "username"))
-    assert [h.value for h in hits] == ["@new_user", "@my_own"]
+    all_hits, scanned = run(finder.search_chat(client, 1, "username"))
+    assert client.limit is None and client.wait_time == 0  # butun tarix, keraksiz kutishsiz
+    assert scanned == 4 and [h.value for h in all_hits] == ["@new_user", "@my_own"]
+    hits, only = finder.only_from_them(all_hits, True)
+    assert [h.value for h in hits] == ["@new_user"] and only
+    # u yuborganlari orasida yo'q bo'lsa — hammasi (balki o'zingiz yuborgansiz)
+    mine = [h for h in all_hits if h.mine]
+    assert finder.only_from_them(mine, True) == (mine, False)
+    hits = all_hits
 
     text = finder.format_hits("Ali Valiyev", hits, "username", 4, False)
     assert "@new_user" in text and "Ali Valiyev" in text
@@ -257,3 +263,14 @@ def test_run_find_global_when_no_name(fake_storage, monkeypatch):
     assert "barcha chatlardan" in text and "555" in text
     assert client.calls[0][0] is None  # global qidiruv
     assert fake_storage.d_stats["ai_find"] == 2
+
+
+def test_search_chat_reports_progress(monkeypatch):
+    monkeypatch.setattr(finder, "PROGRESS_SECONDS", 0)
+    client = FakeClient([], {1: [_msg(f"xabar {i}") for i in range(5)]})
+    seen = []
+
+    async def progress(n):
+        seen.append(n)
+    _, scanned = run(finder.search_chat(client, 1, "phone", progress=progress))
+    assert scanned == 5 and seen == [1, 2, 3, 4, 5]
