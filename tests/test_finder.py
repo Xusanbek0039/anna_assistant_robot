@@ -239,7 +239,8 @@ def test_run_find_without_ai(fake_storage, monkeypatch):
     run(control_bot._run_find(ev, "Ali yuborgan wifi parolini top"))
     text, kw = ev.edits[-1]
     assert "qwerty123" in text and "Ali Valiyev" in text
-    data = kw["buttons"][0][0].data
+    btn = kw["buttons"][0][0]
+    data = getattr(btn, "data", None) or btn.type.data
     assert data.startswith(b"fsave:") and len(data) <= 64
     assert control_bot._find_saved[data.decode().split(":")[1]] == [(5, 2)]
 
