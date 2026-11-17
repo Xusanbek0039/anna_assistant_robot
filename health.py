@@ -1,4 +1,4 @@
-"""Holat nazorati: MongoDB, OpenAI va Telegram'ni muntazam tekshiradi.
+"""Holat nazorati: MongoDB, OpenAI, VoiceLab va Telegram'ni muntazam tekshiradi.
 
 Biror qism ishdan chiqsa yoki qayta tiklansa — nazorat botiga BIR MARTA xabar yuboradi
 (har tekshiruvda takrorlamaydi).
@@ -9,6 +9,7 @@ import logging
 import ai
 import config
 import storage
+import voicelab
 
 log = logging.getLogger("health")
 
@@ -35,6 +36,12 @@ class Monitor:
         except Exception as e:
             return type(e).__name__
 
+    async def _check_voicelab(self) -> str | None:
+        try:
+            return await asyncio.wait_for(voicelab.check_key(), timeout=30)
+        except Exception as e:
+            return type(e).__name__
+
     async def _check_telegram(self) -> str | None:
         return None if self.user.is_connected() else "ulanish uzilgan"
 
@@ -43,6 +50,8 @@ class Monitor:
         results = {"MongoDB": await self._check_mongo(), "Telegram": await self._check_telegram()}
         if self.round == 1 or self.round % OPENAI_EVERY == 0:
             results["OpenAI"] = await self._check_openai()
+            if voicelab.enabled():
+                results["VoiceLab"] = await self._check_voicelab()
         for name, problem in results.items():
             ok = problem is None
             before = self.state.get(name)

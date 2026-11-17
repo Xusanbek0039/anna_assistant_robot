@@ -227,7 +227,21 @@ IMAGE_MAX_BYTES = 15 * 1024 * 1024
 
 
 async def transcribe(data: bytes, filename: str = "voice.ogg") -> str:
-    """Ovozli xabar / audio / video-xabarni matnga o'giradi."""
+    """Ovozli xabar / audio / video-xabarni matnga o'giradi.
+    VOICELAB_API_KEY bo'lsa — VoiceLab (o'zbek tilini yaxshi tushunadi); u ishlamasa — OpenAI (zaxira)."""
+    import voicelab
+
+    if voicelab.enabled():
+        try:
+            return await voicelab.transcribe(data, filename)
+        except Exception as e:
+            if not OPENAI_API_KEY:
+                raise
+            log.warning("VoiceLab matnga o'gira olmadi (%s) — OpenAI ishlatiladi", e)
+    return await _openai_transcribe(data, filename)
+
+
+async def _openai_transcribe(data: bytes, filename: str) -> str:
     if len(data) > TRANSCRIBE_MAX_BYTES:
         raise ValueError("audio juda katta")
     f = io.BytesIO(data)

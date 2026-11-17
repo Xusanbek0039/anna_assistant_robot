@@ -1,0 +1,157 @@
+"""VoiceLab (voicelab.uz) orqali ovozni matnga o'girish — o'zbek tiliga moslashtirilgan STT.
+
+Jarayon (https://docs.voicelab.uz/api/stt):
+  1. POST /v1/stt (multipart: audio, language) -> 202 {"id": "stt_...", "status": "queued"}
+  2. GET /v1/stt/transcriptions/{id} -> status: queued | processing | completed | failed
+     tayyor bo'lgach matn `transcript` maydonida.
+  3. Maxfiylik uchun natija o'qilgach VoiceLab'dagi yozuv o'chiriladi (VOICELAB_DELETE_AFTER).
+
+Qo'shimcha kutubxona kerak emas: standart urllib, alohida oqimda (asyncio.to_thread).
+"""
+import asyncio
+import json
+import logging
+import mimetypes
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+import config
+
+log = logging.getLogger("voicelab")
+
+USER_AGENT = "anna-assistant/1.0"
+SUBMIT_RETRIES = 3        # 429/503 yoki tarmoq xatosida qayta yuborish (o'sha Idempotency-Key bilan)
+POLL_INTERVAL = 1.0       # hujjatda tavsiya etilgan: soniyada bir marta (Retry-After bo'lsa — o'shancha)
+_MIME = {"ogg": "audio/ogg", "oga": "audio/ogg", "opus": "audio/ogg", "mp3": "audio/mpeg", "wav": "audio/wav",
+         "m4a": "audio/mp4", "aac": "audio/aac", "webm": "audio/webm", "flac": "audio/flac", "mp4": "audio/mp4"}
+
+
+class VoiceLabError(Exception):
+    def __init__(self, status: int, code: str, message: str = ""):
+        super().__init__(f"VoiceLab {status} {code}: {message}".strip())
+        self.status, self.code = status, code
+
+
+def enabled() -> bool:
+    return bool(config.VOICELAB_API_KEY)
+
+
+def _multipart(fields: dict[str, str], filename: str, data: bytes, mime: str) -> tuple[bytes, str]:
+    boundary = f"----anna{uuid.uuid4().hex}"
+    parts = []
+    for name, value in fields.items():
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="audio"; filename="{filename}"\r\n'
+                 f"Content-Type: {mime}\r\n\r\n".encode() + data + b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode())
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+def _request(method: str, path: str, body: bytes | None = None, headers: dict | None = None,
+             timeout: float = 60) -> tuple[int, dict, dict]:
+    """(HTTP status, JSON javob, sarlavhalar). 4xx/5xx — VoiceLabError."""
+    req = urllib.request.Request(config.VOICELAB_BASE_URL.rstrip("/") + path, data=body, method=method)
+    req.add_header("Authorization", f"Bearer {config.VOICELAB_API_KEY}")
+    req.add_header("User-Agent", USER_AGENT)
+    req.add_header("Accept", "application/json")
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            return resp.status, (json.loads(raw) if raw else {}), dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        raw = e.read() or b"{}"
+        try:
+            err = json.loads(raw)
+        except ValueError:
+            err = {}
+        err = err.get("error", err) if isinstance(err, dict) else {}
+        code = (err.get("code") if isinstance(err, dict) else None) or "http_error"
+        msg = (err.get("message") if isinstance(err, dict) else None) or ""
+        exc = VoiceLabError(e.code, code, msg)
+        exc.retry_after = e.headers.get("Retry-After") if e.headers else None
+        raise exc from None
+
+
+def _retry_after(headers, default: float) -> float:
+    try:
+        return max(0.5, min(30.0, float(headers.get("Retry-After"))))
+    except (TypeError, ValueError, AttributeError):
+        return default
+
+
+async def _call(*args, **kw):
+    return await asyncio.to_thread(_request, *args, **kw)
+
+
+async def transcribe(data: bytes, filename: str = "voice.ogg", language: str | None = None) -> str:
+    """Audio -> matn. Gap topilmasa "" qaytaradi. Boshqa xatolarda VoiceLabError/OSError."""
+    if not enabled():
+        raise VoiceLabError(0, "no_api_key", "VOICELAB_API_KEY yo'q")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "ogg"
+    mime = _MIME.get(ext) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    body, ctype = _multipart({"language": language or config.VOICELAB_LANGUAGE, "include_speakers": "false"},
+                             filename, data, mime)
+    headers = {"Content-Type": ctype, "Idempotency-Key": str(uuid.uuid4())}  # qayta urinishda ham o'sha kalit
+
+    job = None
+    for attempt in range(1, SUBMIT_RETRIES + 1):
+        try:
+            _, job, _ = await _call("POST", "/v1/stt", body, headers, timeout=120)
+            break
+        except VoiceLabError as e:
+            if e.code == "no_speech_detected":
+                return ""
+            if e.status not in (429, 503) or attempt == SUBMIT_RETRIES:
+                raise
+            await asyncio.sleep(_retry_after({"Retry-After": getattr(e, "retry_after", None)}, 2.0 * attempt))
+        except OSError:  # tarmoq uzilishi / timeout — o'sha kalit bilan qayta (ikki marta pul yechilmaydi)
+            if attempt == SUBMIT_RETRIES:
+                raise
+            await asyncio.sleep(2.0 * attempt)
+    job_id = (job or {}).get("id")
+    if not job_id:
+        raise VoiceLabError(0, "no_job_id", "javobda id yo'q")
+
+    deadline = time.monotonic() + config.VOICELAB_TIMEOUT
+    try:
+        while True:
+            try:
+                _, res, hdrs = await _call("GET", f"/v1/stt/transcriptions/{job_id}", timeout=30)
+            except VoiceLabError as e:
+                if e.status not in (429, 503):
+                    raise
+                res, hdrs = {"status": "processing"}, {"Retry-After": getattr(e, "retry_after", None)}
+            status = res.get("status")
+            if status == "completed":
+                return (res.get("transcript") or "").strip()
+            if status == "failed":
+                err = res.get("error") or {}
+                code = err.get("code", "failed") if isinstance(err, dict) else "failed"
+                if code == "no_speech_detected":
+                    return ""
+                raise VoiceLabError(200, code, "transkripsiya muvaffaqiyatsiz")
+            if time.monotonic() > deadline:
+                raise VoiceLabError(0, "timeout", f"{config.VOICELAB_TIMEOUT}s ichida tayyor bo'lmadi")
+            await asyncio.sleep(_retry_after(hdrs, POLL_INTERVAL))
+    finally:
+        if config.VOICELAB_DELETE_AFTER:
+            try:  # suhbatdoshlarning ovozi VoiceLab'da saqlanib qolmasin
+                await _call("DELETE", f"/v1/stt/transcriptions/{job_id}", timeout=30)
+            except Exception as e:
+                log.debug("VoiceLab yozuvi o'chirilmadi (%s)", type(e).__name__)
+
+
+async def check_key() -> str | None:
+    """Kalit ishlayaptimi (holat nazorati uchun). None — hammasi joyida, aks holda muammo matni."""
+    try:
+        _, res, _ = await _call("GET", "/v1/stt/preflight", timeout=20)  # kredit sarflamaydi
+        return None if res.get("can_upload", True) else "yuklash mumkin emas (kredit tugaganmi?)"
+    except VoiceLabError as e:
+        return {"invalid_api_key": "kalit noto'g'ri", "insufficient_scope": "kalitda STT ruxsati yo'q",
+                "insufficient_credits": "kredit tugagan"}.get(e.code, str(e))
+    except OSError as e:
+        return f"ulanib bo'lmadi ({type(e).__name__})"

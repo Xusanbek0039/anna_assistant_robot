@@ -85,6 +85,12 @@ BOT_SESSION = _path("anna_bot")
 OPENAI_API_KEY = _str("OPENAI_API_KEY")
 OPENAI_MODEL = _str("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TRANSCRIBE_MODEL = _str("OPENAI_TRANSCRIBE_MODEL", "whisper-1")  # ovozli xabarlar uchun
+# --- Ovozni matnga o'girish: VoiceLab (voicelab.uz) — kalit bo'lsa asosiy, ishlamasa OpenAI zaxira ---
+VOICELAB_API_KEY = _str("VOICELAB_API_KEY")  # vlk_... (maxfiy!)
+VOICELAB_BASE_URL = _str("VOICELAB_BASE_URL", "https://api.voicelab.uz")
+VOICELAB_LANGUAGE = _str("VOICELAB_LANGUAGE", "auto")  # auto | uz | ru | en ...
+VOICELAB_TIMEOUT = max(15, _int("VOICELAB_TIMEOUT", 120))  # natijani kutish (soniya)
+VOICELAB_DELETE_AFTER = _bool("VOICELAB_DELETE_AFTER", True)  # o'qilgach VoiceLab'dan o'chirish
 OWNER_PROFILE_FILE = _path(_str("OWNER_PROFILE_FILE", "owner_profile.txt"))  # kotiba aytadigan ochiq ma'lumotlar
 
 OWNER_NAME = _str("OWNER_NAME", "Husan Suyunov")
