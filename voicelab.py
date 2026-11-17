@@ -38,6 +38,16 @@ def enabled() -> bool:
     return bool(config.VOICELAB_API_KEY)
 
 
+def audio_tools_problem() -> str | None:
+    """Ovozli javob uchun `av` kerak (WAV/MP3 -> Telegram OGG/Opus). Yo'q bo'lsa — muammo matni."""
+    try:
+        import av  # noqa: F401
+        return None
+    except Exception as e:
+        return (f"`av` kutubxonasi ishlamayapti ({type(e).__name__}) — ovozli javob VoiceLab/Microsoft o'rniga "
+                "OpenAI'ga o'tadi. Serverda: pip install -r requirements.txt")
+
+
 def describe() -> str:
     """Ovoz qaysi xizmat orqali ishlayotgani (log va /health uchun; kalit ko'rsatilmaydi)."""
     stt = f"VoiceLab (til: {config.VOICELAB_LANGUAGE})" if enabled() else "OpenAI (VOICELAB_API_KEY yo'q)"
@@ -47,7 +57,8 @@ def describe() -> str:
         tts = "Microsoft (VOICELAB_API_KEY yo'q)"
     else:
         tts = {"edge": "Microsoft", "openai": "OpenAI"}.get(config.TTS_PROVIDER, config.TTS_PROVIDER)
-    return f"ovoz -> matn: {stt}; javob ovozi: {tts}"
+    problem = audio_tools_problem() if config.TTS_PROVIDER in ("voicelab", "edge") else None
+    return f"ovoz -> matn: {stt}; javob ovozi: {tts}" + (f"\n⚠️ {problem}" if problem else "")
 
 
 def _multipart(fields: dict[str, str], filename: str, data: bytes, mime: str) -> tuple[bytes, str]:
