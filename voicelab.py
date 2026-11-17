@@ -38,6 +38,18 @@ def enabled() -> bool:
     return bool(config.VOICELAB_API_KEY)
 
 
+def describe() -> str:
+    """Ovoz qaysi xizmat orqali ishlayotgani (log va /health uchun; kalit ko'rsatilmaydi)."""
+    stt = f"VoiceLab (til: {config.VOICELAB_LANGUAGE})" if enabled() else "OpenAI (VOICELAB_API_KEY yo'q)"
+    if config.TTS_PROVIDER == "voicelab" and enabled():
+        tts = f"VoiceLab ({config.VOICELAB_TTS_VOICE})"
+    elif config.TTS_PROVIDER == "voicelab":
+        tts = "Microsoft (VOICELAB_API_KEY yo'q)"
+    else:
+        tts = {"edge": "Microsoft", "openai": "OpenAI"}.get(config.TTS_PROVIDER, config.TTS_PROVIDER)
+    return f"ovoz -> matn: {stt}; javob ovozi: {tts}"
+
+
 def _multipart(fields: dict[str, str], filename: str, data: bytes, mime: str) -> tuple[bytes, str]:
     boundary = f"----anna{uuid.uuid4().hex}"
     parts = []

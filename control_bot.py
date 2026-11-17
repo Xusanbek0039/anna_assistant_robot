@@ -17,6 +17,7 @@ import report
 import runtime
 import saver
 import storage
+import voicelab
 from config import OWNER_TAKEOVER_MINUTES
 
 log = logging.getLogger("bot")
@@ -849,7 +850,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         await event.respond("⏳ Tekshirilmoqda...")
         results = await ctx.monitor.check_once()
         await event.respond("\n".join(f"{'✅' if p is None else '❌'} {name}" + (f": {p}" if p else "")
-                                      for name, p in results.items()))
+                                      for name, p in results.items())
+                            + f"\n\n🎤 {voicelab.describe()}")
 
     # ---------- profil: bio, iqtibos, online ----------
     # /bio, /online, /quote — argumentsiz bo'lsa tugmali panel, argument bilan — to'g'ridan-to'g'ri

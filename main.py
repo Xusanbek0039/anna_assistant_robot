@@ -14,6 +14,7 @@ import report
 import runtime
 import storage
 import userbot
+import voicelab
 from bio_updater import BioUpdater, validate_settings
 from presence import keep_online
 from tg_client import create_user_client, login, setup_logging
@@ -50,6 +51,7 @@ async def main() -> None:
         log.error("AI: %s. Kotiba hozircha faqat shablon matn bilan javob beradi.", problem)
     else:
         log.info("OpenAI kaliti ishlayapti (model: %s)", config.OPENAI_MODEL)
+    log.info("Ovoz sozlamalari: %s", voicelab.describe())
 
     user = create_user_client()
     # Birinchi ishga tushishda telefon raqam, Telegram kodi (va 2FA parol) terminalda so'raladi
