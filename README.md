@@ -22,6 +22,7 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `userbot.py`, `control_bot.py`, `ai.py` | Avtojavob kotiba |
 | `voicelab.py` | VoiceLab (voicelab.uz): ovozli xabarlarni matnga o'girish va o'zbekcha ayol ovozida javob (Madina) — ovozli javob faqat VoiceLab |
 | `finder.py` | Chatlardan aqlli qidirish: «Ali yuborgan manzilni top», «wifi parolini qidir» — matn, username, raqam, havola, rasm, fayl, lokatsiya (ism aytilmasa — barcha chatlardan) |
+| `archive.py` | Chat arxivi: barcha shaxsiy chatlar (istisnodagilar ham) saqlanadi; suhbatdosh xabar yoki butun chatni o'chirsa — bot xabar beradi va yozishmani **HTML fayl** qilib yuboradi (botda «🗂 Chat arxivi» tugmasi yoki /arxiv) |
 | `storage.py` | MongoDB Atlas bilan ishlash |
 | `config.py` | `.env` dan sozlamalarni o'qish |
 

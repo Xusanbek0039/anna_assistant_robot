@@ -136,6 +136,12 @@ REPLY_DELAY_SECONDS = _float("REPLY_DELAY_SECONDS", 3)
 REPLY_QUOTE = _bool("REPLY_QUOTE", True)
 MAX_MEDIA_MB = _int("MAX_MEDIA_MB", 50)  # bundan katta media yuklab olinmaydi (egasiga ham yuborilmaydi)
 SAVE_MAX_MB = _int("SAVE_MAX_MB", 2000)  # havola orqali saqlashda (/save) eng katta fayl hajmi
+# --- Chat arxivi: suhbatdosh yozishmani o'chirsa ham, bot orqali HTML qilib qayta olish ---
+ARCHIVE_ENABLED = _bool("ARCHIVE_ENABLED", True)      # barcha shaxsiy chatlar (istisnodagilar ham) saqlanadi
+ARCHIVE_GROUPS = _bool("ARCHIVE_GROUPS", False)       # guruhlar ham (standart o'chiq — xabar ko'p bo'ladi)
+ARCHIVE_ALERTS = _bool("ARCHIVE_ALERTS", True)        # xabar o'chirilsa — botga ogohlantirish
+ARCHIVE_MEDIA_MAX_KB = _int("ARCHIVE_MEDIA_MAX_KB", 512)  # rasm/ovozli xabar shu hajmgacha arxivga (0 = yo'q)
+ARCHIVE_EXPORT_LIMIT = _int("ARCHIVE_EXPORT_LIMIT", 5000)  # HTML da chatning oxirgi nechta xabari
 # Bir vaqtda faqat bitta nusxa ishlasin (ikki nusxa = bot har xabarni ikki marta yuboradi)
 SINGLE_INSTANCE = _bool("SINGLE_INSTANCE", True)
 HISTORY_LIMIT = _int("HISTORY_LIMIT", 30)  # AI ga beriladigan oxirgi xabarlar soni

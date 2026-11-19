@@ -8,6 +8,7 @@ import time
 from telethon import Button, TelegramClient, events
 
 import ai
+import archive
 import availability
 import bio_updater
 import config
@@ -44,6 +45,10 @@ HELP = (
     "«Vali yuborgan manzilni topib ber», «Sardor kecha tashlagan pdf faylni qidir», "
     "«Ali qachon uchrashamiz degandi, top», «wifi parolini qidir» (ism aytilmasa — barcha chatlardan).\n"
     "/find &lt;so'rov&gt; — buyruq bilan\n\n"
+    "<b>🗂 Chat arxivi</b>\n"
+    "Barcha shaxsiy chatlar (istisnodagilar ham) saqlanib boriladi. Kimdir xabar yoki butun chatni "
+    "o'chirsa — sizga xabar keladi va yozishmani <b>HTML fayl</b> qilib yuklab olasiz.\n"
+    "/arxiv — arxiv paneli, /arxiv &lt;ism&gt; — chatni nomi bo'yicha topish\n\n"
     "<b>Profil</b>\n"
     "/bio — joriy bio va holat\n"
     "/bio on | off | now | restore — yoqish, to'xtatish, hozir yangilash, asl bio'ni qaytarish\n"
@@ -65,8 +70,27 @@ HELP = (
     "/ignore &lt;id yoki @username&gt; — bu odamga avtojavob bermaslik\n"
     "/unignore &lt;id&gt; — istisnodan chiqarish\n"
     "/ignored — istisnolar ro'yxati\n\n"
-    "Xulosa xabariga <i>reply</i> qilib yozsangiz, matn o'sha odamga sizning nomingizdan ketadi."
+    "Xulosa xabariga <i>reply</i> qilib yozsangiz, matn o'sha odamga sizning nomingizdan ketadi.\n\n"
+    "💡 Buyruqlarni eslab qolish shart emas — pastdagi <b>tugmali menyu</b>dan foydalaning (/menu)."
 )
+
+# ---------- doimiy tugmali menyu (buyruqlarni eslab qolmaslik uchun) ----------
+MENU_PANEL = "⚙️ Boshqaruv"
+MENU_INBOX = "📬 Inbox"
+MENU_ARCHIVE = "🗂 Chat arxivi"
+MENU_FIN = "💰 Moliya"
+MENU_FIND = "🔎 Qidirish"
+MENU_REPORT = "📈 Hisobot"
+MENU_HELP = "❓ Yordam"
+MENU_TEXTS = {MENU_PANEL, MENU_INBOX, MENU_ARCHIVE, MENU_FIN, MENU_FIND, MENU_REPORT, MENU_HELP}
+
+
+def main_keyboard() -> list:
+    return [
+        [Button.text(MENU_PANEL, resize=True, persistent=True), Button.text(MENU_INBOX)],
+        [Button.text(MENU_ARCHIVE), Button.text(MENU_FIN)],
+        [Button.text(MENU_FIND), Button.text(MENU_REPORT), Button.text(MENU_HELP)],
+    ]
 
 MODE_NAMES = {"on": "🟢 doim yoqiq (/on)", "off": "⚪️ o'chirilgan (/off)", "auto": "🤖 aqlli (/auto)"}
 TAGS = {
@@ -118,6 +142,7 @@ def _buttons(chat_id: int):
          Button.inline("✅ Ko'rildi", f"done:{chat_id}".encode())],
         [Button.inline("🔇 Bu chatda AI jim", f"mute:{chat_id}".encode()),
          Button.inline("🚫 Istisnoga qo'shish", f"ignore:{chat_id}".encode())],
+        [Button.inline("📄 Yozishmani yuklab olish (HTML)", f"arc:html:{chat_id}:a".encode())],
     ]
 
 
@@ -272,6 +297,8 @@ BOT_COMMANDS = [
     ("budget", "🎯 Oylik byudjet: /budget oziq-ovqat 2000000"),
     ("export", "📤 Kirim-chiqimni Excel (CSV) faylga"),
     ("unmute", "🔊 Chatda kotibani qayta yoqish: /unmute id"),
+    ("menu", "📋 Tugmali menyuni ochish"),
+    ("arxiv", "🗂 Chat arxivi: o'chirilgan yozishmani HTML qilib olish"),
     ("find", "🔎 Chatlardan istalgan narsani topish"),
     ("save", "💾 Havoladagi mediani Saqlangan xabarlarga joylash"),
     ("bio", "🕒 Bio, iqtibos va online — tugmali panel"),
@@ -392,6 +419,127 @@ async def _send_panel(event, extra: str = "") -> None:
     if extra:
         text += f"\n\n{extra}"
     await event.respond(text, parse_mode="html", buttons=buttons)
+
+
+# ---------- chat arxivi ----------
+ARCHIVE_PAGE = 8
+ARCHIVE_PREVIEW = 6
+
+
+def _when(ts: float | None) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.fromtimestamp(ts, ZoneInfo(config.TIMEZONE)).strftime("%d.%m %H:%M") if ts else ""
+
+
+def _html_buttons(chat_id: int) -> list:
+    return [[Button.inline("📄 Butun yozishma (HTML)", f"arc:html:{chat_id}:a".encode()),
+             Button.inline("🗑 Faqat o'chirilganlar", f"arc:html:{chat_id}:d".encode())]]
+
+
+async def deleted_alert(chat_id: int, docs: list[dict]) -> None:
+    """Arxivdagi xabarlar o'chirildi — egasiga nechta/nima o'chganini va yuklab olish tugmalarini yuboradi."""
+    info = await storage.archive_chat(chat_id) or {}
+    theirs = sum(1 for d in docs if not d.get("out"))
+    mine = len(docs) - theirs
+    head = "🗑 <b>Yozishma o'chirildi</b>" if len(docs) >= 10 else "🗑 <b>Xabar o'chirildi</b>"
+    lines = [head, f"👤 {_who(info.get('title') or '', info.get('username'), chat_id)}",
+             f"{len(docs)} ta xabar (uniki: {theirs}, sizniki: {mine})", ""]
+    for d in docs[-ARCHIVE_PREVIEW:]:
+        body = (d.get("text") or "").strip() or f"[{d.get('media') or 'xabar'}]"
+        if d.get("media") and d.get("text"):
+            body = f"[{d['media']}] {body}"
+        arrow = "📤" if d.get("out") else "📥"
+        lines.append(f"{arrow} <i>{_when(d.get('date'))}</i> {html.escape(body[:300])}")
+    if len(docs) > ARCHIVE_PREVIEW:
+        lines.append(f"… yana {len(docs) - ARCHIVE_PREVIEW} ta — HTML faylda")
+    lines.append("\n💾 Hammasi arxivda saqlangan.")
+    try:
+        await ctx.bot.send_message(ctx.owner_id, "\n".join(lines), parse_mode="html",
+                                   buttons=_html_buttons(chat_id))
+    except Exception:
+        log.exception("O'chirish haqida ogohlantirish yuborilmadi")
+
+
+async def _archive_panel() -> tuple[str, list]:
+    try:
+        st = await storage.archive_stats()
+    except Exception as e:
+        log.warning("Arxiv statistikasi olinmadi (%s)", type(e).__name__)
+        st = {}
+    on, groups, alerts = (runtime.get("archive_enabled"), runtime.get("archive_groups"),
+                          runtime.get("archive_alerts"))
+    text = (
+        "🗂 <b>Chat arxivi</b>\n\n"
+        f"Arxiv: {'🟢 yoqiq' if on else '⚪️ o‘chiq'} — barcha shaxsiy chatlar (istisnodagilar ham)\n"
+        f"Guruhlar: {'🟢 arxivlanadi' if groups else '⚪️ arxivlanmaydi'}\n"
+        f"O'chirilganda xabar berish: {'🟢 yoqiq' if alerts else '⚪️ o‘chiq'}\n\n"
+        f"💾 Saqlangan: {st.get('messages', '?')} ta xabar, {st.get('chats', '?')} ta chat\n"
+        f"🗑 O'chirilganlari: {st.get('deleted', '?')} ta\n\n"
+        "Chatni tanlang — yozishmani HTML fayl qilib yuboraman. Nomi bo'yicha topish: "
+        "<code>/arxiv Ali</code>"
+    )
+    buttons = [
+        [Button.inline("💬 Chatlar", b"arc:list:0"), Button.inline("🗑 O'chirilgan bor chatlar", b"arc:dlist:0")],
+        [Button.inline("⏸ Arxivni to'xtatish" if on else "▶️ Arxivni yoqish", b"arc:set:archive_enabled"),
+         Button.inline("🔕 Xabar bermasin" if alerts else "🔔 Xabar bersin", b"arc:set:archive_alerts")],
+        [Button.inline("⚪️ Guruhlarsiz" if groups else "👥 Guruhlar ham", b"arc:set:archive_groups")],
+    ]
+    return text, buttons
+
+
+async def _archive_list(page: int, only_deleted: bool, name: str = "") -> tuple[str, list]:
+    rows = await storage.archive_chats(page * ARCHIVE_PAGE, ARCHIVE_PAGE + 1, only_deleted, name)
+    more, rows = len(rows) > ARCHIVE_PAGE, rows[:ARCHIVE_PAGE]
+    back = [Button.inline("⬅️ Arxiv", b"arc:panel")]
+    if not rows:
+        if name:
+            return f"🤷 Arxivda «{html.escape(name)}» nomli chat topilmadi.", [back]
+        return ("🗑 Hali hech kim xabar o'chirmagan." if only_deleted else
+                "💬 Arxiv hozircha bo'sh — yangi xabarlar kelgan sari to'ladi."), [back]
+    buttons = []
+    for r in rows:
+        label = (r.get("title") or str(r["chat_id"]))[:28]
+        label += f" · 🗑{r['deleted']}" if r.get("deleted") else f" · {r.get('count', 0)}"
+        buttons.append([Button.inline(label, f"arc:chat:{r['chat_id']}".encode())])
+    kind = "dlist" if only_deleted else "list"
+    nav = []
+    if page > 0 and not name:
+        nav.append(Button.inline("◀️", f"arc:{kind}:{page - 1}".encode()))
+    nav += back
+    if more and not name:
+        nav.append(Button.inline("▶️", f"arc:{kind}:{page + 1}".encode()))
+    buttons.append(nav)
+    title = "🗑 <b>O'chirilgan xabarlari bor chatlar</b>" if only_deleted else "💬 <b>Arxivdagi chatlar</b>"
+    return f"{title}\nChatni tanlang:", buttons
+
+
+async def _archive_chat_view(chat_id: int) -> tuple[str, list]:
+    info = await storage.archive_chat(chat_id) or {}
+    text = (f"💬 {_who(info.get('title') or '', info.get('username'), chat_id)}\n"
+            f"💾 Arxivda: {info.get('count', 0)} ta xabar · 🗑 o'chirilgan: {info.get('deleted', 0)}\n"
+            f"Oxirgi xabar: {_when(info.get('last')) or '—'}\n\n"
+            "«Butun yozishma» ga Telegram'da hali turgan xabarlar ham qo'shiladi.")
+    return text, _html_buttons(chat_id) + [[Button.inline("⬅️ Chatlar", b"arc:list:0")]]
+
+
+async def _send_archive_html(chat_id: int, only_deleted: bool) -> None:
+    status = await ctx.bot.send_message(ctx.owner_id, "⏳ Yozishma tayyorlanmoqda...")
+    try:
+        data, fname, n = await archive.export_html(ctx.user, chat_id, only_deleted)
+        if not n:
+            await status.edit("🗑 Bu chatda o'chirilgan xabar topilmadi." if only_deleted else
+                              "🤷 Bu chat bo'yicha arxivda ham, Telegram'da ham xabar topilmadi.")
+            return
+        f = io.BytesIO(data)
+        f.name = fname
+        what = "🗑 O'chirilgan xabarlar" if only_deleted else "📄 Yozishma"
+        await ctx.bot.send_file(ctx.owner_id, f, force_document=True,
+                                caption=f"{what}: {n} ta xabar\nFaylni oching — brauzerda chat ko'rinishida chiqadi.")
+        await status.delete()
+    except Exception as e:
+        log.exception("Arxiv HTML tayyorlanmadi")
+        await status.edit(f"❌ Tayyorlab bo'lmadi: {type(e).__name__}")
 
 
 # ---------- shaxsiy buxgalter ----------
@@ -638,8 +786,63 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     async def _help(event):
         if event.raw_text.startswith("/start"):
             await set_commands(bot, owner_id)  # birinchi /start dan keyin menyu faqat egasiga o'rnatiladi
-        await event.respond(HELP + "\n\n💡 Pastdagi <b>/</b> yoki ☰ <b>Menyu</b> tugmasini bosing — "
-                                   "barcha buyruqlar chiqadi.", parse_mode="html")
+        await event.respond(HELP, parse_mode="html", buttons=main_keyboard())
+
+    @bot.on(events.NewMessage(pattern=r"^/menu$", func=is_owner))
+    async def _menu(event):
+        await event.respond("📋 Menyu pastda — kerakli tugmani bosing.", buttons=main_keyboard())
+
+    # Pastdagi doimiy tugmalar (oddiy matn bo'lib keladi)
+    @bot.on(events.NewMessage(func=lambda e: is_owner(e) and (e.raw_text or "").strip() in MENU_TEXTS))
+    async def _menu_button(event):
+        choice = event.raw_text.strip()
+        if choice == MENU_PANEL:
+            await _status(event)
+        elif choice == MENU_INBOX:
+            await _inbox(event)
+        elif choice == MENU_ARCHIVE:
+            text, buttons = await _archive_panel()
+            await event.respond(text, parse_mode="html", buttons=buttons)
+        elif choice == MENU_FIN:
+            await event.respond(await finance.make_report("today"), parse_mode="html",
+                                buttons=_fin_panel_buttons())
+        elif choice == MENU_FIND:
+            await event.respond("🔎 Nimani topay? Shunchaki yozing yoki ovozli ayting:\n"
+                                "«Ali yuborgan manzilni top», «Vali tashlagan pdf faylni qidir», "
+                                "«wifi parolini qidir».")
+        elif choice == MENU_REPORT:
+            await event.respond(await report.make_report(), parse_mode="html")
+        elif choice == MENU_HELP:
+            await event.respond(HELP, parse_mode="html", buttons=main_keyboard())
+
+    @bot.on(events.NewMessage(pattern=r"^/arxiv(?:\s+([\s\S]+))?$", func=is_owner))
+    async def _arxiv(event):
+        name = (event.pattern_match.group(1) or "").strip()
+        text, buttons = await (_archive_list(0, False, name) if name else _archive_panel())
+        await event.respond(text, parse_mode="html", buttons=buttons)
+
+    @bot.on(events.CallbackQuery(pattern=rb"^arc:", func=is_owner))
+    async def _arc_callback(event):
+        parts = event.data.decode().split(":")
+        action, arg = parts[1], parts[2] if len(parts) > 2 else ""
+        if action == "html":
+            await event.answer("Tayyorlanmoqda...")
+            await _send_archive_html(int(arg), len(parts) > 3 and parts[3] == "d")
+            return
+        await event.answer()
+        if action == "set" and arg in ("archive_enabled", "archive_alerts", "archive_groups"):
+            await runtime.update(**{arg: not runtime.get(arg)})
+            text, buttons = await _archive_panel()
+        elif action in ("list", "dlist"):
+            text, buttons = await _archive_list(int(arg or 0), action == "dlist")
+        elif action == "chat":
+            text, buttons = await _archive_chat_view(int(arg))
+        else:
+            text, buttons = await _archive_panel()
+        try:
+            await event.edit(text, parse_mode="html", buttons=buttons)
+        except Exception:
+            pass  # o'zgarmagan bo'lsa Telegram xato beradi
 
     # incoming=True SHART: busiz botning o'z xabarlari ham (yuborgan media, bildirishnoma) shu yerga tushib,
     # "Bu shaxsiy bot." javobi o'ziga-o'zi cheksiz javob qaytaradi.
@@ -1048,7 +1251,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             pass  # panel o'zgarmagan bo'lsa Telegram xato qaytaradi — e'tiborsiz
 
     # Oddiy matn: tugma orqali yoki xulosaga reply qilib javob yozish
-    @bot.on(events.NewMessage(func=lambda e: is_owner(e) and e.text and not e.text.startswith("/")))
+    @bot.on(events.NewMessage(func=lambda e: is_owner(e) and e.text and not e.text.startswith("/")
+                              and e.raw_text.strip() not in MENU_TEXTS))
     async def _plain(event):
         chat_id = None
         if event.is_reply:

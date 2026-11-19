@@ -47,6 +47,9 @@ async def init(retry_forever: bool = True) -> bool:
             await db.history.create_index([("role", ASCENDING), ("ts", DESCENDING)])
             await db.transactions.create_index([("day", ASCENDING), ("ts", ASCENDING)])
             await db.transactions.create_index("batch")
+            await db.archive.create_index([("chat_id", ASCENDING), ("msg_id", ASCENDING)], unique=True)
+            await db.archive.create_index([("msg_id", ASCENDING), ("channel", ASCENDING)])
+            await db.archive_chats.create_index([("last", DESCENDING)])
             log.info("MongoDB'ga ulandi (baza: %s)", MONGODB_DB)
             return True
         except OperationFailure as e:
@@ -369,6 +372,135 @@ async def set_budget(category: str, limit: int | None) -> None:
                                             upsert=True)
     else:
         await _get_db().settings.update_one({"_id": "budget"}, {"$unset": {f"limits.{category}": ""}})
+
+
+# ---------- chat arxivi (o'chirilgan yozishmalarni tiklash uchun) ----------
+_ARCHIVE_FIELDS = {"_id": 0}
+
+
+async def archive_add(doc: dict) -> bool:
+    """Xabarni arxivga qo'shadi (chat_id + msg_id bo'yicha bir marta). Yangi bo'lsa True."""
+    res = await _get_db().archive.update_one(
+        {"chat_id": doc["chat_id"], "msg_id": doc["msg_id"]}, {"$setOnInsert": doc}, upsert=True)
+    return res.upserted_id is not None
+
+
+async def archive_add_many(docs: list[dict]) -> int:
+    """Ko'p xabarni bir yo'la qo'shadi (bor bo'lganlari o'zgarmaydi). Yangi qo'shilganlar soni."""
+    from pymongo import UpdateOne
+    if not docs:
+        return 0
+    ops = [UpdateOne({"chat_id": d["chat_id"], "msg_id": d["msg_id"]}, {"$setOnInsert": d}, upsert=True)
+           for d in docs]
+    res = await _get_db().archive.bulk_write(ops, ordered=False)
+    return res.upserted_count
+
+
+async def archive_edit(chat_id: int, msg_id: int, text: str, ts: float) -> dict | None:
+    """Tahrirlangan xabar: eski matn "edits" ga o'tadi. Arxivda bo'lmasa None."""
+    db = _get_db()
+    old = await db.archive.find_one({"chat_id": chat_id, "msg_id": msg_id}, _ARCHIVE_FIELDS)
+    if old is None or (old.get("text") or "") == (text or ""):
+        return old
+    await db.archive.update_one(
+        {"chat_id": chat_id, "msg_id": msg_id},
+        {"$set": {"text": text, "edited_at": ts},
+         "$push": {"edits": {"text": old.get("text") or "", "ts": old.get("edited_at") or old.get("date")}}})
+    return old
+
+
+async def archive_mark_deleted(chat_id: int | None, msg_ids: list[int], ts: float) -> list[dict]:
+    """O'chirilgan deb belgilaydi va shu xabarlarni qaytaradi. chat_id=None — shaxsiy chat yoki oddiy
+    guruh (Telegram qaysi chatligini aytmaydi, lekin u yerda xabar id lari akkaunt bo'yicha yagona)."""
+    db = _get_db()
+    query: dict = {"msg_id": {"$in": list(msg_ids)}, "deleted": {"$ne": True}}
+    if chat_id is None:
+        query["channel"] = False
+    else:
+        query["chat_id"] = chat_id
+    docs = await db.archive.find(query, _ARCHIVE_FIELDS).sort("date", ASCENDING).to_list()
+    if docs:
+        await db.archive.update_many(query, {"$set": {"deleted": True, "deleted_at": ts}})
+        per_chat: dict[int, int] = {}
+        for d in docs:
+            per_chat[d["chat_id"]] = per_chat.get(d["chat_id"], 0) + 1
+        for cid, n in per_chat.items():
+            await db.archive_chats.update_one({"_id": cid}, {"$inc": {"deleted": n}, "$set": {"last_deleted": ts}})
+    for d in docs:
+        d["deleted"], d["deleted_at"] = True, ts
+    return docs
+
+
+async def archive_touch_chat(chat_id: int, title: str, username: str | None, kind: str, ts: float,
+                             added: int = 1) -> None:
+    await _get_db().archive_chats.update_one(
+        {"_id": chat_id},
+        {"$set": {"title": title, "username": username, "kind": kind},
+         "$max": {"last": ts}, "$inc": {"count": added}},
+        upsert=True)
+
+
+async def archive_chat(chat_id: int) -> dict | None:
+    doc = await _get_db().archive_chats.find_one({"_id": chat_id})
+    if doc:
+        doc["chat_id"] = doc.pop("_id")
+    return doc
+
+
+async def archive_chats(skip: int = 0, limit: int = 10, only_deleted: bool = False,
+                        name: str = "") -> list[dict]:
+    import re
+    query: dict = {}
+    if only_deleted:
+        query["deleted"] = {"$gt": 0}
+    if name:
+        rx = {"$regex": re.escape(name.lstrip("@")), "$options": "i"}
+        query["$or"] = [{"title": rx}, {"username": rx}]
+    sort = "last_deleted" if only_deleted else "last"
+    rows = await _get_db().archive_chats.find(query).sort(sort, DESCENDING).skip(skip).limit(limit).to_list()
+    for r in rows:
+        r["chat_id"] = r.pop("_id")
+    return rows
+
+
+async def archive_messages(chat_id: int, only_deleted: bool = False, limit: int = 0) -> list[dict]:
+    query: dict = {"chat_id": chat_id}
+    if only_deleted:
+        query["deleted"] = True
+    cursor = _get_db().archive.find(query, _ARCHIVE_FIELDS).sort("date", DESCENDING)
+    if limit:
+        cursor = cursor.limit(limit)
+    return list(reversed(await cursor.to_list()))
+
+
+async def archive_media_put(data: bytes, mime: str) -> str:
+    from bson import Binary
+    res = await _get_db().archive_media.insert_one({"data": Binary(data), "mime": mime, "ts": time.time()})
+    return str(res.inserted_id)
+
+
+async def archive_media_get(ids: list[str]) -> dict[str, tuple[bytes, str]]:
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    oids = []
+    for i in ids:
+        try:
+            oids.append(ObjectId(i))
+        except (InvalidId, TypeError):
+            pass
+    if not oids:
+        return {}
+    rows = await _get_db().archive_media.find({"_id": {"$in": oids}}).to_list()
+    return {str(r["_id"]): (bytes(r["data"]), r.get("mime") or "") for r in rows}
+
+
+async def archive_stats() -> dict:
+    db = _get_db()
+    return {
+        "messages": await db.archive.estimated_document_count(),
+        "deleted": await db.archive.count_documents({"deleted": True}),
+        "chats": await db.archive_chats.estimated_document_count(),
+    }
 
 
 async def ping() -> None:

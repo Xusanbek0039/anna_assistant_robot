@@ -1,0 +1,284 @@
+"""Chat arxivi: yozib borish, o'chirilganini aniqlash, HTML eksport va bot tugmalari."""
+import asyncio
+from datetime import datetime, timezone
+
+import pytest
+from telethon.tl.types import PeerChannel, PeerUser, User
+
+import archive
+import config
+import control_bot
+import runtime
+import storage
+from conftest import run
+
+
+class FakeArchive:
+    """storage.archive_* funksiyalarining xotiradagi nusxasi."""
+
+    def __init__(self):
+        self.msgs: dict[tuple, dict] = {}
+        self.chats: dict[int, dict] = {}
+        self.media: dict[str, tuple] = {}
+
+    async def archive_add(self, doc):
+        key = (doc["chat_id"], doc["msg_id"])
+        if key in self.msgs:
+            return False
+        self.msgs[key] = dict(doc)
+        return True
+
+    async def archive_add_many(self, docs):
+        return sum([await self.archive_add(d) for d in docs])
+
+    async def archive_edit(self, chat_id, msg_id, text, ts):
+        old = self.msgs.get((chat_id, msg_id))
+        if old is None or old["text"] == text:
+            return old
+        snapshot = dict(old)
+        old.setdefault("edits", []).append({"text": old["text"], "ts": old["date"]})
+        old["text"] = text
+        return snapshot
+
+    async def archive_mark_deleted(self, chat_id, ids, ts):
+        out = []
+        for d in self.msgs.values():
+            if d["msg_id"] in ids and not d.get("deleted") and \
+                    (d["chat_id"] == chat_id if chat_id is not None else not d["channel"]):
+                d.update(deleted=True, deleted_at=ts)
+                out.append(dict(d))
+        return out
+
+    async def archive_touch_chat(self, chat_id, title, username, kind, ts, added=1):
+        c = self.chats.setdefault(chat_id, {"chat_id": chat_id, "count": 0})
+        c.update(title=title, username=username, kind=kind)
+        c["count"] += added
+
+    async def archive_chat(self, chat_id):
+        return dict(self.chats[chat_id]) if chat_id in self.chats else None
+
+    async def archive_messages(self, chat_id, only_deleted=False, limit=0):
+        rows = sorted((dict(d) for d in self.msgs.values() if d["chat_id"] == chat_id
+                       and (d.get("deleted") or not only_deleted)), key=lambda d: d["date"])
+        return rows[-limit:] if limit else rows
+
+    async def archive_media_put(self, data, mime):
+        key = f"m{len(self.media)}"
+        self.media[key] = (data, mime)
+        return key
+
+    async def archive_media_get(self, ids):
+        return {i: self.media[i] for i in ids if i in self.media}
+
+    async def archive_stats(self):
+        return {"messages": len(self.msgs), "deleted": sum(1 for d in self.msgs.values() if d.get("deleted")),
+                "chats": len(self.chats)}
+
+    async def archive_chats(self, skip=0, limit=10, only_deleted=False, name=""):
+        return list(self.chats.values())[skip:skip + limit]
+
+
+class Msg:
+    _next = 100
+
+    def __init__(self, text="", out=False, chat=5, photo=False, channel=False):
+        Msg._next += 1
+        self.id = Msg._next
+        self.message = text
+        self.out = out
+        self.sender_id = 1 if out else chat
+        self.peer_id = PeerChannel(chat) if channel else PeerUser(chat)
+        self.date = datetime(2026, 11, 19, 10, 30, tzinfo=timezone.utc)
+        self.fwd_from = self.reply_to_msg_id = None
+        for a in ("voice", "video_note", "gif", "video", "sticker", "audio", "document",
+                  "geo", "venue", "contact", "poll"):
+            setattr(self, a, None)
+        self.photo = object() if photo else None
+        self.media = object() if photo else None
+        self.file = type("F", (), {"size": 10, "name": None, "mime_type": "image/jpeg"})() if photo else None
+
+    async def download_media(self, file=None, thumb=None):
+        return b"\xff\xd8jpeg"
+
+
+class Ev:
+    def __init__(self, msg, chat_entity, private=True, group=False):
+        self.message = msg
+        self.chat_id = chat_entity.id if private else -chat_entity.id
+        self.is_private, self.is_group = private, group
+        self._chat = chat_entity
+
+    async def get_chat(self):
+        return self._chat
+
+    async def get_sender(self):
+        return self._chat
+
+
+class FakeUser:
+    def __init__(self):
+        self.handlers = {}
+
+    def on(self, _ev):
+        def deco(f):
+            self.handlers[f.__name__] = f
+            return f
+        return deco
+
+
+@pytest.fixture
+def arc(monkeypatch):
+    fa = FakeArchive()
+    for name in dir(fa):
+        if name.startswith("archive_"):
+            monkeypatch.setattr(storage, name, getattr(fa, name))
+    monkeypatch.setattr(runtime, "_values", dict(runtime.DEFAULTS))
+    monkeypatch.setattr(archive, "DELETE_GATHER_SECONDS", 0.01)
+    monkeypatch.setattr(archive, "_del_buf", {})
+    monkeypatch.setattr(archive, "_del_last", {})
+    monkeypatch.setattr(archive, "_del_tasks", {})
+    alerts = []
+
+    async def on_deleted(chat_id, docs):
+        alerts.append((chat_id, docs))
+
+    user = FakeUser()
+    archive.setup(user, 1, on_deleted)
+    fa.user, fa.alerts = user, alerts
+    return fa
+
+
+def _person(uid=5, **kw):
+    return User(id=uid, first_name="Ali", username="ali", **kw)
+
+
+def test_stores_private_chats_even_ignored_but_not_service_bots_or_self(arc):
+    async def go():
+        new = arc.user.handlers["archive_new"]
+        await new(Ev(Msg("salom"), _person()))
+        await new(Ev(Msg("Login code: 12345", chat=777000), User(id=777000, first_name="Telegram")))
+        await new(Ev(Msg("bot", chat=9), User(id=9, first_name="B", bot=True)))
+        await new(Ev(Msg("eslatma", out=True, chat=1), User(id=1, first_name="Men", is_self=True)))
+        await new(Ev(Msg("guruh"), _person(7), private=False, group=True))  # guruhlar standart o'chiq
+    run(go())
+    assert [d["text"] for d in arc.msgs.values()] == ["salom"]
+    assert arc.chats[5]["title"] == "Ali"
+
+
+def test_deleting_marks_and_sends_one_grouped_alert(arc):
+    async def go():
+        new = arc.user.handlers["archive_new"]
+        m1, m2, m3 = Msg("birinchi"), Msg("ikkinchi", out=True), Msg(photo=True)
+        for m in (m1, m2, m3):
+            await new(Ev(m, _person()))
+        # Telegram shaxsiy chatda qaysi chatligini aytmaydi (chat_id=None) — id bo'yicha topiladi
+        await archive._deleted(None, [m1.id, m2.id])
+        await archive._deleted(None, [m3.id])
+        await asyncio.sleep(0.1)
+        return m1
+    m1 = run(go())
+    assert len(arc.alerts) == 1
+    chat_id, docs = arc.alerts[0]
+    assert chat_id == 5 and len(docs) == 3
+    assert arc.msgs[(5, m1.id)]["deleted"] is True
+    assert any(d.get("media_id") for d in docs)  # kichik rasm arxivga saqlangan
+
+
+def test_alerts_can_be_turned_off(arc):
+    async def go():
+        m = Msg("x")
+        await arc.user.handlers["archive_new"](Ev(m, _person()))
+        await runtime.update(archive_alerts=False)
+        await archive._deleted(None, [m.id])
+        await asyncio.sleep(0.1)
+    run(go())
+    assert arc.alerts == []
+
+
+def test_edit_keeps_old_text(arc):
+    class EditEv(Ev):
+        pass
+
+    async def go():
+        m = Msg("eski matn")
+        await arc.user.handlers["archive_new"](Ev(m, _person()))
+        m.message = "yangi matn"
+        await arc.user.handlers["archive_edited"](EditEv(m, _person()))
+        return m
+    m = run(go())
+    doc = arc.msgs[(5, m.id)]
+    assert doc["text"] == "yangi matn" and doc["edits"][0]["text"] == "eski matn"
+
+
+def test_build_html_escapes_and_marks(arc):
+    info = {"chat_id": 5, "title": "Ali <script>", "username": "ali", "kind": "user"}
+    docs = [
+        {"chat_id": 5, "msg_id": 1, "out": False, "text": "<b>salom</b>", "date": 1.7e9},
+        {"chat_id": 5, "msg_id": 2, "out": True, "text": "javob", "date": 1.7e9 + 60, "reply_to": 1,
+         "deleted": True, "deleted_at": 1.7e9 + 120, "edits": [{"text": "jvob", "ts": 1.7e9 + 60}]},
+        {"chat_id": 5, "msg_id": 3, "out": False, "text": "", "media": "rasm", "media_id": "m0", "date": 1.7e9 + 90},
+    ]
+    page = archive.build_html(info, docs, {"m0": (b"img", "image/jpeg")}, only_deleted=False)
+    assert "<script>" not in page and "&lt;b&gt;salom&lt;/b&gt;" in page
+    assert "msg del" in page and "o‘chirilgan" in page
+    assert "Oldingi variantlar (1)" in page and "jvob" in page
+    assert "data:image/jpeg;base64," in page
+    assert "↩️ &lt;b&gt;salom" in page  # qaysi xabarga javob ekani
+
+
+def test_export_includes_live_history(arc):
+    class Live(FakeUser):
+        async def get_entity(self, chat_id):
+            return _person(chat_id)
+
+        async def iter_messages(self, entity, limit=None):
+            for t in ("telegramda turgan xabar",):
+                from telethon.tl.types import Message
+                m = Message(id=50, peer_id=PeerUser(5), date=datetime(2026, 1, 1, tzinfo=timezone.utc), message=t)
+                yield m
+
+    data, name, n = run(archive.export_html(Live(), 5))
+    assert n == 1 and name.startswith("chat_Ali_") and name.endswith(".html")
+    assert "telegramda turgan xabar" in data.decode()
+
+
+# ---------- bot ----------
+def test_menu_buttons_not_treated_as_plain_text():
+    import inspect
+    src = inspect.getsource(control_bot.setup)
+    assert "not in MENU_TEXTS" in src
+    texts = [b.button.text for row in control_bot.main_keyboard() for b in row]
+    assert set(texts) == control_bot.MENU_TEXTS
+
+
+def test_archive_buttons_fit_telegram_limit(arc):
+    run(arc.archive_touch_chat(-1001234567890, "Guruh", None, "group", 1.0))
+    text, rows = run(control_bot._archive_panel())
+    assert "Chat arxivi" in text
+    _, list_rows = run(control_bot._archive_list(0, False))
+    for row in rows + list_rows + control_bot._html_buttons(-1001234567890):
+        for btn in row:
+            data = getattr(btn, "data", None) or btn.type.data
+            assert data.startswith(b"arc:") and len(data) <= 64
+
+
+def test_deleted_alert_text(arc, monkeypatch):
+    sent = []
+
+    class Bot:
+        async def send_message(self, uid, text, **kw):
+            sent.append((text, kw))
+
+    monkeypatch.setattr(control_bot.ctx, "bot", Bot(), raising=False)
+    monkeypatch.setattr(control_bot.ctx, "owner_id", 1, raising=False)
+    run(arc.archive_touch_chat(5, "Ali", "ali", "user", 1.0))
+    docs = [{"chat_id": 5, "msg_id": 1, "out": False, "text": "<maxfiy>", "date": 1.7e9},
+            {"chat_id": 5, "msg_id": 2, "out": True, "text": "", "media": "rasm", "date": 1.7e9}]
+    run(control_bot.deleted_alert(5, docs))
+    text, kw = sent[0]
+    assert "uniki: 1, sizniki: 1" in text and "&lt;maxfiy&gt;" in text and "[rasm]" in text
+    assert kw["buttons"]  # HTML yuklab olish tugmalari
+
+
+def test_config_defaults():
+    assert config.ARCHIVE_ENABLED and not config.ARCHIVE_GROUPS and config.ARCHIVE_MEDIA_MAX_KB > 0

@@ -5,6 +5,7 @@ import sys
 from telethon import TelegramClient
 
 import ai
+import archive
 import config
 import control_bot
 import finance
@@ -68,11 +69,13 @@ async def main() -> None:
     control_bot.setup(bot, user, owner_id=me.id)
     await control_bot.set_commands(bot, me.id)  # "/" bosilganda chiqadigan menyu
     userbot.setup(user, me_id=me.id)
+    archive.setup(user, me.id, control_bot.deleted_alert)  # o'chirilgan yozishmalarni tiklash uchun
     monitor = health.Monitor(user, control_bot.alert)
     control_bot.ctx.monitor = monitor
 
     try:
-        await bot.send_message(me.id, "🟢 Anna ishga tushdi. /help — buyruqlar.")
+        await bot.send_message(me.id, "🟢 Anna ishga tushdi. Pastdagi tugmalardan foydalaning.",
+                               buttons=control_bot.main_keyboard())
     except Exception:
         log.warning("Botdan xabar yuborib bo'lmadi — Telegram'da @%s ga /start bosing", bot_me.username)
 
