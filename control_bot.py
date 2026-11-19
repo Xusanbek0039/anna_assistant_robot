@@ -307,13 +307,19 @@ async def _bot_input_user(uid: int) -> types.InputUser:
         return types.InputUser(uid, 0)
 
 
-async def _mention_in_saved(uid: int, name: str | None) -> bool:
-    """Zaxira yo'l: o'z akkauntingizdan «Saqlangan xabarlar»ga shu odamni mention qilib yozadi.
-    Telegram odam ma'lumotini xabar bilan birga yuboradi — ism ustiga bosilsa profili ochiladi."""
+def _display_name(ent) -> str | None:
+    parts = (getattr(ent, "first_name", None), getattr(ent, "last_name", None))
+    return " ".join(p for p in parts if p) or getattr(ent, "title", None)
+
+
+async def _mention_in_saved(uid: int) -> bool:
+    """O'z akkauntingizdan «Saqlangan xabarlar»ga shu odamni mention qilib yozadi.
+    Telegram odam ma'lumotini xabar bilan birga barcha qurilmalarga yuboradi — ism ustiga
+    bosilsa profili ochiladi (Telegram Desktop'da ham, bot tugmasi ishlamaganda ham)."""
     try:
-        await ctx.user.get_input_entity(uid)  # akkaunt bu odamni taniydimi (aks holda mention o'chib ketadi)
+        ent = await ctx.user.get_entity(uid)  # akkaunt bu odamni taniydimi (aks holda mention o'chib ketadi)
         await ctx.user.send_message(
-            "me", f"👤 <a href=\"tg://user?id={uid}\">{html.escape(name or str(uid))}</a> "
+            "me", f"👤 <a href=\"tg://user?id={uid}\">{html.escape(_display_name(ent) or str(uid))}</a> "
                   f"— ism ustiga bosing, lichkasi ochiladi\n🆔 <code>{uid}</code>",
             parse_mode="html")
         return True
@@ -333,8 +339,7 @@ async def _open_dm(event, arg: str) -> None:
     try:
         ent = await ctx.user.get_entity(uid)
         known = True
-        parts = (getattr(ent, "first_name", None), getattr(ent, "last_name", None))
-        name = " ".join(p for p in parts if p) or getattr(ent, "title", None)
+        name = _display_name(ent)
         username = getattr(ent, "username", None)
     except Exception:
         pass  # akkaunt bu ID ni hali "tanimaydi" — baribir profil tugmasi bilan urinib ko'ramiz
@@ -349,16 +354,21 @@ async def _open_dm(event, arg: str) -> None:
         link = f"tg://user?id={uid}"
         button = types.KeyboardInlineButton(
             "💬 Lichkaga o'tish", types.InputInlineButtonTypeUserProfile(await _bot_input_user(uid)))
+    buttons = [[button]]
+    if not username and known:
+        # Telegram Desktop profil tugmasini faqat odam kompyuter keshida bo'lsa ochadi —
+        # shunda o'z akkauntdan «Saqlangan xabarlar»ga mention yuborish yo'li qoladi
+        buttons.append([Button.inline("🖥 Kompyuterda ochilmasa", f"dmsave:{uid}".encode())])
     text = (f"👤 <a href=\"{link}\">{html.escape(name or 'Foydalanuvchi')}</a>"
             + (f" (@{html.escape(username)})" if username else "")
             + f"\n🆔 <code>{uid}</code>")
     try:
-        await event.respond(text, parse_mode="html", buttons=[[button]])
+        await event.respond(text, parse_mode="html", buttons=buttons)
         return
     except Exception as e:
         # Odam maxfiylik sozlamasida havolani yopgan bo'lsa Telegram tugmani rad etadi
         log.warning("Lichka tugmasini yaratib bo'lmadi (%s): %s", uid, e)
-    if known and await _mention_in_saved(uid, name):
+    if known and await _mention_in_saved(uid):
         await event.respond(
             text + "\n\n⚠️ Bot tugma yarata olmadi (maxfiylik sozlamasi). "
                    "«Saqlangan xabarlar»ga havola yubordim — o'sha yerda ism ustiga bosing.",
@@ -1518,6 +1528,14 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         q, cands = pending
         c = cands[int(idx)]
         await _find_in(event, c.id, c.title, c.username, q)
+
+    @bot.on(events.CallbackQuery(pattern=rb"^dmsave:\d+$", func=is_owner))
+    async def _dm_save(event):
+        uid = int(event.data.decode().split(":", 1)[1])
+        if await _mention_in_saved(uid):
+            await event.answer("📥 «Saqlangan xabarlar»ga yubordim — o'sha yerda ism ustiga bosing", alert=True)
+        else:
+            await event.answer("❌ Yuborib bo'lmadi — akkauntingiz bu odamni tanimaydi", alert=True)
 
     @bot.on(events.CallbackQuery(pattern=rb"^fsave:", func=is_owner))
     async def _find_save(event):

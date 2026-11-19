@@ -185,11 +185,14 @@ def test_open_dm_button(monkeypatch):
     btn_type = kw["buttons"][0][0].type
     assert isinstance(btn_type, control_bot.types.InputInlineButtonTypeUserProfile)
     assert btn_type.user_id.user_id == 123456789
+    # Kompyuter uchun zaxira tugma
+    assert kw["buttons"][1][0].type.data == b"dmsave:123456789"
 
     Ent.username = "ali_v"
     ev = Event()
     run(control_bot._open_dm(ev, "123456789"))
     assert ev.sent[0][1]["buttons"][0][0].type.url == "https://t.me/ali_v"
+    assert len(ev.sent[0][1]["buttons"]) == 1  # t.me havolasi hamma joyda ochiladi
 
 
 def test_open_dm_privacy_fallback(monkeypatch):
