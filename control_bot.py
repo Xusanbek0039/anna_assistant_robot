@@ -6,7 +6,8 @@ import logging
 import re
 import time
 
-from telethon import Button, TelegramClient, events
+from telethon import Button, TelegramClient, events, utils
+from telethon.tl import types
 
 import ai
 import archive
@@ -298,6 +299,29 @@ async def _resolve_user_id(arg: str) -> int | None:
 USER_ID_RE = re.compile(r"^\s*(?:id\s*[:=]?\s*)?(\d{6,15})\s*$", re.IGNORECASE)
 
 
+async def _bot_input_user(uid: int) -> types.InputUser:
+    """Bot uchun InputUser: keshdan olinadi, topilmasa access_hash=0 (botlarga shunday ruxsat bor)."""
+    try:
+        return utils.get_input_user(await ctx.bot.get_input_entity(uid))
+    except Exception:
+        return types.InputUser(uid, 0)
+
+
+async def _mention_in_saved(uid: int, name: str | None) -> bool:
+    """Zaxira yo'l: o'z akkauntingizdan «Saqlangan xabarlar»ga shu odamni mention qilib yozadi.
+    Telegram odam ma'lumotini xabar bilan birga yuboradi — ism ustiga bosilsa profili ochiladi."""
+    try:
+        await ctx.user.get_input_entity(uid)  # akkaunt bu odamni taniydimi (aks holda mention o'chib ketadi)
+        await ctx.user.send_message(
+            "me", f"👤 <a href=\"tg://user?id={uid}\">{html.escape(name or str(uid))}</a> "
+                  f"— ism ustiga bosing, lichkasi ochiladi\n🆔 <code>{uid}</code>",
+            parse_mode="html")
+        return True
+    except Exception:
+        log.exception("Saqlangan xabarlarga mention yuborib bo'lmadi: %s", uid)
+        return False
+
+
 async def _open_dm(event, arg: str) -> None:
     """ID yoki @username bo'yicha o'sha odamning lichkasiga o'tadigan tugma yuboradi."""
     arg = arg.strip()
@@ -305,26 +329,44 @@ async def _open_dm(event, arg: str) -> None:
     if uid is None:
         await event.respond("❌ Foydalanuvchi topilmadi. ID raqam yoki @username yuboring.")
         return
-    name, username = None, None
+    name, username, known = None, None, False
     try:
         ent = await ctx.user.get_entity(uid)
+        known = True
         parts = (getattr(ent, "first_name", None), getattr(ent, "last_name", None))
         name = " ".join(p for p in parts if p) or getattr(ent, "title", None)
         username = getattr(ent, "username", None)
     except Exception:
-        pass  # akkaunt bu ID ni hali "tanimaydi" — baribir tg:// havola bilan urinib ko'ramiz
+        pass  # akkaunt bu ID ni hali "tanimaydi" — baribir profil tugmasi bilan urinib ko'ramiz
 
-    link = f"https://t.me/{username}" if username else f"tg://user?id={uid}"
+    if username:
+        link = f"https://t.me/{username}"
+        button = Button.url("💬 Lichkaga o'tish", link)
+    else:
+        # Oddiy «tg://user?id=» URL tugmasi faqat telefon bu odamni oldindan «tanisa» ochiladi —
+        # aks holda bosilganda hech narsa bo'lmaydi. Profil tugmasida esa Telegram odam
+        # ma'lumotini xabarga qo'shib yuboradi, shuning uchun u har doim ochiladi.
+        link = f"tg://user?id={uid}"
+        button = types.KeyboardInlineButton(
+            "💬 Lichkaga o'tish", types.InputInlineButtonTypeUserProfile(await _bot_input_user(uid)))
     text = (f"👤 <a href=\"{link}\">{html.escape(name or 'Foydalanuvchi')}</a>"
             + (f" (@{html.escape(username)})" if username else "")
             + f"\n🆔 <code>{uid}</code>")
     try:
-        await event.respond(text, parse_mode="html", buttons=[[Button.url("💬 Lichkaga o'tish", link)]])
-    except Exception:
-        # Odam maxfiylik sozlamasida havolani yopgan bo'lsa Telegram tugmani rad etadi — matndagi havola qoladi
+        await event.respond(text, parse_mode="html", buttons=[[button]])
+        return
+    except Exception as e:
+        # Odam maxfiylik sozlamasida havolani yopgan bo'lsa Telegram tugmani rad etadi
+        log.warning("Lichka tugmasini yaratib bo'lmadi (%s): %s", uid, e)
+    if known and await _mention_in_saved(uid, name):
         await event.respond(
-            text + "\n\n⚠️ Tugma yaratib bo'lmadi (maxfiylik sozlamasi). Ism ustiga bosib ko'ring; "
-                   "ochilmasa — bu odam profilini faqat tanishlariga ko'rsatadi.",
+            text + "\n\n⚠️ Bot tugma yarata olmadi (maxfiylik sozlamasi). "
+                   "«Saqlangan xabarlar»ga havola yubordim — o'sha yerda ism ustiga bosing.",
+            parse_mode="html")
+    else:
+        await event.respond(
+            text + "\n\n⚠️ Tugma yaratib bo'lmadi: bu odam maxfiylik sozlamasida profilini yopgan "
+                   "yoki akkauntingiz u bilan hech qachon yozishmagan.",
             parse_mode="html")
 
 

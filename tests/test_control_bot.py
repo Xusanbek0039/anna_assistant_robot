@@ -176,13 +176,53 @@ def test_open_dm_button(monkeypatch):
             self.sent.append((text, kw))
 
     monkeypatch.setattr(control_bot.ctx, "user", User(), raising=False)
+    monkeypatch.setattr(control_bot.ctx, "bot", None, raising=False)
     ev = Event()
     run(control_bot._open_dm(ev, "123456789"))
     text, kw = ev.sent[0]
     assert "tg://user?id=123456789" in text and "Ali Valiyev" in text
-    assert kw["buttons"][0][0].type.url == "tg://user?id=123456789"
+    # Username yo'q -> oddiy URL emas, profil tugmasi (telefon odamni tanimasa ham ochiladi)
+    btn_type = kw["buttons"][0][0].type
+    assert isinstance(btn_type, control_bot.types.InputInlineButtonTypeUserProfile)
+    assert btn_type.user_id.user_id == 123456789
 
     Ent.username = "ali_v"
     ev = Event()
     run(control_bot._open_dm(ev, "123456789"))
     assert ev.sent[0][1]["buttons"][0][0].type.url == "https://t.me/ali_v"
+
+
+def test_open_dm_privacy_fallback(monkeypatch):
+    """Telegram tugmani rad etsa — o'z akkauntdan «Saqlangan xabarlar»ga mention yuboriladi."""
+    class Ent:
+        first_name, last_name, username = "Ali", None, None
+
+    class User:
+        def __init__(self):
+            self.saved = []
+
+        async def get_entity(self, x):
+            return Ent()
+
+        async def get_input_entity(self, x):
+            return x
+
+        async def send_message(self, chat, text, **kw):
+            self.saved.append((chat, text))
+
+    class Event:
+        def __init__(self):
+            self.sent = []
+
+        async def respond(self, text, **kw):
+            if kw.get("buttons"):
+                raise RuntimeError("BUTTON_USER_PRIVACY_RESTRICTED")
+            self.sent.append((text, kw))
+
+    user = User()
+    monkeypatch.setattr(control_bot.ctx, "user", user, raising=False)
+    monkeypatch.setattr(control_bot.ctx, "bot", None, raising=False)
+    ev = Event()
+    run(control_bot._open_dm(ev, "123456789"))
+    assert user.saved and user.saved[0][0] == "me" and "tg://user?id=123456789" in user.saved[0][1]
+    assert "Saqlangan xabarlar" in ev.sent[0][0]
