@@ -175,18 +175,28 @@ def test_open_dm_button(monkeypatch):
         async def respond(self, text, **kw):
             self.sent.append((text, kw))
 
+    class Bot:
+        async def get_input_entity(self, x):
+            return control_bot.types.InputPeerUser(x, 42)
+
     monkeypatch.setattr(control_bot.ctx, "user", User(), raising=False)
+    # Bot odamni tanimaydi -> oddiy tg://user havola tugmasi
     monkeypatch.setattr(control_bot.ctx, "bot", None, raising=False)
     ev = Event()
     run(control_bot._open_dm(ev, "123456789"))
     text, kw = ev.sent[0]
     assert "tg://user?id=123456789" in text and "Ali Valiyev" in text
-    # Username yo'q -> oddiy URL emas, profil tugmasi (telefon odamni tanimasa ham ochiladi)
-    btn_type = kw["buttons"][0][0].type
-    assert isinstance(btn_type, control_bot.types.InputInlineButtonTypeUserProfile)
-    assert btn_type.user_id.user_id == 123456789
+    assert kw["buttons"][0][0].type.url == "tg://user?id=123456789"
     # Kompyuter uchun zaxira tugma
     assert kw["buttons"][1][0].type.data == b"dmsave:123456789"
+
+    # Bot odamni taniydi -> profil tugmasi (qurilma odamni tanimasa ham ochiladi)
+    monkeypatch.setattr(control_bot.ctx, "bot", Bot(), raising=False)
+    ev = Event()
+    run(control_bot._open_dm(ev, "123456789"))
+    btn_type = ev.sent[0][1]["buttons"][0][0].type
+    assert isinstance(btn_type, control_bot.types.InputInlineButtonTypeUserProfile)
+    assert btn_type.user_id.user_id == 123456789 and btn_type.user_id.access_hash == 42
 
     Ent.username = "ali_v"
     ev = Event()
@@ -229,3 +239,34 @@ def test_open_dm_privacy_fallback(monkeypatch):
     run(control_bot._open_dm(ev, "123456789"))
     assert user.saved and user.saved[0][0] == "me" and "tg://user?id=123456789" in user.saved[0][1]
     assert "Saqlangan xabarlar" in ev.sent[0][0]
+
+
+def test_open_dm_profile_rejected_falls_back_to_url(monkeypatch):
+    """Profil tugmasi rad etilsa — oddiy tg://user havola tugmasi bilan qayta urinadi."""
+    class Ent:
+        first_name, last_name, username = "Ali", None, None
+
+    class User:
+        async def get_entity(self, x):
+            return Ent()
+
+    class Bot:
+        async def get_input_entity(self, x):
+            return control_bot.types.InputPeerUser(x, 42)
+
+    class Event:
+        def __init__(self):
+            self.sent = []
+
+        async def respond(self, text, **kw):
+            if isinstance(kw["buttons"][0][0].type, control_bot.types.InputInlineButtonTypeUserProfile):
+                raise RuntimeError("USER_ID_INVALID")
+            self.sent.append((text, kw))
+
+    monkeypatch.setattr(control_bot.ctx, "user", User(), raising=False)
+    monkeypatch.setattr(control_bot.ctx, "bot", Bot(), raising=False)
+    ev = Event()
+    run(control_bot._open_dm(ev, "123456789"))
+    assert len(ev.sent) == 1
+    assert ev.sent[0][1]["buttons"][0][0].type.url == "tg://user?id=123456789"
+    assert ev.sent[0][1]["buttons"][1][0].type.data == b"dmsave:123456789"

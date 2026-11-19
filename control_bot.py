@@ -299,12 +299,12 @@ async def _resolve_user_id(arg: str) -> int | None:
 USER_ID_RE = re.compile(r"^\s*(?:id\s*[:=]?\s*)?(\d{6,15})\s*$", re.IGNORECASE)
 
 
-async def _bot_input_user(uid: int) -> types.InputUser:
-    """Bot uchun InputUser: keshdan olinadi, topilmasa access_hash=0 (botlarga shunday ruxsat bor)."""
+async def _bot_input_user(uid: int) -> types.InputUser | None:
+    """Bot bu odamni taniydimi: InputUser yoki None (bot hech qachon ko'rmagan bo'lsa)."""
     try:
         return utils.get_input_user(await ctx.bot.get_input_entity(uid))
     except Exception:
-        return types.InputUser(uid, 0)
+        return None
 
 
 def _display_name(ent) -> str | None:
@@ -342,35 +342,38 @@ async def _open_dm(event, arg: str) -> None:
         name = _display_name(ent)
         username = getattr(ent, "username", None)
     except Exception:
-        pass  # akkaunt bu ID ni hali "tanimaydi" — baribir profil tugmasi bilan urinib ko'ramiz
+        pass  # akkaunt bu ID ni hali "tanimaydi" — baribir tugma bilan urinib ko'ramiz
 
     if username:
         link = f"https://t.me/{username}"
-        button = Button.url("💬 Lichkaga o'tish", link)
+        variants = [Button.url("💬 Lichkaga o'tish", link)]
     else:
-        # Oddiy «tg://user?id=» URL tugmasi faqat telefon bu odamni oldindan «tanisa» ochiladi —
-        # aks holda bosilganda hech narsa bo'lmaydi. Profil tugmasida esa Telegram odam
-        # ma'lumotini xabarga qo'shib yuboradi, shuning uchun u har doim ochiladi.
+        # Oddiy «tg://user?id=» URL tugmasi faqat qurilma bu odamni oldindan «tanisa» ochiladi.
+        # Profil tugmasida Telegram odam ma'lumotini xabarga qo'shib yuboradi — lekin buning
+        # uchun botning o'zi odamni tanishi kerak. Avval profil tugmasi, bo'lmasa oddiy havola.
         link = f"tg://user?id={uid}"
-        button = types.KeyboardInlineButton(
-            "💬 Lichkaga o'tish", types.InputInlineButtonTypeUserProfile(await _bot_input_user(uid)))
-    buttons = [[button]]
-    if not username and known:
-        # Telegram Desktop profil tugmasini faqat odam kompyuter keshida bo'lsa ochadi —
-        # shunda o'z akkauntdan «Saqlangan xabarlar»ga mention yuborish yo'li qoladi
-        buttons.append([Button.inline("🖥 Kompyuterda ochilmasa", f"dmsave:{uid}".encode())])
+        variants = []
+        if (bot_user := await _bot_input_user(uid)) is not None:
+            variants.append(types.KeyboardInlineButton(
+                "💬 Lichkaga o'tish", types.InputInlineButtonTypeUserProfile(bot_user)))
+        variants.append(Button.url("💬 Lichkaga o'tish", link))
+    # Telegram Desktop tugmani faqat odam kompyuter keshida bo'lsa ochadi —
+    # shunda o'z akkauntdan «Saqlangan xabarlar»ga mention yuborish yo'li qoladi
+    extra = ([[Button.inline("🖥 Kompyuterda ochilmasa", f"dmsave:{uid}".encode())]]
+             if not username and known else [])
     text = (f"👤 <a href=\"{link}\">{html.escape(name or 'Foydalanuvchi')}</a>"
             + (f" (@{html.escape(username)})" if username else "")
             + f"\n🆔 <code>{uid}</code>")
-    try:
-        await event.respond(text, parse_mode="html", buttons=buttons)
-        return
-    except Exception as e:
-        # Odam maxfiylik sozlamasida havolani yopgan bo'lsa Telegram tugmani rad etadi
-        log.warning("Lichka tugmasini yaratib bo'lmadi (%s): %s", uid, e)
+    for button in variants:
+        try:
+            await event.respond(text, parse_mode="html", buttons=[[button]] + extra)
+            return
+        except Exception as e:
+            # Masalan, odam maxfiylik sozlamasida havolani yopgan bo'lsa Telegram tugmani rad etadi
+            log.warning("Lichka tugmasini yaratib bo'lmadi (%s): %s", uid, e)
     if known and await _mention_in_saved(uid):
         await event.respond(
-            text + "\n\n⚠️ Bot tugma yarata olmadi (maxfiylik sozlamasi). "
+            text + "\n\n⚠️ Bot tugma yarata olmadi. "
                    "«Saqlangan xabarlar»ga havola yubordim — o'sha yerda ism ustiga bosing.",
             parse_mode="html")
     else:
