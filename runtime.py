@@ -19,6 +19,7 @@ DEFAULTS = {
     "archive_enabled": config.ARCHIVE_ENABLED,
     "archive_groups": config.ARCHIVE_GROUPS,
     "archive_alerts": config.ARCHIVE_ALERTS,
+    "drive_media": config.DRIVE_MEDIA_ENABLED,
 }
 
 _values: dict = dict(DEFAULTS)

@@ -50,6 +50,8 @@ async def init(retry_forever: bool = True) -> bool:
             await db.archive.create_index([("chat_id", ASCENDING), ("msg_id", ASCENDING)], unique=True)
             await db.archive.create_index([("msg_id", ASCENDING), ("channel", ASCENDING)])
             await db.archive_chats.create_index([("last", DESCENDING)])
+            await db.archive_chats.create_index([("drive_dirty", ASCENDING), ("changed", ASCENDING)])
+            await db.archive.create_index([("drive_media", ASCENDING), ("date", ASCENDING)], sparse=True)
             log.info("MongoDB'ga ulandi (baza: %s)", MONGODB_DB)
             return True
         except OperationFailure as e:
@@ -406,6 +408,7 @@ async def archive_edit(chat_id: int, msg_id: int, text: str, ts: float) -> dict 
         {"chat_id": chat_id, "msg_id": msg_id},
         {"$set": {"text": text, "edited_at": ts},
          "$push": {"edits": {"text": old.get("text") or "", "ts": old.get("edited_at") or old.get("date")}}})
+    await db.archive_chats.update_one({"_id": chat_id}, {"$set": {"changed": ts, "drive_dirty": True}})
     return old
 
 
@@ -425,7 +428,9 @@ async def archive_mark_deleted(chat_id: int | None, msg_ids: list[int], ts: floa
         for d in docs:
             per_chat[d["chat_id"]] = per_chat.get(d["chat_id"], 0) + 1
         for cid, n in per_chat.items():
-            await db.archive_chats.update_one({"_id": cid}, {"$inc": {"deleted": n}, "$set": {"last_deleted": ts}})
+            await db.archive_chats.update_one({"_id": cid}, {"$inc": {"deleted": n},
+                                                             "$set": {"last_deleted": ts, "changed": ts,
+                                                                      "drive_dirty": True}})
     for d in docs:
         d["deleted"], d["deleted_at"] = True, ts
     return docs
@@ -433,11 +438,67 @@ async def archive_mark_deleted(chat_id: int | None, msg_ids: list[int], ts: floa
 
 async def archive_touch_chat(chat_id: int, title: str, username: str | None, kind: str, ts: float,
                              added: int = 1) -> None:
+    fields = {"title": title, "username": username, "kind": kind}
+    if added:  # yangi xabar bor — Drive'dagi nusxa yangilanishi kerak
+        fields.update(changed=time.time(), drive_dirty=True)
     await _get_db().archive_chats.update_one(
-        {"_id": chat_id},
-        {"$set": {"title": title, "username": username, "kind": kind},
-         "$max": {"last": ts}, "$inc": {"count": added}},
-        upsert=True)
+        {"_id": chat_id}, {"$set": fields, "$max": {"last": ts}, "$inc": {"count": added}}, upsert=True)
+
+
+async def archive_drive_pending(limit: int = 50) -> list[dict]:
+    """Drive'ga yuklanishi kerak bo'lgan (o'zgargan) chatlar."""
+    rows = await _get_db().archive_chats.find({"drive_dirty": True}).sort("changed", ASCENDING).limit(limit).to_list()
+    for r in rows:
+        r["chat_id"] = r.pop("_id")
+    return rows
+
+
+async def archive_drive_done(chat_id: int, changed, file_id: str, link: str) -> None:
+    """Yuklandi. Yuklash paytida chat yana o'zgargan bo'lsa ("changed" boshqa) — belgi qoladi."""
+    db = _get_db()
+    await db.archive_chats.update_one({"_id": chat_id}, {"$set": {"drive_file_id": file_id, "drive_link": link,
+                                                                  "drive_synced": time.time()}})
+    await db.archive_chats.update_one({"_id": chat_id, "changed": changed}, {"$set": {"drive_dirty": False}})
+
+
+async def archive_media_pending(limit: int = 20) -> list[dict]:
+    """Drive'ga yuklanishi kutilayotgan media (eskisidan boshlab)."""
+    return await _get_db().archive.find({"drive_media": "pending"}, _ARCHIVE_FIELDS) \
+        .sort("date", ASCENDING).limit(limit).to_list()
+
+
+async def archive_msg_set(chat_id: int, msg_id: int, **fields) -> None:
+    await _get_db().archive.update_one({"chat_id": chat_id, "msg_id": msg_id}, {"$set": fields})
+
+
+async def archive_media_done(chat_id: int, msg_id: int, file_id: str, link: str) -> None:
+    """Media Drive'ga yuklandi — chat HTML'i ham (havola bilan) yangilansin."""
+    db = _get_db()
+    await db.archive.update_one({"chat_id": chat_id, "msg_id": msg_id},
+                                {"$set": {"drive_media": "done", "drive_media_id": file_id,
+                                          "drive_media_link": link}})
+    await db.archive_chats.update_one({"_id": chat_id}, {"$set": {"changed": time.time(), "drive_dirty": True}})
+
+
+async def archive_chat_set(chat_id: int, **fields) -> None:
+    await _get_db().archive_chats.update_one({"_id": chat_id}, {"$set": fields})
+
+
+async def archive_media_counts() -> dict:
+    cursor = await _get_db().archive.aggregate([   # AsyncCollection.aggregate — korutina
+        {"$match": {"drive_media": {"$exists": True}}},
+        {"$group": {"_id": "$drive_media", "n": {"$sum": 1}}}])
+    rows = await cursor.to_list()
+    return {r["_id"]: r["n"] for r in rows}
+
+
+async def archive_drive_mark_all(only_missing: bool = False) -> int:
+    """Barcha chatlarni (only_missing — Drive'da hali fayli yo'qlarini) yuklashga belgilaydi."""
+    query: dict = {"count": {"$gt": 0}}
+    if only_missing:
+        query["drive_file_id"] = {"$exists": False}
+    res = await _get_db().archive_chats.update_many(query, {"$set": {"drive_dirty": True}})
+    return res.modified_count
 
 
 async def archive_chat(chat_id: int) -> dict | None:

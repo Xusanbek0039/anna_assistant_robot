@@ -23,6 +23,7 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `voicelab.py` | VoiceLab (voicelab.uz): ovozli xabarlarni matnga o'girish va o'zbekcha ayol ovozida javob (Madina) — ovozli javob faqat VoiceLab |
 | `finder.py` | Chatlardan aqlli qidirish: «Ali yuborgan manzilni top», «wifi parolini qidir» — matn, username, raqam, havola, rasm, fayl, lokatsiya (ism aytilmasa — barcha chatlardan) |
 | `archive.py` | Chat arxivi: barcha shaxsiy chatlar (istisnodagilar ham) saqlanadi; suhbatdosh xabar yoki butun chatni o'chirsa — bot xabar beradi va yozishmani **HTML fayl** qilib yuboradi (botda «🗂 Chat arxivi» tugmasi yoki /arxiv) |
+| `gdrive.py`, `drive_auth.py` | Chat arxivini Google Drive papkasiga HTML qilib yuklash (har chatga bitta fayl, o'zgarganda yangilanadi). Bir martalik sozlash: `python drive_auth.py` — `.env.example` dagi Google bo'limiga qarang |
 | `storage.py` | MongoDB Atlas bilan ishlash |
 | `config.py` | `.env` dan sozlamalarni o'qish |
 

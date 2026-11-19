@@ -144,6 +144,16 @@ ARCHIVE_MEDIA_MAX_KB = _int("ARCHIVE_MEDIA_MAX_KB", 512)  # rasm/ovozli xabar sh
 ARCHIVE_EXPORT_LIMIT = _int("ARCHIVE_EXPORT_LIMIT", 5000)  # HTML da chatning oxirgi nechta xabari
 # Ishga tushganda mavjud chatlardan ham nusxa: birinchi marta har chatdan shuncha oxirgi xabar (0 = yo'q)
 ARCHIVE_SYNC_LIMIT = _int("ARCHIVE_SYNC_LIMIT", 1000)
+# --- Google Drive: chat arxivi Drive papkasiga HTML fayl bo'lib yuklanadi (har chatga bitta fayl) ---
+GOOGLE_OAUTH_CLIENT_ID = _str("GOOGLE_OAUTH_CLIENT_ID")
+GOOGLE_OAUTH_CLIENT_SECRET = _str("GOOGLE_OAUTH_CLIENT_SECRET")      # maxfiy!
+GOOGLE_OAUTH_REFRESH_TOKEN = _str("GOOGLE_OAUTH_REFRESH_TOKEN")      # maxfiy! `python drive_auth.py` bilan olinadi
+GOOGLE_DRIVE_ROOT_FOLDER_ID = _str("GOOGLE_DRIVE_ROOT_FOLDER_ID")
+DRIVE_SYNC_MINUTES = max(1, _int("DRIVE_SYNC_MINUTES", 10))  # o'zgargan chatlar shuncha daqiqada bir yuklanadi
+# Chatlardagi rasm, video, ovozli va video-xabarlar Drive'ga asl sifatida (chat papkasiga) yuklanib boradi
+DRIVE_MEDIA_ENABLED = _bool("DRIVE_MEDIA_ENABLED", True)
+DRIVE_MEDIA_MAX_MB = _int("DRIVE_MEDIA_MAX_MB", 500)  # bundan katta fayl yuklanmaydi
+DRIVE_MEDIA_FILES = _bool("DRIVE_MEDIA_FILES", False)  # hujjat/fayllar (pdf, zip ...) ham yuklansinmi
 # Bir vaqtda faqat bitta nusxa ishlasin (ikki nusxa = bot har xabarni ikki marta yuboradi)
 SINGLE_INSTANCE = _bool("SINGLE_INSTANCE", True)
 HISTORY_LIMIT = _int("HISTORY_LIMIT", 30)  # AI ga beriladigan oxirgi xabarlar soni

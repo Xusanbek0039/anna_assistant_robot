@@ -9,6 +9,7 @@ import archive
 import config
 import control_bot
 import finance
+import gdrive
 import health
 import instance
 import report
@@ -113,6 +114,11 @@ async def main() -> None:
         log.info("Avtomatik bio o'chirilgan (BIO_ENABLED=false)")
     if config.ARCHIVE_SYNC_LIMIT > 0:
         background.append(_archive_sync(user))
+    if gdrive.enabled():
+        background.append(supervise("Google Drive arxivi", archive.drive_loop(control_bot.alert)))
+        background.append(supervise("Google Drive media", archive.drive_media_loop(user, control_bot.alert)))
+    else:
+        log.info("Google Drive arxivi o'chiq - .env da yo'q: %s", ", ".join(gdrive.missing()))
     if config.REPORT_ENABLED:
         background.append(supervise("Kunlik hisobot", report.run(control_bot.send_html)))
     if config.FINANCE_ENABLED:

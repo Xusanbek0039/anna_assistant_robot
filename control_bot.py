@@ -14,6 +14,7 @@ import bio_updater
 import config
 import finance
 import finder
+import gdrive
 import report
 import runtime
 import saver
@@ -450,15 +451,25 @@ async def deleted_alert(chat_id: int, docs: list[dict]) -> None:
         if d.get("media") and d.get("text"):
             body = f"[{d['media']}] {body}"
         arrow = "📤" if d.get("out") else "📥"
-        lines.append(f"{arrow} <i>{_when(d.get('date'))}</i> {html.escape(body[:300])}")
+        link = d.get("drive_media_link")
+        drive = f' <a href="{html.escape(link)}">☁️ Drive</a>' if link else ""
+        lines.append(f"{arrow} <i>{_when(d.get('date'))}</i> {html.escape(body[:300])}{drive}")
     if len(docs) > ARCHIVE_PREVIEW:
         lines.append(f"… yana {len(docs) - ARCHIVE_PREVIEW} ta — HTML faylda")
     lines.append("\n💾 Hammasi arxivda saqlangan.")
     try:
-        await ctx.bot.send_message(ctx.owner_id, "\n".join(lines), parse_mode="html",
-                                   buttons=_html_buttons(chat_id))
+        msg = await ctx.bot.send_message(ctx.owner_id, "\n".join(lines), parse_mode="html",
+                                         buttons=_html_buttons(chat_id))
     except Exception:
         log.exception("O'chirish haqida ogohlantirish yuborilmadi")
+        return
+    if not gdrive.enabled():
+        return
+    try:  # Drive'dagi nusxani darhol yangilab, havolasini tugma qilib qo'shamiz
+        link = await archive.drive_sync_chat(chat_id)
+        await msg.edit(buttons=_html_buttons(chat_id) + [[Button.url("☁️ Google Drive'da ochish", link)]])
+    except Exception as e:
+        log.warning("O'chirilgan chat Drive'ga yuklanmadi (%s)", gdrive.explain(e))
 
 
 async def _archive_panel() -> tuple[str, list]:
@@ -475,7 +486,8 @@ async def _archive_panel() -> tuple[str, list]:
         f"Guruhlar: {'🟢 arxivlanadi' if groups else '⚪️ arxivlanmaydi'}\n"
         f"O'chirilganda xabar berish: {'🟢 yoqiq' if alerts else '⚪️ o‘chiq'}\n\n"
         f"💾 Saqlangan: {st.get('messages', '?')} ta xabar, {st.get('chats', '?')} ta chat\n"
-        f"🗑 O'chirilganlari: {st.get('deleted', '?')} ta\n\n"
+        f"🗑 O'chirilganlari: {st.get('deleted', '?')} ta\n"
+        f"{_drive_line()}\n\n"
         "Chatni tanlang — yozishmani HTML fayl qilib yuboraman. Nomi bo'yicha topish: "
         "<code>/arxiv Ali</code>"
     )
@@ -485,7 +497,30 @@ async def _archive_panel() -> tuple[str, list]:
          Button.inline("🔕 Xabar bermasin" if alerts else "🔔 Xabar bersin", b"arc:set:archive_alerts")],
         [Button.inline("⚪️ Guruhlarsiz" if groups else "👥 Guruhlar ham", b"arc:set:archive_groups")],
     ]
+    if gdrive.enabled():
+        buttons[-1].append(Button.inline("☁️ Drive'ga hozir yuklash", b"arc:drive"))
+        media_on = runtime.get("drive_media")
+        buttons.append([Button.inline("⏸ Rasm/video Drive'ga — to'xtatish" if media_on
+                                      else "🖼 Rasm/videoni Drive'ga yuklash", b"arc:set:drive_media")])
     return text, buttons
+
+
+def _drive_line() -> str:
+    if not gdrive.enabled():
+        return "☁️ Google Drive: ⚪️ sozlanmagan (" + ", ".join(gdrive.missing()) + ")"
+    st = archive.drive_state
+    if st["ok"] is False:
+        return f"☁️ Google Drive: ❌ {html.escape(st['problem'])}"
+    when = f", oxirgi: {_when(st['last'])}" if st["last"] else ""
+    line = f"☁️ Google Drive: 🟢 har {config.DRIVE_SYNC_MINUTES} daqiqada yuklanadi{when}"
+    ms = archive.media_state
+    if not runtime.get("drive_media"):
+        line += "\n🖼 Rasm/video Drive'ga: ⚪️ o'chiq"
+    elif ms["ok"] is False:
+        line += f"\n🖼 Rasm/video Drive'ga: ❌ {html.escape(ms['problem'])}"
+    else:
+        line += f"\n🖼 Rasm/video Drive'ga: 🟢 kelishi bilan yuklanadi (shu ishga tushishda: {ms['done']} ta)"
+    return line
 
 
 async def _archive_list(page: int, only_deleted: bool, name: str = "") -> tuple[str, list]:
@@ -520,7 +555,10 @@ async def _archive_chat_view(chat_id: int) -> tuple[str, list]:
             f"💾 Arxivda: {info.get('count', 0)} ta xabar · 🗑 o'chirilgan: {info.get('deleted', 0)}\n"
             f"Oxirgi xabar: {_when(info.get('last')) or '—'}\n\n"
             "«Butun yozishma» ga Telegram'da hali turgan xabarlar ham qo'shiladi.")
-    return text, _html_buttons(chat_id) + [[Button.inline("⬅️ Chatlar", b"arc:list:0")]]
+    buttons = _html_buttons(chat_id)
+    if info.get("drive_link"):
+        buttons.append([Button.url("☁️ Google Drive'da ochish", info["drive_link"])])
+    return text, buttons + [[Button.inline("⬅️ Chatlar", b"arc:list:0")]]
 
 
 async def _send_archive_html(chat_id: int, only_deleted: bool) -> None:
@@ -829,8 +867,13 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer("Tayyorlanmoqda...")
             await _send_archive_html(int(arg), len(parts) > 3 and parts[3] == "d")
             return
+        if action == "drive":
+            await storage.archive_drive_mark_all(only_missing=True)
+            archive.drive_wake()
+            await event.answer("☁️ Yuklash boshlandi — o'zgargan chatlar Drive'ga ketadi", alert=True)
+            return
         await event.answer()
-        if action == "set" and arg in ("archive_enabled", "archive_alerts", "archive_groups"):
+        if action == "set" and arg in ("archive_enabled", "archive_alerts", "archive_groups", "drive_media"):
             await runtime.update(**{arg: not runtime.get(arg)})
             text, buttons = await _archive_panel()
         elif action in ("list", "dlist"):
@@ -1054,7 +1097,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         results = await ctx.monitor.check_once()
         await event.respond("\n".join(f"{'✅' if p is None else '❌'} {name}" + (f": {p}" if p else "")
                                       for name, p in results.items())
-                            + f"\n\n🎤 {voicelab.describe()}")
+                            + f"\n\n🎤 {voicelab.describe()}"
+                            + f"\n☁️ Google Drive: {await gdrive.check() or 'ishlayapti'}")
 
     # ---------- profil: bio, iqtibos, online ----------
     # /bio, /online, /quote — argumentsiz bo'lsa tugmali panel, argument bilan — to'g'ridan-to'g'ri

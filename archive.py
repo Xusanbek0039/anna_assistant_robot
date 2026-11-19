@@ -86,6 +86,7 @@ def message_doc(msg, chat_id: int, sender_name: str = "") -> dict:
         "media": media_label(msg),
         "file_name": getattr(file, "name", None) if file else None,
         "view_once": bool(getattr(msg.media, "ttl_seconds", None)),
+        "mime": (getattr(file, "mime_type", None) or "") if file else "",
         "fwd": bool(msg.fwd_from),
         "reply_to": msg.reply_to_msg_id,
         "date": msg.date.timestamp() if msg.date else time.time(),
@@ -158,9 +159,13 @@ async def _store(event) -> None:
     doc = message_doc(msg, event.chat_id, sender_name)
     if doc["media"]:
         doc["media_id"] = await _save_blob(msg)
+        if wants_drive_media(doc):
+            doc["drive_media"] = "pending"   # fon jarayoni asl faylni Drive'ga yuklaydi
     added = await storage.archive_add(doc)
     await storage.archive_touch_chat(event.chat_id, display_name(chat) or str(event.chat_id),
                                      getattr(chat, "username", None), kind, doc["date"], int(added))
+    if added and doc.get("drive_media"):
+        _media_wake.set()
 
 
 async def _edited(event) -> None:
@@ -300,18 +305,275 @@ async def sync_existing(user, per_chat: int, pause: float = 0.5) -> tuple[int, i
     return chats, added_total
 
 
+async def _render(chat_id: int, only_deleted: bool) -> tuple[bytes, dict, int]:
+    docs = await storage.archive_messages(chat_id, only_deleted, limit=config.ARCHIVE_EXPORT_LIMIT)
+    info = await storage.archive_chat(chat_id) or {"chat_id": chat_id, "title": str(chat_id)}
+    media = await storage.archive_media_get([d["media_id"] for d in docs if d.get("media_id")])
+    return build_html(info, docs, media, only_deleted).encode("utf-8"), info, len(docs)
+
+
+def _safe(title: str) -> str:
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", title or "").strip("_")[:40] or "chat"
+
+
 async def export_html(user, chat_id: int, only_deleted: bool = False) -> tuple[bytes, str, int]:
     """(HTML fayl, fayl nomi, xabarlar soni)."""
     if not only_deleted:
         await backfill(user, chat_id, config.ARCHIVE_EXPORT_LIMIT)
-    docs = await storage.archive_messages(chat_id, only_deleted, limit=config.ARCHIVE_EXPORT_LIMIT)
-    info = await storage.archive_chat(chat_id) or {"title": str(chat_id)}
-    media = await storage.archive_media_get([d["media_id"] for d in docs if d.get("media_id")])
-    page = build_html(info, docs, media, only_deleted)
-    safe = re.sub(r'[\\/:*?"<>|\s]+', "_", info.get("title") or str(chat_id)).strip("_")[:40] or "chat"
+    data, info, n = await _render(chat_id, only_deleted)
     stamp = datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%Y-%m-%d_%H-%M")
-    name = f"{'ochirilgan_' if only_deleted else 'chat_'}{safe}_{stamp}.html"
-    return page.encode("utf-8"), name, len(docs)
+    name = f"{'ochirilgan_' if only_deleted else 'chat_'}{_safe(info.get('title'))}_{stamp}.html"
+    return data, name, n
+
+
+# ---------- Google Drive ----------
+DRIVE_BATCH = 50
+_drive_lock = asyncio.Lock()
+_drive_wake = asyncio.Event()
+drive_state = {"ok": None, "problem": "", "last": 0.0, "files": 0}
+
+
+def _drive_base(info: dict) -> str:
+    title = info.get("title") or str(info.get("chat_id"))
+    user = f" (@{info['username']})" if info.get("username") else ""
+    return f"{_safe(title)}{user} [{info.get('chat_id')}]"
+
+
+def _drive_name(info: dict) -> str:
+    return _drive_base(info) + ".html"
+
+
+def _link(res: dict) -> str:
+    return res.get("webViewLink") or f"https://drive.google.com/file/d/{res['id']}/view"
+
+
+def _fatal(e) -> bool:
+    """Sozlamadagi xato (token, ruxsat, joy tugagan) — boshqa fayllar ham yuklanmaydi."""
+    return e.status in (401, 403) or "invalid_grant" in e.reason or "invalid_client" in e.reason
+
+
+async def _chat_folder(chat_id: int, info: dict | None = None, fresh: bool = False) -> str:
+    """Har bir chatning Drive'dagi papkasi: <asosiy papka>/<Ism (@user) [id]>/ — HTML va media shu yerda."""
+    import gdrive
+    info = info or await storage.archive_chat(chat_id) or {"chat_id": chat_id}
+    if info.get("drive_folder_id") and not fresh:
+        return info["drive_folder_id"]
+    folder = await gdrive.ensure_folder(_drive_base({**info, "chat_id": chat_id}))
+    await storage.archive_chat_set(chat_id, drive_folder_id=folder)
+    return folder
+
+
+async def _in_folder(chat_id: int, info: dict | None, upload):
+    """upload(folder) ni bajaradi; chat papkasi Drive'da o'chirib yuborilgan bo'lsa (404) — qayta yaratadi."""
+    import gdrive
+    folder = await _chat_folder(chat_id, info)
+    try:
+        return await upload(folder)
+    except gdrive.DriveError as e:
+        if e.status != 404:
+            raise
+        log.info("Chat %s papkasi Drive'da topilmadi — qayta yaratiladi", chat_id)
+        return await upload(await _chat_folder(chat_id, info, fresh=True))
+
+
+async def drive_sync_chat(chat_id: int, info: dict | None = None) -> str:
+    """Bitta chatni Drive'ga yuklaydi (bor bo'lsa — o'sha faylni yangilaydi). Fayl havolasini qaytaradi."""
+    import gdrive
+    info = info or await storage.archive_chat(chat_id) or {"chat_id": chat_id}
+    changed = info.get("changed")
+    async with _drive_lock:
+        data, info2, _ = await _render(chat_id, False)
+        res = await _in_folder(chat_id, info, lambda folder: gdrive.upload(
+            _drive_name(info2), data, "text/html", info.get("drive_file_id"), parent=folder))
+    link = _link(res)
+    await storage.archive_drive_done(chat_id, changed, res["id"], link)
+    return link
+
+
+# ---------- media (rasm, video, ovozli xabar) -> Drive ----------
+DRIVE_MEDIA_KINDS = {"rasm", "video", "video-xabar", "ovozli xabar", "GIF", "audio"}
+MEDIA_BATCH = 20
+MEDIA_ATTEMPTS = 3
+_media_wake = asyncio.Event()
+media_state = {"ok": None, "problem": "", "done": 0}
+
+
+def wants_drive_media(doc: dict) -> bool:
+    """Bu xabardagi media Drive'ga yuklanadimi."""
+    import gdrive
+    if not (gdrive.enabled() and runtime.get("drive_media")):
+        return False
+    kind, mime = doc.get("media"), doc.get("mime") or ""
+    if kind in DRIVE_MEDIA_KINDS:
+        return True
+    return kind == "fayl" and (config.DRIVE_MEDIA_FILES or mime.startswith(("image/", "video/")))
+
+
+def _media_name(doc: dict, msg, path: str) -> str:
+    import os
+    stamp = datetime.fromtimestamp(doc["date"], ZoneInfo(config.TIMEZONE)).strftime("%Y-%m-%d_%H-%M-%S")
+    who = "men" if doc.get("out") else "u"
+    original = doc.get("file_name") or os.path.basename(path)
+    return f"{stamp}_{who}_{doc['msg_id']}_{original}"
+
+
+async def _upload_media(user, doc: dict) -> str:
+    """Bitta mediani Telegram'dan yuklab olib, Drive'dagi chat papkasiga joylaydi. Natija holati."""
+    import os
+    import shutil
+    import tempfile
+    import gdrive
+    cid, mid = doc["chat_id"], doc["msg_id"]
+    msg = await user.get_messages(cid, ids=mid)
+    if msg is None or not msg.media:
+        await storage.archive_msg_set(cid, mid, drive_media="lost")  # yuklashga ulgurmay o'chirilgan
+        return "lost"
+    size = getattr(msg.file, "size", 0) or 0
+    if size > config.DRIVE_MEDIA_MAX_MB * 1024 * 1024:
+        await storage.archive_msg_set(cid, mid, drive_media="too_big")
+        return "too_big"
+    tmp = tempfile.mkdtemp(prefix="anna_drive_")
+    try:
+        path = await msg.download_media(file=tmp + os.sep)
+        if not path:
+            await storage.archive_msg_set(cid, mid, drive_media="lost")
+            return "lost"
+        mime = getattr(msg.file, "mime_type", None) or doc.get("mime") or "application/octet-stream"
+        name = _media_name(doc, msg, path)
+        res = await _in_folder(cid, None, lambda folder: gdrive.upload(name, mime=mime, parent=folder, path=path))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    await storage.archive_media_done(cid, mid, res["id"], _link(res))
+    return "done"
+
+
+async def drive_media_pending(user) -> int:
+    """Navbatdagi mediani Drive'ga yuklaydi. Yuklanganlar soni."""
+    import gdrive
+    done = 0
+    while runtime.get("drive_media"):
+        rows = await storage.archive_media_pending(MEDIA_BATCH)
+        if not rows:
+            break
+        retry_later = False
+        for d in rows:
+            try:
+                if await _upload_media(user, d) == "done":
+                    done += 1
+                    media_state["done"] += 1
+            except gdrive.DriveError as e:
+                if _fatal(e):
+                    raise
+                retry_later |= await _media_failed(d, gdrive.explain(e))
+            except Exception as e:
+                retry_later |= await _media_failed(d, type(e).__name__)
+        if retry_later or len(rows) < MEDIA_BATCH:
+            break
+    return done
+
+
+async def _media_failed(doc: dict, reason: str) -> bool:
+    """Xato: MEDIA_ATTEMPTS martagacha keyinroq qayta urinadi. Keyin urinish kerakmi — True."""
+    attempts = doc.get("drive_attempts", 0) + 1
+    log.warning("Media %s/%s Drive'ga yuklanmadi (%s), urinish %d", doc["chat_id"], doc["msg_id"], reason, attempts)
+    final = attempts >= MEDIA_ATTEMPTS
+    await storage.archive_msg_set(doc["chat_id"], doc["msg_id"], drive_attempts=attempts,
+                                  drive_error=reason, **({"drive_media": "failed"} if final else {}))
+    return not final
+
+
+async def drive_media_loop(user, alert) -> None:
+    """Fon vazifasi: yangi rasm/video/ovozli xabarlar kelishi bilan Drive'ga yuklanadi."""
+    import gdrive
+    await asyncio.sleep(40)
+    alerted = ""
+    while True:
+        wait = 120
+        try:
+            n = await drive_media_pending(user)
+            media_state.update(ok=True, problem="")
+            if n:
+                log.info("Google Drive: %d ta media yuklandi", n)
+            if alerted:
+                alerted = ""
+                await alert("☁️ Media yana Google Drive'ga yuklanmoqda.")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            reason = gdrive.explain(e)
+            media_state.update(ok=False, problem=reason)
+            log.warning("Google Drive (media): %s", reason)
+            wait = 600
+            if reason != alerted:
+                alerted = reason
+                await alert(f"☁️❌ Rasm/videolar Google Drive'ga yuklanmadi: {reason}")
+        try:
+            await asyncio.wait_for(_media_wake.wait(), timeout=wait)
+        except asyncio.TimeoutError:
+            pass
+        _media_wake.clear()
+
+
+async def drive_sync_pending() -> int:
+    """O'zgargan barcha chatlarni yuklaydi. Yuklanganlar soni."""
+    import gdrive
+    done = 0
+    while True:
+        rows = await storage.archive_drive_pending(DRIVE_BATCH)
+        if not rows:
+            break
+        progressed = 0
+        for info in rows:
+            try:
+                await drive_sync_chat(info["chat_id"], info)
+                done += 1
+                progressed += 1
+            except gdrive.DriveError as e:
+                if _fatal(e) or e.status == 404:
+                    raise  # sozlamada xato (asosiy papka topilmadi va h.k.) — qolgan chatlar ham yuklanmaydi
+                log.warning("Chat %s Drive'ga yuklanmadi: %s", info["chat_id"], gdrive.explain(e))
+            except Exception as e:
+                log.warning("Chat %s Drive'ga yuklanmadi (%s)", info["chat_id"], type(e).__name__)
+        if progressed == 0 or len(rows) < DRIVE_BATCH:
+            break
+    return done
+
+
+def drive_wake() -> None:
+    """Drive siklini darhol ishga tushirish (masalan, botdagi «Hozir yuklash» tugmasi)."""
+    _drive_wake.set()
+
+
+async def drive_loop(alert) -> None:
+    """Fon vazifasi: har DRIVE_SYNC_MINUTES da o'zgargan chatlar Drive'ga yuklanadi."""
+    import gdrive
+    await asyncio.sleep(30)
+    await storage.archive_drive_mark_all(only_missing=True)  # Drive'da hali nusxasi yo'q chatlar
+    alerted = ""
+    while True:
+        try:
+            n = await drive_sync_pending()
+            drive_state.update(ok=True, problem="", last=time.time())
+            drive_state["files"] += n
+            if n:
+                log.info("Google Drive: %d ta chat yuklandi", n)
+            if alerted:
+                alerted = ""
+                await alert("☁️ Google Drive bilan aloqa tiklandi — arxiv yana yuklanmoqda.")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            reason = gdrive.explain(e)
+            drive_state.update(ok=False, problem=reason)
+            log.warning("Google Drive: %s", reason)
+            if reason != alerted:   # bir xil xato haqida bir marta
+                alerted = reason
+                await alert(f"☁️❌ Chat arxivi Google Drive'ga yuklanmadi: {reason}")
+        try:
+            await asyncio.wait_for(_drive_wake.wait(), timeout=config.DRIVE_SYNC_MINUTES * 60)
+        except asyncio.TimeoutError:
+            pass
+        _drive_wake.clear()
 
 
 _ICONS = {"rasm": "📸", "video": "🎬", "ovozli xabar": "🎤", "video-xabar": "📹", "audio": "🎵", "fayl": "📎",
@@ -404,6 +666,9 @@ def build_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]]
                 if d.get("file_name"):
                     label += f": {d['file_name']}"
                 parts.append(f"<div class='media'>[{_text(label)}]</div>")
+            if d.get("drive_media_link"):
+                parts.append(f"<div class='media'><a href='{_text(d['drive_media_link'])}' target='_blank' "
+                             "rel='noopener' style='color:#6ab3f3'>☁️ Asl fayl Google Drive'da</a></div>")
             if d.get("view_once"):
                 parts.append("<div class='media'>🔥 bir marta ko‘riladigan media</div>")
         if d.get("text"):
