@@ -45,3 +45,25 @@ def should_alert(reason: str, chat_id: int) -> bool:
         return False
     _alerted.add(key)
     return True
+
+
+async def owner_ok() -> tuple[bool, str | None]:
+    """Egasining o'z so'rovlari (xulosa, va'dalar) uchun — faqat kunlik umumiy limit tekshiriladi."""
+    if not config.OPENAI_API_KEY:
+        return False, "OPENAI_API_KEY yo'q"
+    try:
+        st = await storage.get_stats()
+    except Exception:
+        return True, None
+    total = st.get("ai_requests", 0)
+    if config.AI_DAILY_LIMIT and total >= config.AI_DAILY_LIMIT:
+        return False, f"kunlik umumiy AI limiti tugadi ({total}/{config.AI_DAILY_LIMIT})"
+    return True, None
+
+
+async def record_owner(kind: str, tokens: int = 0) -> None:
+    """Egasining AI so'rovi: umumiy hisobga yoziladi, suhbatdoshlarning limitiga ta'sir qilmaydi."""
+    try:
+        await storage.stat_inc(**{"ai_requests": 1, f"ai_{kind}": 1, "ai_tokens": tokens})
+    except Exception as e:
+        log.warning("AI sarfi yozilmadi (%s)", type(e).__name__)

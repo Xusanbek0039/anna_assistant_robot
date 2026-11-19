@@ -52,6 +52,11 @@ async def init(retry_forever: bool = True) -> bool:
             await db.archive_chats.create_index([("last", DESCENDING)])
             await db.archive_chats.create_index([("drive_dirty", ASCENDING), ("changed", ASCENDING)])
             await db.archive.create_index([("drive_media", ASCENDING), ("date", ASCENDING)], sparse=True)
+            await db.archive.create_index([("date", DESCENDING)])
+            await db.archive.create_index([("deleted_at", DESCENDING)], sparse=True)
+            await db.archive.create_index([("edited_at", DESCENDING)], sparse=True)
+            await db.promises.create_index([("done", ASCENDING), ("due", ASCENDING)])
+            await db.promises.create_index([("chat_id", ASCENDING), ("key", ASCENDING)])
             log.info("MongoDB'ga ulandi (baza: %s)", MONGODB_DB)
             return True
         except OperationFailure as e:
@@ -586,6 +591,154 @@ async def archive_stats() -> dict:
         "deleted": await db.archive.count_documents({"deleted": True}),
         "chats": await db.archive_chats.estimated_document_count(),
     }
+
+
+# ---------- arxivdan qidirish (o'chirilgan / tahrirlangan) ----------
+async def archive_search(chat_id: int | None, keywords: list[str], days: int | None = None,
+                         only_them: bool = False, limit: int = 30) -> list[dict]:
+    """Telegram'da endi yo'q (o'chirilgan) yoki tahrirlangan xabarlar ichidan kalit so'zlar bo'yicha."""
+    import re
+    words = [w for w in (k.strip() for k in keywords) if len(w) >= 2][:8]
+    if not words:
+        return []
+    rx = [{"$regex": re.escape(w), "$options": "i"} for w in words]
+    query: dict = {
+        "$and": [
+            {"$or": [{"deleted": True}, {"edits.0": {"$exists": True}}]},
+            {"$or": [{"text": r} for r in rx] + [{"edits.text": r} for r in rx]},
+        ]}
+    if chat_id is not None:
+        query["chat_id"] = chat_id
+    if days:
+        query["date"] = {"$gte": time.time() - days * 86400}
+    if only_them:
+        query["out"] = False
+    return await _get_db().archive.find(query, _ARCHIVE_FIELDS).sort("date", DESCENDING).limit(limit).to_list()
+
+
+# ---------- haftalik hisobot ----------
+async def archive_week_stats(since: float) -> dict:
+    """Oxirgi davr statistikasi: faol chatlar, o'chirish/tahrirlar, javobsiz qolganlar."""
+    db = _get_db()
+
+    async def agg(pipeline):
+        cursor = await db.archive.aggregate(pipeline)
+        return await cursor.to_list()
+
+    active = await agg([
+        {"$match": {"date": {"$gte": since}}},
+        {"$group": {"_id": "$chat_id", "inc": {"$sum": {"$cond": ["$out", 0, 1]}},
+                    "out": {"$sum": {"$cond": ["$out", 1, 0]}}}},
+        {"$sort": {"inc": -1}}, {"$limit": 50}])
+    deleted = await agg([
+        {"$match": {"deleted_at": {"$gte": since}, "out": False}},
+        {"$group": {"_id": "$chat_id", "n": {"$sum": 1}}}, {"$sort": {"n": -1}}, {"$limit": 10}])
+    edited = await agg([
+        {"$match": {"edited_at": {"$gte": since}, "out": False}},
+        {"$group": {"_id": "$chat_id", "n": {"$sum": 1}}}, {"$sort": {"n": -1}}, {"$limit": 10}])
+    last = await agg([
+        {"$match": {"date": {"$gte": since - 30 * 86400}, "deleted": {"$ne": True}}},
+        {"$sort": {"date": -1}},
+        {"$group": {"_id": "$chat_id", "out": {"$first": "$out"}, "date": {"$first": "$date"},
+                    "text": {"$first": "$text"}, "media": {"$first": "$media"}}}])
+    # faqat shaxsiy chatlar (guruh id lari manfiy)
+    unanswered = sorted((r for r in last if r["_id"] > 0 and not r["out"] and r["date"] < time.time() - 86400),
+                        key=lambda r: r["date"])[:10]
+    ids = {r["_id"] for r in active + deleted + edited + unanswered}
+    chats = {c["_id"]: c for c in await db.archive_chats.find({"_id": {"$in": list(ids)}}).to_list()}
+    return {"active": active, "deleted": deleted, "edited": edited, "unanswered": unanswered, "chats": chats}
+
+
+async def archive_active_chats(since: float, limit: int = 15, kind: str = "user") -> list[dict]:
+    """Shu vaqtdan beri yozishilgan chatlar (eng faolidan)."""
+    rows = await _get_db().archive_chats.find({"last": {"$gte": since}, "kind": kind}) \
+        .sort("last", DESCENDING).limit(limit).to_list()
+    for r in rows:
+        r["chat_id"] = r.pop("_id")
+    return rows
+
+
+async def archive_user_chats(limit: int = 1000) -> list[dict]:
+    """Profili kuzatiladigan odamlar (yozishgan shaxsiy chatlar), eng faolidan."""
+    rows = await _get_db().archive_chats.find({"kind": "user", "_id": {"$gt": 0}}) \
+        .sort("last", DESCENDING).limit(limit).to_list()
+    for r in rows:
+        r["chat_id"] = r.pop("_id")
+    return rows
+
+
+# ---------- profil snapshotlari ----------
+async def profile_get(user_id: int) -> dict | None:
+    return await _get_db().profiles.find_one({"_id": user_id})
+
+
+async def profile_set(user_id: int, **fields) -> None:
+    await _get_db().profiles.update_one({"_id": user_id}, {"$set": {**fields, "updated": time.time()}}, upsert=True)
+
+
+async def profile_add_saved_photo(user_id: int, photo_id: int) -> None:
+    await _get_db().profiles.update_one({"_id": user_id}, {"$addToSet": {"saved_photos": photo_id}}, upsert=True)
+
+
+# ---------- va'dalar ----------
+def _prm_out(doc: dict) -> dict:
+    doc["id"] = str(doc.pop("_id"))
+    return doc
+
+
+async def promise_add(chat_id: int, title: str, text: str, due: str | None, source: str) -> str | None:
+    """Yangi va'da. Shu chatda xuddi shu (normallashtirilgan) matnli ochiq va'da bo'lsa — qo'shilmaydi."""
+    import re
+    key = re.sub(r"\W+", " ", text.lower()).strip()
+    if not key:
+        return None
+    db = _get_db()
+    if await db.promises.find_one({"chat_id": chat_id, "key": key, "done": False}):
+        return None
+    res = await db.promises.insert_one({"chat_id": chat_id, "title": title, "text": text, "key": key,
+                                        "due": due, "done": False, "created": time.time(), "source": source})
+    return str(res.inserted_id)
+
+
+async def promise_list(open_only: bool = True, due_until: str | None = None, limit: int = 30) -> list[dict]:
+    query: dict = {}
+    if open_only:
+        query["done"] = False
+    if due_until:
+        query["due"] = {"$ne": None, "$lte": due_until}
+    rows = await _get_db().promises.find(query).sort([("due", ASCENDING), ("created", ASCENDING)]) \
+        .limit(limit).to_list()
+    return [_prm_out(r) for r in rows]
+
+
+async def promise_update(promise_id: str, **fields) -> bool:
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        res = await _get_db().promises.update_one({"_id": ObjectId(promise_id)}, {"$set": fields})
+    except InvalidId:
+        return False
+    return res.matched_count > 0
+
+
+async def promise_delete(promise_id: str) -> bool:
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        res = await _get_db().promises.delete_one({"_id": ObjectId(promise_id)})
+    except InvalidId:
+        return False
+    return res.deleted_count > 0
+
+
+# ---------- zaxira ----------
+async def collection_names() -> list[str]:
+    return sorted(await _get_db().list_collection_names())
+
+
+def raw_collection(name: str):
+    """Zaxira/tiklash uchun to'g'ridan-to'g'ri kolleksiya."""
+    return _get_db()[name]
 
 
 async def ping() -> None:

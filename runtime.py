@@ -20,6 +20,12 @@ DEFAULTS = {
     "archive_groups": config.ARCHIVE_GROUPS,
     "archive_alerts": config.ARCHIVE_ALERTS,
     "drive_media": config.DRIVE_MEDIA_ENABLED,
+    "edit_alerts": config.EDIT_ALERTS,
+    "profile_watch": config.PROFILE_WATCH,
+    "profile_photos": config.PROFILE_PHOTOS,
+    "promise_scan": config.PROMISE_SCAN,
+    "weekly_report": config.WEEKLY_REPORT,
+    "drive_backup": config.BACKUP_ENABLED,
 }
 
 _values: dict = dict(DEFAULTS)

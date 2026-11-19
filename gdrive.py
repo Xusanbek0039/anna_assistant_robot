@@ -229,3 +229,36 @@ async def ensure_folder(name: str, parent: str | None = None) -> str:
         if r.status_code != 200:
             raise DriveError(r.status_code, _reason(r))
         return r.json()["id"]
+
+
+async def list_children(parent: str, folders_only: bool = False) -> list[dict]:
+    """Papka ichidagilar: [{"id", "name", "mimeType"}] (savatdagilarsiz)."""
+    q = f"'{_q(parent)}' in parents and trashed = false"
+    if folders_only:
+        q += " and mimeType = 'application/vnd.google-apps.folder'"
+    out, token = [], None
+    async with _client() as c:
+        auth = {"Authorization": f"Bearer {await _access_token(c)}"}
+        while True:
+            params = {"q": q, "fields": "nextPageToken,files(id,name,mimeType)", "pageSize": "200",
+                      "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"}
+            if token:
+                params["pageToken"] = token
+            r = await c.get(f"{API}/files", headers=auth, params=params)
+            if r.status_code != 200:
+                raise DriveError(r.status_code, _reason(r))
+            body = r.json()
+            out += body.get("files") or []
+            token = body.get("nextPageToken")
+            if not token:
+                return out
+
+
+async def trash(file_id: str) -> None:
+    """Faylni/papkani savatga tashlaydi (Drive'da 30 kun turadi, keyin o'chadi)."""
+    async with _client() as c:
+        auth = {"Authorization": f"Bearer {await _access_token(c)}"}
+        r = await c.patch(f"{API}/files/{file_id}", headers=auth, params={"supportsAllDrives": "true"},
+                          json={"trashed": True})
+        if r.status_code not in (200, 404):
+            raise DriveError(r.status_code, _reason(r))

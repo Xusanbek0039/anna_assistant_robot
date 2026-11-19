@@ -24,6 +24,11 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `finder.py` | Chatlardan aqlli qidirish: «Ali yuborgan manzilni top», «wifi parolini qidir» — matn, username, raqam, havola, rasm, fayl, lokatsiya (ism aytilmasa — barcha chatlardan) |
 | `archive.py` | Chat arxivi: barcha shaxsiy chatlar (istisnodagilar ham) saqlanadi; suhbatdosh xabar yoki butun chatni o'chirsa — bot xabar beradi va yozishmani **HTML fayl** qilib yuboradi (botda «🗂 Chat arxivi» tugmasi yoki /arxiv) |
 | `gdrive.py`, `drive_auth.py` | Chat arxivini Google Drive papkasiga HTML qilib yuklash (har chatga bitta fayl, o'zgarganda yangilanadi). Bir martalik sozlash: `python drive_auth.py` — `.env.example` dagi Google bo'limiga qarang |
+| `profiles.py` | Profil kuzatuvi: yozishgan odamlar ism, username, bio, rasmini o'zgartirsa yoki akkauntini o'chirsa — xabar; profil rasmlari tarixi Drive'ga |
+| `promises.py` | AI chat xulosasi (/xulosa) va va'dalar kuzatuvi (/vadalar): kechqurun yangi va'dalarni topadi, ertalab muddati kelganlarini eslatadi |
+| `weekly.py` | Haftalik chat hisoboti: faol suhbatlar, kim o'chirdi/tahrirladi, kim javob kutyapti |
+| `backup.py`, `restore_backup.py` | Bazani har kuni Drive'ga zaxiralash (`Anna zaxira/<sana>/`) va undan tiklash: `python restore_backup.py <papka> --yes` |
+| `schedule.py` | Har kuni belgilangan vaqtda bajariladigan vazifalar uchun umumiy sikl |
 | `storage.py` | MongoDB Atlas bilan ishlash |
 | `config.py` | `.env` dan sozlamalarni o'qish |
 

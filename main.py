@@ -6,17 +6,21 @@ from telethon import TelegramClient
 
 import ai
 import archive
+import backup
 import config
 import control_bot
 import finance
 import gdrive
 import health
 import instance
+import profiles
+import promises
 import report
 import runtime
 import storage
 import userbot
 import voicelab
+import weekly
 from bio_updater import BioUpdater, validate_settings
 from presence import keep_online
 from tg_client import create_user_client, login, setup_logging
@@ -86,7 +90,9 @@ async def main() -> None:
     control_bot.setup(bot, user, owner_id=me.id)
     await control_bot.set_commands(bot, me.id)  # "/" bosilganda chiqadigan menyu
     userbot.setup(user, me_id=me.id)
-    archive.setup(user, me.id, control_bot.deleted_alert)  # o'chirilgan yozishmalarni tiklash uchun
+    # o'chirilgan / tahrirlangan yozishmalar
+    archive.setup(user, me.id, control_bot.deleted_alert, control_bot.edited_alert)
+    profiles.setup(user, control_bot.profile_alert)  # ism, username, bio, rasm o'zgarishlari
     monitor = health.Monitor(user, control_bot.alert)
     control_bot.ctx.monitor = monitor
 
@@ -117,8 +123,15 @@ async def main() -> None:
     if gdrive.enabled():
         background.append(supervise("Google Drive arxivi", archive.drive_loop(control_bot.alert)))
         background.append(supervise("Google Drive media", archive.drive_media_loop(user, control_bot.alert)))
+        background.append(supervise("Bazani zaxiralash", backup.run(control_bot.alert)))
     else:
         log.info("Google Drive arxivi o'chiq - .env da yo'q: %s", ", ".join(gdrive.missing()))
+    background += [
+        supervise("Profil kuzatuvi", profiles.run(user)),
+        supervise("Va'dalar tekshiruvi", promises.run_scan(control_bot.send_promises)),
+        supervise("Va'dalar eslatmasi", promises.run_remind(control_bot.send_promises)),
+        supervise("Haftalik chat hisoboti", weekly.run(control_bot.send_weekly)),
+    ]
     if config.REPORT_ENABLED:
         background.append(supervise("Kunlik hisobot", report.run(control_bot.send_html)))
     if config.FINANCE_ENABLED:

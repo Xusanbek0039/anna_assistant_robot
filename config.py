@@ -157,6 +157,29 @@ DRIVE_SYNC_MINUTES = max(1, _int("DRIVE_SYNC_MINUTES", 10))  # o'zgargan chatlar
 DRIVE_MEDIA_ENABLED = _bool("DRIVE_MEDIA_ENABLED", True)
 DRIVE_MEDIA_MAX_MB = _int("DRIVE_MEDIA_MAX_MB", 300)  # bundan katta fayl yuklanmaydi
 DRIVE_MEDIA_HISTORY = _bool("DRIVE_MEDIA_HISTORY", True)  # mavjud chatlardagi eski rasm/videolar ham
+
+# --- Kuzatuv: tahrir va profil o'zgarishlari ---
+EDIT_ALERTS = _bool("EDIT_ALERTS", True)              # suhbatdosh xabarini tahrirlasa — ogohlantirish
+PROFILE_WATCH = _bool("PROFILE_WATCH", True)          # ism, username, bio, rasm o'zgarsa — ogohlantirish
+PROFILE_CHECK_HOURS = max(1, _int("PROFILE_CHECK_HOURS", 6))
+PROFILE_PHOTOS = _bool("PROFILE_PHOTOS", True)        # profil rasmlari tarixi Drive'dagi chat papkasiga
+
+# --- Va'dalar (AI chat yozishmalaridan topadi va eslatadi) ---
+PROMISE_SCAN = _bool("PROMISE_SCAN", True)
+PROMISE_SCAN_TIME = _str("PROMISE_SCAN_TIME", "21:30")
+PROMISE_REMIND_TIME = _str("PROMISE_REMIND_TIME", "09:00")
+PROMISE_SCAN_CHATS = max(1, _int("PROMISE_SCAN_CHATS", 15))  # kechki tekshiruvda ko'pi bilan nechta chat
+
+# --- Haftalik chat hisoboti ---
+WEEKLY_REPORT = _bool("WEEKLY_REPORT", True)
+WEEKLY_REPORT_DAY = min(7, max(1, _int("WEEKLY_REPORT_DAY", 7)))  # 1=Du ... 7=Ya
+WEEKLY_REPORT_TIME = _str("WEEKLY_REPORT_TIME", "20:00")
+
+# --- Bazani Google Drive'ga zaxiralash ---
+BACKUP_ENABLED = _bool("BACKUP_ENABLED", True)
+BACKUP_TIME = _str("BACKUP_TIME", "04:00")
+BACKUP_KEEP_DAYS = max(1, _int("BACKUP_KEEP_DAYS", 14))
+BACKUP_MEDIA = _bool("BACKUP_MEDIA", True)  # arxivdagi kichik media (archive_media) ham
 DRIVE_MEDIA_FILES = _bool("DRIVE_MEDIA_FILES", False)  # hujjat/fayllar (pdf, zip ...) ham yuklansinmi
 # Bir vaqtda faqat bitta nusxa ishlasin (ikki nusxa = bot har xabarni ikki marta yuboradi)
 SINGLE_INSTANCE = _bool("SINGLE_INSTANCE", True)

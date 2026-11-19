@@ -16,6 +16,7 @@ class FakeGoogle:
         self.token_error, self.folder_404 = token_error, folder_404
         self.files: dict[str, dict] = {}
         self.folders: dict[str, dict] = {}
+        self.trashed: list[str] = []
         self.chunks = 0
         self.drop_after_chunks: set[int] = set()
         self.status_after_chunks: dict[int, int] = {}
@@ -30,10 +31,22 @@ class FakeGoogle:
             return httpx.Response(200, json={"access_token": "at", "expires_in": 3600})
         assert req.headers["authorization"] == "Bearer at"
         path = req.url.path
-        if path == "/drive/v3/files" and req.method == "GET":       # papkani qidirish
+        if path == "/drive/v3/files" and req.method == "GET":       # papkani qidirish / papka ichi
             q = req.url.params["q"]
+            if "name = " not in q:                                  # list_children
+                folders = [{"id": fid, "name": f["name"], "mimeType": "application/vnd.google-apps.folder"}
+                           for fid, f in self.folders.items() if f"'{f['parent']}' in parents" in q]
+                files = [] if "google-apps.folder" in q else [
+                    {"id": fid, "name": f["name"], "mimeType": f.get("mimeType", "")}
+                    for fid, f in self.files.items() if f"'{f['parents'][0]}' in parents" in q]
+                return httpx.Response(200, json={"files": folders + files})
             hit = [fid for fid, f in self.folders.items() if f"name = '{f['name']}'" in q and f"'{f['parent']}'" in q]
             return httpx.Response(200, json={"files": [{"id": hit[0]}] if hit else []})
+        if req.method == "PATCH" and path.startswith("/drive/v3/files/"):  # savatga tashlash
+            fid = path.rsplit("/", 1)[1]
+            if json.loads(req.content).get("trashed"):
+                self.trashed.append(self.folders.pop(fid, {}).get("name"))
+            return httpx.Response(200, json={"id": fid})
         if path == "/drive/v3/files" and req.method == "POST":      # papka yaratish
             meta = json.loads(req.content)
             if self.folder_404:

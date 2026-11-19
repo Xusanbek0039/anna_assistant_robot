@@ -33,6 +33,7 @@ HTML_MEDIA_BUDGET = 30 * 1024 * 1024
 EMBED_KINDS = {"rasm", "ovozli xabar", "video-xabar", "stiker", "GIF", "audio"}
 
 _on_deleted = None                # async (chat_id, docs) -> None — control_bot ogohlantirishi
+_on_edited = None                 # async (chat_id, eski hujjat, yangi matn) -> None
 _me_id = 0
 _del_buf: dict[int, list[dict]] = {}
 _del_last: dict[int, float] = {}
@@ -192,12 +193,54 @@ async def _store(event) -> None:
 
 
 async def _edited(event) -> None:
-    if not await _eligible(event):
+    found = await _eligible(event)
+    if not found:
         return
     msg = event.message
-    old = await storage.archive_edit(event.chat_id, msg.id, msg.message or "", time.time())
+    new_text = msg.message or ""
+    old = await storage.archive_edit(event.chat_id, msg.id, new_text, time.time())
     if old is None:   # arxivga tushmagan (masalan, dastur o'chiq paytda kelgan) — hozirgi holati yoziladi
         await _store(event)
+        return
+    # Reaksiya, pin, tugma o'zgarishi ham "tahrir" bo'lib keladi — faqat matn o'zgarganda xabar beramiz.
+    # O'zimizning tahrirlar va guruhlar — ogohlantirishsiz (faqat arxivda).
+    changed = (old.get("text") or "") != new_text
+    if changed and not old.get("out") and found[1] == "user" and runtime.get("edit_alerts") and _on_edited:
+        try:
+            await _on_edited(event.chat_id, old, new_text)
+        except Exception:
+            log.exception("Tahrir haqida ogohlantirish yuborilmadi")
+
+
+def chat_lines_from(docs: list[dict], title: str, max_chars: int = 12000) -> str:
+    """AI uchun yozishma matni: "[19.11 14:32] Siz: ..." — eng yangilaridan boshlab max_chars gacha."""
+    tz = ZoneInfo(config.TIMEZONE)
+    them = title or "Suhbatdosh"
+    lines, size = [], 0
+    for d in reversed(docs):
+        body = " ".join((d.get("text") or "").split())
+        if d.get("media"):
+            body = f"[{d['media']}] {body}".strip()
+        if not body:
+            continue
+        who = "Siz" if d.get("out") else (d.get("sender") or them)
+        marks = (" (o'chirilgan)" if d.get("deleted") else "") + (" (tahrirlangan)" if d.get("edits") else "")
+        line = f"[{_fmt(d.get('date'), '%d.%m %H:%M', tz)}] {who}{marks}: {body[:600]}"
+        if size + len(line) > max_chars:
+            break
+        lines.append(line)
+        size += len(line) + 1
+    return "\n".join(reversed(lines))
+
+
+async def chat_lines(chat_id: int, days: int | None = None, max_chars: int = 12000) -> tuple[str, dict, int]:
+    """(yozishma matni, chat ma'lumoti, xabarlar soni) — oxirgi `days` kun (None — hammasi)."""
+    docs = await storage.archive_messages(chat_id, limit=config.ARCHIVE_EXPORT_LIMIT)
+    if days:
+        since = time.time() - days * 86400
+        docs = [d for d in docs if (d.get("date") or 0) >= since]
+    info = await storage.archive_chat(chat_id) or {"chat_id": chat_id, "title": str(chat_id)}
+    return chat_lines_from(docs, info.get("title") or ""), info, len(docs)
 
 
 # ---------- o'chirilganlar ----------
@@ -229,9 +272,9 @@ async def _flush(cid: int) -> None:
             log.exception("O'chirilgan xabarlar haqida ogohlantirish yuborilmadi")
 
 
-def setup(user, me_id: int, on_deleted) -> None:
-    global _on_deleted, _me_id
-    _on_deleted, _me_id = on_deleted, me_id
+def setup(user, me_id: int, on_deleted, on_edited=None) -> None:
+    global _on_deleted, _on_edited, _me_id
+    _on_deleted, _on_edited, _me_id = on_deleted, on_edited, me_id
 
     @user.on(events.NewMessage())
     async def archive_new(event):

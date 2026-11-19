@@ -119,6 +119,36 @@ class Found:
     text: str
     media: str = ""
     chat_title: str = ""
+    deleted: bool = False   # arxivdan: Telegram'da endi yo'q (o'chirilgan)
+    old_text: str = ""      # arxivdan: tahrirlanishidan oldingi matni
+
+
+def from_archive(doc: dict, with_title: str = "") -> Found:
+    """Arxiv hujjati (o'chirilgan/tahrirlangan xabar) -> qidiruv natijasi."""
+    from datetime import timezone
+    edits = doc.get("edits") or []
+    return Found(chat_id=doc["chat_id"], id=doc["msg_id"],
+                 date=datetime.fromtimestamp(doc["date"], timezone.utc) if doc.get("date") else None,
+                 mine=bool(doc.get("out")), text=doc.get("text") or "", media=doc.get("media") or "",
+                 chat_title=with_title, deleted=bool(doc.get("deleted")),
+                 old_text=" | ".join(e.get("text") or "" for e in edits if e.get("text")))
+
+
+def merge_archive(live: list[Found], archived: list[Found]) -> list[Found]:
+    """Telegram natijalariga arxivdagilarni qo'shadi: bir xil xabar bo'lsa — arxivdagi belgilari qo'shiladi."""
+    by_key = {(f.chat_id, f.id): f for f in live}
+    for a in archived:
+        f = by_key.get((a.chat_id, a.id))
+        if f is not None:
+            f.old_text = f.old_text or a.old_text
+        else:
+            live.append(a)
+    return sorted(live, key=lambda f: f.date.timestamp() if f.date else 0, reverse=True)
+
+
+def forwardable(items: list[Found]) -> list[Found]:
+    """«Saqlangan xabarlarga yuborish» — o'chirilganlarini Telegram forward qila olmaydi."""
+    return [f for f in items if not f.deleted]
 
 
 @dataclass
@@ -565,6 +595,10 @@ def _ai_line(f: Found, idx: int) -> str:
     body = " ".join((f.text or "").split())[:300]
     if f.media:
         body = f"[{f.media}] {body}".strip()
+    if f.deleted:
+        body = f"(o'chirilgan xabar) {body}"
+    if f.old_text:
+        body += f" (tahrirdan oldin: {' '.join(f.old_text.split())[:200]})"
     return f"[{idx}] {when}, {who}{where}: {body}"
 
 
@@ -602,7 +636,7 @@ def local_pick(items: list[Found], keywords: list[str], limit: int = 5) -> list[
         return items[:limit]
 
     def score(f: Found) -> int:
-        hay = _norm(f"{f.text} {f.media}")
+        hay = _norm(f"{f.text} {f.media} {f.old_text}")
         return sum(hay.count(k) for k in kws)
 
     ranked = sorted(items, key=lambda f: -score(f))  # sorted barqaror — yangilari oldinda qoladi
@@ -627,10 +661,15 @@ def format_found(title: str, q: Query, answer: str, picked: list[Found], total: 
             body = " ".join((f.text or "").split())
             body = (body[:250] + "…") if len(body) > 250 else body
             line = f"{i}. <i>{when} · {html.escape(who)}</i>"
+            if f.deleted:
+                line += " · 🗑 <b>o'chirilgan</b> (arxivdan)"
             if f.media:
                 line += f"\n   {html.escape(f.media)}"
             if body:
                 line += f"\n   «{html.escape(body)}»"
+            if f.old_text:
+                old = " ".join(f.old_text.split())
+                line += f"\n   ✏️ avval: «{html.escape(old[:200] + ('…' if len(old) > 200 else ''))}»"
             lines.append(line)
     lines.append(f"\n<i>{total} ta nomzod xabar ko'rib chiqildi.</i>")
     return "\n".join(lines)
