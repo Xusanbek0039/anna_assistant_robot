@@ -3,6 +3,7 @@ import html
 import io
 import itertools
 import logging
+import re
 import time
 
 from telethon import Button, TelegramClient, events
@@ -79,6 +80,8 @@ HELP = (
     "/export [7|30|month|all] — Excel (CSV) fayl\n\n"
     "<b>Boshqa</b>\n"
     "/inbox — javob berilmagan xabarlar\n"
+    "/lichka &lt;id yoki @username&gt; — o'sha odamning lichkasiga o'tish tugmasi. "
+    "Botga faqat ID raqamini (6+ xona) yuborsangiz ham bo'ladi\n"
     "/reply &lt;chat_id&gt; &lt;matn&gt; — sizning nomingizdan javob yozish\n"
     "/ignore &lt;id yoki @username&gt; — bu odamga avtojavob bermaslik\n"
     "/unignore &lt;id&gt; — istisnodan chiqarish\n"
@@ -291,6 +294,40 @@ async def _resolve_user_id(arg: str) -> int | None:
         return None
 
 
+# Botga faqat raqam yuborilsa — bu Telegram ID deb qabul qilinadi (summa bilan adashmaslik uchun 6+ xona)
+USER_ID_RE = re.compile(r"^\s*(?:id\s*[:=]?\s*)?(\d{6,15})\s*$", re.IGNORECASE)
+
+
+async def _open_dm(event, arg: str) -> None:
+    """ID yoki @username bo'yicha o'sha odamning lichkasiga o'tadigan tugma yuboradi."""
+    arg = arg.strip()
+    uid = await _resolve_user_id(arg)
+    if uid is None:
+        await event.respond("❌ Foydalanuvchi topilmadi. ID raqam yoki @username yuboring.")
+        return
+    name, username = None, None
+    try:
+        ent = await ctx.user.get_entity(uid)
+        parts = (getattr(ent, "first_name", None), getattr(ent, "last_name", None))
+        name = " ".join(p for p in parts if p) or getattr(ent, "title", None)
+        username = getattr(ent, "username", None)
+    except Exception:
+        pass  # akkaunt bu ID ni hali "tanimaydi" — baribir tg:// havola bilan urinib ko'ramiz
+
+    link = f"https://t.me/{username}" if username else f"tg://user?id={uid}"
+    text = (f"👤 <a href=\"{link}\">{html.escape(name or 'Foydalanuvchi')}</a>"
+            + (f" (@{html.escape(username)})" if username else "")
+            + f"\n🆔 <code>{uid}</code>")
+    try:
+        await event.respond(text, parse_mode="html", buttons=[[Button.url("💬 Lichkaga o'tish", link)]])
+    except Exception:
+        # Odam maxfiylik sozlamasida havolani yopgan bo'lsa Telegram tugmani rad etadi — matndagi havola qoladi
+        await event.respond(
+            text + "\n\n⚠️ Tugma yaratib bo'lmadi (maxfiylik sozlamasi). Ism ustiga bosib ko'ring; "
+                   "ochilmasa — bu odam profilini faqat tanishlariga ko'rsatadi.",
+            parse_mode="html")
+
+
 # ---------- "/" menyusi ----------
 # (buyruq, tavsif) — Telegram'da "/" bosilganda shu ro'yxat chiqadi
 BOT_COMMANDS = [
@@ -326,6 +363,7 @@ BOT_COMMANDS = [
     ("tags", "🏷 Kontakt turlari ro'yxati"),
     ("tag", "🏷 Tur berish: /tag @user oila|mijoz|dost"),
     ("reply", "✍️ Javob: /reply chat_id matn"),
+    ("lichka", "👤 Lichkaga o'tish: /lichka id yoki @username"),
     ("ignored", "🚫 Istisnolar ro'yxati"),
     ("ignore", "🚫 Istisno: /ignore @user"),
     ("unignore", "↩️ Istisnodan chiqarish: /unignore id"),
@@ -1394,6 +1432,15 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         chat_id = int(event.pattern_match.group(1))
         await _send_as_owner(chat_id, event.pattern_match.group(2), event)
 
+    @bot.on(events.NewMessage(pattern=r"^/lichka(?:@\w+)?(?:\s+(\S+))?\s*$", func=is_owner))
+    async def _lichka(event):
+        arg = event.pattern_match.group(1)
+        if not arg:
+            await event.respond("Foydalanish: /lichka 123456789 yoki /lichka @username\n"
+                                "Yoki botga shunchaki ID raqamini yuboring.")
+            return
+        await _open_dm(event, arg)
+
     @bot.on(events.NewMessage(pattern=r"^/save(?:\s+([\s\S]+))?$", func=is_owner))
     async def _save_cmd(event):
         links = saver.parse_links(event.pattern_match.group(1) or "")
@@ -1735,6 +1782,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                 return
         if chat_id is None:
             chat_id = _awaiting_reply.pop("chat", None)
+        # Faqat ID raqami yuborildi -> o'sha odamning lichkasiga o'tish tugmasi
+        if chat_id is None and (m := USER_ID_RE.match(event.text)):
+            await _open_dm(event, m.group(1))
+            return
         # «o'chirilgan akkauntlarni ko'rsat» -> ro'yxat (taxminiy ismlari bilan)
         if chat_id is None and deleted_accounts.asks_for_list(event.text):
             await _show_gone(event, event.text)

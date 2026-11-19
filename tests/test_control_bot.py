@@ -149,3 +149,40 @@ def test_send_media_falls_back_to_document(monkeypatch):
     bot = _media_bot(monkeypatch, fail_first=True)
     run(control_bot.send_media(5, "Ali", b"x", "video.mp4", kind="video"))
     assert bot.files[1][2]["force_document"] is True and bot.files[1][1] == b"x"
+
+
+# ---------- /lichka: ID bo'yicha lichkaga o'tish ----------
+def test_user_id_regex():
+    rx = control_bot.USER_ID_RE
+    assert rx.match("123456789").group(1) == "123456789"
+    assert rx.match(" id: 5551234567 ").group(1) == "5551234567"
+    assert not rx.match("25000")          # kichik son — summa bo'lishi mumkin
+    assert not rx.match("nonga 250000")
+
+
+def test_open_dm_button(monkeypatch):
+    class Ent:
+        first_name, last_name, username = "Ali", "Valiyev", None
+
+    class User:
+        async def get_entity(self, x):
+            return Ent()
+
+    class Event:
+        def __init__(self):
+            self.sent = []
+
+        async def respond(self, text, **kw):
+            self.sent.append((text, kw))
+
+    monkeypatch.setattr(control_bot.ctx, "user", User(), raising=False)
+    ev = Event()
+    run(control_bot._open_dm(ev, "123456789"))
+    text, kw = ev.sent[0]
+    assert "tg://user?id=123456789" in text and "Ali Valiyev" in text
+    assert kw["buttons"][0][0].type.url == "tg://user?id=123456789"
+
+    Ent.username = "ali_v"
+    ev = Event()
+    run(control_bot._open_dm(ev, "123456789"))
+    assert ev.sent[0][1]["buttons"][0][0].type.url == "https://t.me/ali_v"
