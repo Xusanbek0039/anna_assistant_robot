@@ -462,9 +462,27 @@ async def archive_drive_done(chat_id: int, changed, file_id: str, link: str) -> 
 
 
 async def archive_media_pending(limit: int = 20) -> list[dict]:
-    """Drive'ga yuklanishi kutilayotgan media (eskisidan boshlab)."""
-    return await _get_db().archive.find({"drive_media": "pending"}, _ARCHIVE_FIELDS) \
+    """Drive'ga yuklanishi kutilayotgan media: avval yangi kelganlari ("pending", kelish tartibida),
+    keyin eski chatlardagilari ("history", eng yangisidan boshlab)."""
+    db = _get_db()
+    rows = await db.archive.find({"drive_media": "pending"}, _ARCHIVE_FIELDS) \
         .sort("date", ASCENDING).limit(limit).to_list()
+    if len(rows) < limit:
+        rows += await db.archive.find({"drive_media": "history"}, _ARCHIVE_FIELDS) \
+            .sort("date", DESCENDING).limit(limit - len(rows)).to_list()
+    return rows
+
+
+async def archive_media_mark_history(kinds: list[str], all_files: bool) -> int:
+    """Arxivdagi (mavjud chatlardan nusxalangan) rasm/videolarni Drive navbatiga qo'shadi. Qo'shilganlar soni."""
+    files: dict = {"media": "fayl"}
+    if not all_files:
+        files["mime"] = {"$regex": "^(image|video)/"}
+    res = await _get_db().archive.update_many(
+        {"drive_media": {"$exists": False}, "deleted": {"$ne": True},
+         "$or": [{"media": {"$in": list(kinds)}}, files]},
+        {"$set": {"drive_media": "history"}})
+    return res.modified_count
 
 
 async def archive_msg_set(chat_id: int, msg_id: int, **fields) -> None:

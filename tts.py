@@ -202,6 +202,33 @@ def to_ogg_opus(data: bytes) -> bytes:
     return buf.getvalue()
 
 
+def to_m4a(data: bytes) -> bytes:
+    """OGG/Opus (Telegram ovozli xabari) -> AAC .m4a — HTML'da barcha brauzerlarda, iPhone Safari'da ham ijro bo'ladi."""
+    import av
+
+    src = av.open(io.BytesIO(data))
+    buf = io.BytesIO()
+    out = av.open(buf, "w", format="ipod")
+    stream = out.add_stream("aac", rate=48000)
+    stream.bit_rate = 48000
+    stream.layout = "mono"
+    resampler = av.AudioResampler(format="fltp", layout="mono", rate=48000)
+    try:
+        for frame in src.decode(audio=0):
+            for r in resampler.resample(frame):
+                for p in stream.encode(r):
+                    out.mux(p)
+        for r in resampler.resample(None):
+            for p in stream.encode(r):
+                out.mux(p)
+        for p in stream.encode(None):
+            out.mux(p)
+    finally:
+        out.close()
+        src.close()
+    return buf.getvalue()
+
+
 async def _voicelab(text: str, lang: str) -> bytes:
     import asyncio
 

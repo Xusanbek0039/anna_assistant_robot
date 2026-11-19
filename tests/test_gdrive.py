@@ -16,6 +16,9 @@ class FakeGoogle:
         self.token_error, self.folder_404 = token_error, folder_404
         self.files: dict[str, dict] = {}
         self.folders: dict[str, dict] = {}
+        self.chunks = 0
+        self.drop_after_chunks: set[int] = set()
+        self.status_after_chunks: dict[int, int] = {}
         self.calls: list[str] = []
         self._pending: dict[str, dict] = {}
 
@@ -52,11 +55,35 @@ class FakeGoogle:
             self._pending["u1"] = {**self.files[fid], **json.loads(req.content)}
             return httpx.Response(200, headers={"location": "https://upload.example/u1"})
         if req.method == "PUT" and req.url.host == "upload.example":
-            f = self._pending.pop("u1")
-            f["data"] = req.content
-            self.files[f["id"]] = f
-            return httpx.Response(200, json={"id": f["id"], "webViewLink": f"https://drive/{f['id']}"})
+            rng = req.headers.get("content-range")
+            if not rng:                                    # bitta so'rovda (kichik fayl)
+                return self._finish(req.content)
+            spec, total = rng.split(" ", 1)[1].split("/")
+            total, up = int(total), self._pending["u1"]
+            buf = up.setdefault("buf", b"")
+            if spec == "*":                                # "qancha oldingiz?" so'rovi
+                if len(buf) >= total:
+                    return self._finish(buf)
+                return httpx.Response(308, headers={"range": f"bytes=0-{len(buf) - 1}"} if buf else {})
+            start, end = map(int, spec.split("-"))
+            assert start == len(buf) and end - start + 1 == len(req.content), "noto'g'ri bo'lak"
+            self.chunks += 1
+            if self.status_after_chunks.get(self.chunks):
+                return httpx.Response(self.status_after_chunks[self.chunks], json={"error": {"message": "x"}})
+            up["buf"] = buf = buf + req.content
+            if self.drop_after_chunks and self.chunks in self.drop_after_chunks:
+                raise httpx.ReadError("aloqa uzildi")   # Google oldi, lekin javob yetib kelmadi
+            if len(buf) < total:
+                return httpx.Response(308, headers={"range": f"bytes=0-{len(buf) - 1}"})
+            return self._finish(buf)
         return httpx.Response(500)
+
+    def _finish(self, data):
+        f = self._pending.pop("u1")
+        f.pop("buf", None)
+        f["data"] = data
+        self.files[f["id"]] = f
+        return httpx.Response(200, json={"id": f["id"], "webViewLink": f"https://drive/{f['id']}"})
 
 
 @pytest.fixture
@@ -232,3 +259,184 @@ def test_wants_drive_media(google, monkeypatch):
     assert archive.wants_drive_media({"media": "fayl", "mime": "application/pdf"})
     monkeypatch.setattr(runtime, "_values", dict(runtime.DEFAULTS, drive_media=False))
     assert not archive.wants_drive_media({"media": "video"})
+
+
+# ---------- katta video: bo'laklab yuklash va uzilgan joydan davom etish ----------
+def _big_file(tmp_path, size):
+    p = tmp_path / "video.mp4"
+    p.write_bytes(bytes(i % 251 for i in range(size)))
+    return str(p)
+
+
+def test_big_video_uploaded_in_chunks(google, tmp_path):
+    path = _big_file(tmp_path, 3 * gdrive.CHUNK + 12345)       # ~24 MB: 4 bo'lak
+    res = run(gdrive.upload("v.mp4", mime="video/mp4", path=path))
+    assert google.chunks == 4
+    assert google.files[res["id"]]["data"] == open(path, "rb").read()
+
+
+def test_upload_resumes_after_connection_drop(google, tmp_path, fast_sleep):
+    path = _big_file(tmp_path, 3 * gdrive.CHUNK + 7)
+    google.drop_after_chunks = {2, 3}                           # 2- va 3-bo'lakdan keyin aloqa uzildi
+    res = run(gdrive.upload("v.mp4", mime="video/mp4", path=path))
+    assert google.files[res["id"]]["data"] == open(path, "rb").read()   # boshidan emas — davomidan
+    assert google.chunks == 4                                   # hech bir bo'lak qayta yuborilmadi
+
+
+def test_upload_retries_on_google_5xx(google, tmp_path, fast_sleep):
+    path = _big_file(tmp_path, 2 * gdrive.CHUNK)
+    google.status_after_chunks = {1: 503}
+    res = run(gdrive.upload("v.mp4", mime="video/mp4", path=path))
+    assert google.files[res["id"]]["data"] == open(path, "rb").read()
+
+
+def test_upload_gives_up_on_4xx(google, tmp_path, fast_sleep):
+    path = _big_file(tmp_path, 2 * gdrive.CHUNK)
+    google.status_after_chunks = {2: 403}
+    with pytest.raises(gdrive.DriveError) as e:
+        run(gdrive.upload("v.mp4", mime="video/mp4", path=path))
+    assert e.value.status == 403
+
+
+# ---------- o'chib ketadigan media va navbat ----------
+@pytest.fixture
+def media_store(monkeypatch):
+    import runtime
+    monkeypatch.setattr(runtime, "_values", dict(runtime.DEFAULTS, drive_media=True))
+    msgs, chat = {}, {"chat_id": 5, "title": "Ali", "username": None}
+
+    async def add(doc):
+        msgs[(doc["chat_id"], doc["msg_id"])] = dict(doc)
+        return True
+
+    async def pending(limit=20):
+        p = [dict(d) for d in msgs.values() if d.get("drive_media") == "pending"]
+        h = sorted((dict(d) for d in msgs.values() if d.get("drive_media") == "history"), key=lambda d: -d["date"])
+        return (p + h)[:limit]
+
+    async def msg_set(cid, mid, **f):
+        msgs[(cid, mid)].update(f)
+
+    async def media_done(cid, mid, fid, link):
+        msgs[(cid, mid)].update(drive_media="done", drive_media_id=fid, drive_media_link=link)
+
+    async def get_chat(cid):
+        return dict(chat)
+
+    async def chat_set(cid, **f):
+        chat.update(f)
+
+    async def noop(*a, **k):
+        return None
+
+    for name, fn in [("archive_add", add), ("archive_media_pending", pending), ("archive_msg_set", msg_set),
+                     ("archive_media_done", media_done), ("archive_chat", get_chat), ("archive_chat_set", chat_set),
+                     ("archive_touch_chat", noop), ("archive_media_put", noop)]:
+        monkeypatch.setattr(storage, name, fn, raising=False)
+    return msgs
+
+
+class _File:
+    def __init__(self, size, mime):
+        self.size, self.mime_type, self.name = size, mime, None
+
+
+class _TgMsg:
+    """Telethon xabari o'rnida (view_once=True — bir marta ko'riladigan)."""
+
+    def __init__(self, mid, content=b"JPEGDATA", view_once=False, kind="rasm"):
+        from datetime import datetime, timezone
+        from telethon.tl.types import PeerUser
+        self.id, self.content, self.out = mid, content, False
+        self.peer_id, self.sender_id = PeerUser(5), 5
+        self.date = datetime(2026, 11, 19, tzinfo=timezone.utc)
+        self.message, self.fwd_from, self.reply_to_msg_id = "", None, None
+        for a in ("voice", "video_note", "gif", "sticker", "audio", "document", "geo", "venue", "contact", "poll"):
+            setattr(self, a, None)
+        self.photo = object() if kind == "rasm" else None
+        self.video = object() if kind == "video" else None
+        self.media = type("Media", (), {"ttl_seconds": 10 if view_once else None})()
+        self.file = _File(len(content), "image/jpeg" if kind == "rasm" else "video/mp4")
+
+    async def download_media(self, file=None, thumb=None):
+        import os
+        if file is bytes:
+            return self.content
+        path = os.path.join(file, "photo.jpg" if self.photo else "video.mp4")
+        with open(path, "wb") as f:
+            f.write(self.content)
+        return path
+
+
+def test_view_once_saved_immediately_even_if_opened_later(google, media_store, monkeypatch, tmp_path):
+    import os
+    import tempfile
+    from telethon.tl.types import User
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    class Ev:
+        is_private, is_group, chat_id = True, False, 5
+
+        def __init__(self, m):
+            self.message = m
+
+        async def get_chat(self):
+            return User(id=5, first_name="Ali")
+
+    run(archive._store(Ev(_TgMsg(77, b"SIRLI-RASM", view_once=True))))
+    doc = media_store[(5, 77)]
+    assert doc["drive_media"] == "pending" and doc["view_once"]
+    assert doc["drive_local"] and os.path.isfile(doc["drive_local"])     # kelgan zahoti diskka olindi
+
+    class Opened:   # egasi rasmni ochdi — Telegram uni o'chirdi
+        async def get_messages(self, cid, ids):
+            return None
+
+    assert run(archive.drive_media_pending(Opened())) == 1
+    up = next(iter(google.files.values()))
+    assert up["data"] == b"SIRLI-RASM" and "_bir-martalik_" in up["name"]
+    assert not os.path.exists(os.path.dirname(doc["drive_local"]))      # vaqtinchalik fayl tozalandi
+
+
+def test_temp_file_removed_when_upload_fails(google, media_store, monkeypatch, tmp_path):
+    import tempfile
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    media_store[(5, 1)] = {"chat_id": 5, "msg_id": 1, "media": "video", "mime": "video/mp4", "date": 1.7e9,
+                           "drive_media": "pending", "out": False}
+    google.status_after_chunks = {1: 400}
+
+    class Tg:
+        async def get_messages(self, cid, ids):
+            return _TgMsg(1, b"V" * 1000, kind="video")
+
+    assert run(archive.drive_media_pending(Tg())) == 0
+    assert media_store[(5, 1)]["drive_attempts"] == 1 and media_store[(5, 1)]["drive_media"] == "pending"
+    assert [p for p in tmp_path.iterdir() if p.name.startswith("anna_drive_")] == []   # disk to'lmaydi
+
+
+def test_too_big_video_skipped_and_new_media_goes_first(google, media_store, monkeypatch):
+    monkeypatch.setattr(config, "DRIVE_MEDIA_MAX_MB", 1)
+    base = {"chat_id": 5, "mime": "video/mp4", "media": "video", "out": False}
+    media_store[(5, 1)] = {**base, "msg_id": 1, "date": 1.0, "drive_media": "history"}
+    media_store[(5, 2)] = {**base, "msg_id": 2, "date": 2.0, "drive_media": "pending"}
+    media_store[(5, 3)] = {**base, "msg_id": 3, "date": 3.0, "drive_media": "history"}
+    order = []
+
+    class Tg:
+        async def get_messages(self, cid, ids):
+            order.append(ids)
+            return _TgMsg(ids, b"x" * (2 * 1024 * 1024 if ids == 3 else 10), kind="video")
+
+    assert run(archive.drive_media_pending(Tg())) == 2
+    assert order == [2, 3, 1]                          # yangi kelgani birinchi, keyin tarix (yangisidan)
+    assert media_store[(5, 3)]["drive_media"] == "too_big"
+
+
+def test_history_media_queued_from_old_chats(google, monkeypatch):
+    import runtime
+    monkeypatch.setattr(runtime, "_values", dict(runtime.DEFAULTS, drive_media=True))
+    assert archive._as_history({"media": "video"})["drive_media"] == "history"
+    assert "drive_media" not in archive._as_history({"media": "stiker"})
+    assert "drive_media" not in archive._as_history({"media": None})
+    monkeypatch.setattr(config, "DRIVE_MEDIA_HISTORY", False)
+    assert "drive_media" not in archive._as_history({"media": "video"})

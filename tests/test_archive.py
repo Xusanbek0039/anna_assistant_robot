@@ -326,3 +326,112 @@ def test_sync_existing_copies_only_people_and_then_only_new(arc, monkeypatch):
     ali.message = ali.msgs[-1]
     assert run(archive.sync_existing(tg, per_chat=2, pause=0)) == (1, 1)   # faqat yangisi
     assert run(archive.sync_existing(tg, per_chat=2, pause=0)) == (0, 0)
+
+
+def _ogg_voice() -> bytes:
+    import io
+    import math
+    import struct
+    import wave
+
+    import tts
+    rate = 16000
+    buf = io.BytesIO()
+    w = wave.open(buf, "wb")
+    w.setnchannels(1), w.setsampwidth(2), w.setframerate(rate)
+    w.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(i / 5))) for i in range(rate)))
+    w.close()
+    return tts.to_ogg_opus(buf.getvalue())
+
+
+def test_export_downloads_photos_and_voices_for_old_messages(arc, monkeypatch):
+    async def msg_set(cid, mid, **f):
+        arc.msgs[(cid, mid)].update(f)
+
+    async def chat_set(cid, **f):
+        arc.chats.setdefault(cid, {"chat_id": cid}).update(f)
+    monkeypatch.setattr(storage, "archive_msg_set", msg_set, raising=False)
+    monkeypatch.setattr(storage, "archive_chat_set", chat_set, raising=False)
+    voice = _ogg_voice()
+
+    def doc(mid, media, **kw):
+        return {"chat_id": 5, "msg_id": mid, "channel": False, "out": False, "text": "", "media": media,
+                "date": 1.7e9 + mid, **kw}
+    # mavjud chatdan nusxalangan (sync_existing) — media o'zi yo'q, faqat nomi
+    for d in (doc(1, "rasm"), doc(2, "ovozli xabar"), doc(3, "rasm", deleted=True), doc(4, "rasm")):
+        arc.msgs[(5, d["msg_id"])] = d
+    arc.chats[5] = {"chat_id": 5, "title": "Ali", "count": 4}
+
+    class F:
+        def __init__(self, size, mime):
+            self.size, self.mime_type = size, mime
+
+    class M:
+        def __init__(self, kind):
+            self.media = True
+            self.photo = object() if kind == "rasm" else None
+            self.voice = object() if kind == "ovozli" else None
+            self.sticker = self.video_note = None
+            self.file = F(4, "image/jpeg") if self.photo else F(len(voice), "audio/ogg")
+
+        async def download_media(self, file=None, thumb=None):
+            return b"\xff\xd8JPG" if self.photo else voice
+
+    calls = []
+
+    class Tg:
+        async def get_entity(self, cid):
+            raise ValueError("Telegram'ga ulanmaymiz")
+
+        async def get_input_entity(self, cid):
+            return cid
+
+        async def get_messages(self, entity, ids):
+            calls.append(list(ids))
+            return [{1: M("rasm"), 2: M("ovozli"), 4: None}.get(i) for i in ids]
+
+    page, _, n = run(archive.export_html(Tg(), 5))
+    page = page.decode()
+    assert n == 4
+    assert 3 not in calls[0]                                    # o'chirilganini Telegram'dan so'ramaymiz
+    assert page.count("data:image/jpeg;base64,") == 1
+    assert "<audio controls src='data:audio/mp4;base64," in page  # iPhone'da ham ijro bo'ladi
+    assert arc.msgs[(5, 4)]["media_tried"] is True              # Telegram'da yo'q — qayta so'ralmaydi
+    assert arc.chats[5]["drive_dirty"] is True                  # Drive'dagi HTML ham yangilanadi
+
+    calls.clear()
+    run(archive.export_html(Tg(), 5))
+    assert calls == []                                          # hammasi arxivda — qayta yuklanmaydi
+
+
+def test_html_budget_prefers_deleted_then_newest(monkeypatch):
+    monkeypatch.setattr(archive, "HTML_MEDIA_BUDGET", 10)
+    docs = [{"chat_id": 5, "msg_id": i, "out": False, "text": "", "media": "rasm", "media_id": f"m{i}",
+             "date": 1.7e9 + i, "deleted": i == 1} for i in (1, 2, 3)]
+    media = {f"m{i}": (bytes([i]) * 5, "image/jpeg") for i in (1, 2, 3)}
+    page = archive.build_html({"chat_id": 5, "title": "Ali"}, docs, media, False)
+    import base64
+    assert base64.b64encode(bytes([1]) * 5).decode() in page     # o'chirilgani
+    assert base64.b64encode(bytes([3]) * 5).decode() in page     # eng yangisi
+    assert base64.b64encode(bytes([2]) * 5).decode() not in page
+
+
+def test_message_archived_even_if_media_cannot_be_stored(arc, monkeypatch):
+    """MongoDB media'ni saqlay olmasa (masalan, 16 MB dan katta) — xabarning o'zi baribir arxivga tushadi."""
+    monkeypatch.setattr(config, "ARCHIVE_MEDIA_MAX_KB", 100000)
+
+    async def too_large(data, mime):
+        raise RuntimeError("DocumentTooLarge")
+    monkeypatch.setattr(storage, "archive_media_put", too_large)
+    m = Msg("izoh", photo=True)
+    run(arc.user.handlers["archive_new"](Ev(m, _person())))
+    doc = arc.msgs[(5, m.id)]
+    assert doc["text"] == "izoh" and doc["media"] == "rasm" and doc["media_id"] is None
+
+
+def test_mongo_blob_capped(arc, monkeypatch):
+    monkeypatch.setattr(config, "ARCHIVE_MEDIA_MAX_KB", 100000)   # 100 MB — MongoDB'ga sig'maydi
+    m = Msg(photo=True)
+    m.photo, m.video = None, object()
+    m.file.mime_type, m.file.size = "video/mp4", archive.MONGO_BLOB_MAX + 1
+    assert run(archive._save_blob(m)) is None                       # 12 MB dan katta — saqlanmaydi

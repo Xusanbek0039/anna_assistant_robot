@@ -5,6 +5,7 @@ Kerakli .env sozlamalari:
   GOOGLE_OAUTH_REFRESH_TOKEN — bir marta `python drive_auth.py` bilan olinadi
   GOOGLE_DRIVE_ROOT_FOLDER_ID — fayllar tushadigan papka (Drive'dagi papka havolasining oxiridagi id)
 """
+import asyncio
 import json
 import logging
 import os
@@ -85,7 +86,8 @@ async def _access_token(client: httpx.AsyncClient) -> str:
 
 
 def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(timeout=httpx.Timeout(30, write=300))
+    # read=120: katta fayl oxirgi bo'lagidan keyin Google javobni biroz kechiktirib beradi
+    return httpx.AsyncClient(timeout=httpx.Timeout(30, read=120, write=300))
 
 
 async def check() -> str | None:
@@ -107,11 +109,69 @@ async def check() -> str | None:
     return None
 
 
-async def _file_chunks(path: str, size: int = 4 * 1024 * 1024):
-    """Katta faylni (video) xotiraga to'liq o'qimasdan bo'laklab yuboradi."""
+CHUNK = 8 * 1024 * 1024   # resumable bo'lak hajmi — Google talabi: 256 KB ga karrali
+MAX_RETRIES = 6           # tarmoq uzilsa — shuncha marta uzilgan joydan davom etadi
+
+
+def _range_end(r: httpx.Response) -> int:
+    """308 javobidagi "Range: bytes=0-N" -> keyingi yuboriladigan bayt (N+1). Hech narsa olinmagan bo'lsa 0."""
+    rng = r.headers.get("range", "")
+    try:
+        return int(rng.rsplit("-", 1)[1]) + 1 if rng else 0
+    except (IndexError, ValueError):
+        return 0
+
+
+async def _resume_point(c: httpx.AsyncClient, url: str, total: int, auth: dict) -> tuple[int, dict | None]:
+    """Google qancha qismini olganini so'raydi: (davom etish joyi, tugagan bo'lsa — fayl ma'lumoti)."""
+    r = await c.put(url, content=b"", headers={**auth, "Content-Range": f"bytes */{total}"})
+    if r.status_code in (200, 201):
+        return total, r.json()
+    if r.status_code == 308:
+        return _range_end(r), None
+    raise DriveError(r.status_code, _reason(r))
+
+
+async def _put_file(c: httpx.AsyncClient, url: str, path: str, mime: str, auth: dict) -> dict:
+    """Diskdagi faylni 8 MB lik bo'laklarda yuklaydi (xotiraga to'liq o'qimaydi). Internet uzilsa yoki
+    Google 5xx qaytarsa — kutib, Google olgan joydan davom etadi (boshidan emas)."""
+    total = os.path.getsize(path)
+    if total == 0:
+        r = await c.put(url, content=b"", headers={**auth, "Content-Type": mime})
+        if r.status_code not in (200, 201):
+            raise DriveError(r.status_code, _reason(r))
+        return r.json()
+    offset, failures = 0, 0
     with open(path, "rb") as f:
-        while chunk := f.read(size):
-            yield chunk
+        while True:
+            f.seek(offset)
+            chunk = f.read(CHUNK)
+            head = {**auth, "Content-Type": mime,
+                    "Content-Range": f"bytes {offset}-{offset + len(chunk) - 1}/{total}"}
+            try:
+                r = await c.put(url, content=chunk, headers=head)
+            except httpx.TransportError as e:
+                r, problem = None, type(e).__name__
+            else:
+                problem = f"{r.status_code}" if r.status_code >= 500 or r.status_code == 429 else ""
+            if r is not None and r.status_code in (200, 201):
+                return r.json()
+            if r is not None and r.status_code == 308:
+                offset, failures = _range_end(r), 0
+                continue
+            if not problem:  # 4xx — qayta urinish foyda bermaydi
+                raise DriveError(r.status_code, _reason(r))
+            failures += 1
+            if failures > MAX_RETRIES:
+                raise DriveError(r.status_code if r is not None else 0, f"yuklash uzildi ({problem})")
+            log.info("Drive'ga yuklash uzildi (%s) — %d-urinish, davom ettiriladi", problem, failures)
+            await asyncio.sleep(min(2 ** failures, 60))
+            try:
+                offset, done = await _resume_point(c, url, total, auth)
+            except httpx.TransportError:
+                continue  # hali ham internet yo'q — keyingi urinishda yana so'raladi
+            if done is not None:
+                return done
 
 
 async def upload(name: str, data: bytes | None = None, mime: str = "text/html", file_id: str | None = None,
@@ -136,13 +196,9 @@ async def upload(name: str, data: bytes | None = None, mime: str = "text/html", 
             r = await c.post(f"{UPLOAD}/files", params=params, headers=head, content=json.dumps(meta))
         if r.status_code != 200 or "location" not in r.headers:
             raise DriveError(r.status_code, _reason(r))
-        put_head = {**auth, "Content-Type": mime}
         if path is not None:
-            put_head["Content-Length"] = str(os.path.getsize(path))
-            body = _file_chunks(path)
-        else:
-            body = data or b""
-        put = await c.put(r.headers["location"], content=body, headers=put_head)
+            return await _put_file(c, r.headers["location"], path, mime, auth)
+        put = await c.put(r.headers["location"], content=data or b"", headers={**auth, "Content-Type": mime})
         if put.status_code not in (200, 201):
             raise DriveError(put.status_code, _reason(put))
         return put.json()

@@ -142,6 +142,9 @@ ARCHIVE_GROUPS = _bool("ARCHIVE_GROUPS", False)       # guruhlar ham (standart o
 ARCHIVE_ALERTS = _bool("ARCHIVE_ALERTS", True)        # xabar o'chirilsa — botga ogohlantirish
 ARCHIVE_MEDIA_MAX_KB = _int("ARCHIVE_MEDIA_MAX_KB", 512)  # rasm/ovozli xabar shu hajmgacha arxivga (0 = yo'q)
 ARCHIVE_EXPORT_LIMIT = _int("ARCHIVE_EXPORT_LIMIT", 5000)  # HTML da chatning oxirgi nechta xabari
+# Chat tarixini olganda arxivda yo'q rasm/ovozli/video-xabarlar Telegram'dan shu hajmgacha (KB) yuklab olinadi
+# va HTML ichida ko'rinadi (0 = yo'q). Kattaroq rasmning kichikroq nusxasi olinadi
+EXPORT_MEDIA_MAX_KB = _int("EXPORT_MEDIA_MAX_KB", 2048)
 # Ishga tushganda mavjud chatlardan ham nusxa: birinchi marta har chatdan shuncha oxirgi xabar (0 = yo'q)
 ARCHIVE_SYNC_LIMIT = _int("ARCHIVE_SYNC_LIMIT", 1000)
 # --- Google Drive: chat arxivi Drive papkasiga HTML fayl bo'lib yuklanadi (har chatga bitta fayl) ---
@@ -152,7 +155,8 @@ GOOGLE_DRIVE_ROOT_FOLDER_ID = _str("GOOGLE_DRIVE_ROOT_FOLDER_ID")
 DRIVE_SYNC_MINUTES = max(1, _int("DRIVE_SYNC_MINUTES", 10))  # o'zgargan chatlar shuncha daqiqada bir yuklanadi
 # Chatlardagi rasm, video, ovozli va video-xabarlar Drive'ga asl sifatida (chat papkasiga) yuklanib boradi
 DRIVE_MEDIA_ENABLED = _bool("DRIVE_MEDIA_ENABLED", True)
-DRIVE_MEDIA_MAX_MB = _int("DRIVE_MEDIA_MAX_MB", 500)  # bundan katta fayl yuklanmaydi
+DRIVE_MEDIA_MAX_MB = _int("DRIVE_MEDIA_MAX_MB", 300)  # bundan katta fayl yuklanmaydi
+DRIVE_MEDIA_HISTORY = _bool("DRIVE_MEDIA_HISTORY", True)  # mavjud chatlardagi eski rasm/videolar ham
 DRIVE_MEDIA_FILES = _bool("DRIVE_MEDIA_FILES", False)  # hujjat/fayllar (pdf, zip ...) ham yuklansinmi
 # Bir vaqtda faqat bitta nusxa ishlasin (ikki nusxa = bot har xabarni ikki marta yuboradi)
 SINGLE_INSTANCE = _bool("SINGLE_INSTANCE", True)

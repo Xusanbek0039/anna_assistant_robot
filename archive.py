@@ -27,7 +27,10 @@ log = logging.getLogger("archive")
 
 TELEGRAM_SERVICE_ID = 777000      # login kodlari — hech qachon saqlanmaydi
 DELETE_GATHER_SECONDS = 3         # shu vaqt ichida o'chirilganlari bitta ogohlantirishga yig'iladi
-HTML_MEDIA_BUDGET = 40 * 1024 * 1024  # HTML ichiga joylanadigan media jami (bot fayl limiti 50 MB)
+# HTML ichiga joylanadigan media jami. base64 hajmni ~4/3 ga oshiradi: 30 MB -> ~40 MB fayl (bot limiti 50 MB)
+HTML_MEDIA_BUDGET = 30 * 1024 * 1024
+# Chat tarixini olganda HTML ichida ko'rinadigan media turlari (video — faqat Drive havolasi)
+EMBED_KINDS = {"rasm", "ovozli xabar", "video-xabar", "stiker", "GIF", "audio"}
 
 _on_deleted = None                # async (chat_id, docs) -> None — control_bot ogohlantirishi
 _me_id = 0
@@ -107,8 +110,20 @@ def _blob_mime(msg) -> str | None:
     return None
 
 
-async def _save_blob(msg) -> str | None:
-    limit = config.ARCHIVE_MEDIA_MAX_KB * 1024
+MONGO_BLOB_MAX = 12 * 1024 * 1024  # MongoDB hujjati ko'pi bilan 16 MB — kattasi saqlanmaydi (asli Drive'da)
+
+
+async def _save_blob(msg, limit_kb: int | None = None) -> str | None:
+    """Kichik media'ni MongoDB'ga (HTML ichida ko'rsatish uchun). Xato bo'lsa None — xabar baribir arxivlanadi."""
+    try:
+        return await _save_blob_inner(msg, limit_kb)
+    except Exception as e:
+        log.warning("Media arxivga saqlanmadi (%s) — xabar media'siz arxivlanadi", type(e).__name__)
+        return None
+
+
+async def _save_blob_inner(msg, limit_kb: int | None) -> str | None:
+    limit = min((config.ARCHIVE_MEDIA_MAX_KB if limit_kb is None else limit_kb) * 1024, MONGO_BLOB_MAX)
     mime = _blob_mime(msg) if limit > 0 else None
     if not mime:
         return None
@@ -125,6 +140,12 @@ async def _save_blob(msg) -> str | None:
         return None
     if not data or len(data) > limit:
         return None
+    if mime == "audio/ogg":  # ovozli xabar: Safari (iPhone) ogg'ni ijro etmaydi — m4a ga o'giramiz
+        try:
+            import tts
+            data, mime = await asyncio.to_thread(tts.to_m4a, data), "audio/mp4"
+        except Exception as e:
+            log.info("Ovozli xabar m4a ga o'girilmadi (%s) — ogg holida qoladi", type(e).__name__)
     return await storage.archive_media_put(data, mime)
 
 
@@ -159,8 +180,10 @@ async def _store(event) -> None:
     doc = message_doc(msg, event.chat_id, sender_name)
     if doc["media"]:
         doc["media_id"] = await _save_blob(msg)
-        if wants_drive_media(doc):
+        if wants_drive_media(doc, view_once_any=True):
             doc["drive_media"] = "pending"   # fon jarayoni asl faylni Drive'ga yuklaydi
+            if doc["view_once"]:
+                doc["drive_local"] = await _spool_now(msg, doc)
     added = await storage.archive_add(doc)
     await storage.archive_touch_chat(event.chat_id, display_name(chat) or str(event.chat_id),
                                      getattr(chat, "username", None), kind, doc["date"], int(added))
@@ -247,7 +270,7 @@ async def backfill(user, chat_id: int, limit: int) -> int:
     try:
         async for m in user.iter_messages(entity, limit=limit):
             if isinstance(m, Message):
-                docs.append(message_doc(m, chat_id, display_name(m.sender) if group and not m.out else ""))
+                docs.append(_as_history(message_doc(m, chat_id, display_name(m.sender) if group and not m.out else "")))
     except Exception as e:
         log.info("Chat %s tarixi o'qilmadi (%s)", chat_id, type(e).__name__)
     added = await storage.archive_add_many(docs)
@@ -256,6 +279,13 @@ async def backfill(user, chat_id: int, limit: int) -> int:
                                          getattr(entity, "username", None), "group" if group else "user",
                                          max((d["date"] for d in docs), default=0), added)
     return added
+
+
+def _as_history(doc: dict) -> dict:
+    """Tarixdan olingan xabar: rasm/video bo'lsa — Drive navbatiga (yangi kelganlardan keyin) qo'yiladi."""
+    if doc.get("media") and config.DRIVE_MEDIA_HISTORY and wants_drive_media(doc):
+        doc["drive_media"] = "history"
+    return doc
 
 
 def _dialog_kind(dialog) -> str | None:
@@ -289,7 +319,8 @@ async def sync_existing(user, per_chat: int, pause: float = 0.5) -> tuple[int, i
             docs = []
             async for m in user.iter_messages(dialog.entity, limit=per_chat, min_id=last):
                 if isinstance(m, Message):
-                    docs.append(message_doc(m, chat_id, display_name(m.sender) if kind == "group" and not m.out else ""))
+                    docs.append(_as_history(message_doc(
+                        m, chat_id, display_name(m.sender) if kind == "group" and not m.out else "")))
             added = await storage.archive_add_many(docs)
             if docs:
                 await storage.archive_touch_chat(chat_id, display_name(dialog.entity) or str(chat_id),
@@ -316,10 +347,48 @@ def _safe(title: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "_", title or "").strip("_")[:40] or "chat"
 
 
+async def fill_media(user, chat_id: int) -> int:
+    """Arxivda faqat nomi bor rasm/ovozli/video-xabarlarni Telegram'dan yuklab, arxivga saqlaydi — HTML'da
+    ko'rinadi va keyin xabar o'chirilsa ham qoladi. Eng yangilaridan boshlab, HTML sig'imigacha.
+    Saqlanganlar soni."""
+    docs = await storage.archive_messages(chat_id, limit=config.ARCHIVE_EXPORT_LIMIT)
+    need = []
+    for d in reversed(docs):  # eng yangilari birinchi
+        if d.get("media") in EMBED_KINDS and not d.get("media_id") and not d.get("deleted") and not d.get("media_tried"):
+            need.append(d)
+    if not need or config.EXPORT_MEDIA_MAX_KB <= 0:
+        return 0
+    entity = await user.get_input_entity(chat_id)
+    total, saved = 0, 0
+    for i in range(0, len(need), 100):
+        chunk = need[i:i + 100]
+        msgs = await user.get_messages(entity, ids=[d["msg_id"] for d in chunk])
+        for d, m in zip(chunk, msgs):
+            if total >= HTML_MEDIA_BUDGET:
+                break
+            media_id = await _save_blob(m, config.EXPORT_MEDIA_MAX_KB) if m is not None and m.media else None
+            if media_id:
+                await storage.archive_msg_set(chat_id, d["msg_id"], media_id=media_id)
+                total += min(getattr(m.file, "size", 0) or 0, config.EXPORT_MEDIA_MAX_KB * 1024)
+                saved += 1
+            else:  # o'chirilgan yoki juda katta — keyingi safar qayta urinmaymiz
+                await storage.archive_msg_set(chat_id, d["msg_id"], media_tried=True)
+        if total >= HTML_MEDIA_BUDGET:
+            break
+    if saved:
+        log.info("Chat %s: %d ta rasm/ovozli xabar arxivga saqlandi", chat_id, saved)
+        await storage.archive_chat_set(chat_id, changed=time.time(), drive_dirty=True)  # Drive'dagi HTML ham
+    return saved
+
+
 async def export_html(user, chat_id: int, only_deleted: bool = False) -> tuple[bytes, str, int]:
     """(HTML fayl, fayl nomi, xabarlar soni)."""
     if not only_deleted:
         await backfill(user, chat_id, config.ARCHIVE_EXPORT_LIMIT)
+        try:
+            await fill_media(user, chat_id)
+        except Exception as e:
+            log.warning("Chat %s media'si yuklab olinmadi (%s) — HTML media'siz chiqadi", chat_id, type(e).__name__)
     data, info, n = await _render(chat_id, only_deleted)
     stamp = datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%Y-%m-%d_%H-%M")
     name = f"{'ochirilgan_' if only_deleted else 'chat_'}{_safe(info.get('title'))}_{stamp}.html"
@@ -394,15 +463,46 @@ async def drive_sync_chat(chat_id: int, info: dict | None = None) -> str:
 DRIVE_MEDIA_KINDS = {"rasm", "video", "video-xabar", "ovozli xabar", "GIF", "audio"}
 MEDIA_BATCH = 20
 MEDIA_ATTEMPTS = 3
+MEDIA_ATTEMPTS_SPOOLED = 10
 _media_wake = asyncio.Event()
+
+
+def _spool_dir() -> str:
+    import os
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "anna_drive_spool")
+
+
+async def _spool_now(msg, doc: dict) -> str | None:
+    """O'chib ketadigan (bir marta ko'riladigan / taymerli) media: navbatni kutmasdan DARHOL diskka olinadi —
+    kimdir uni ochishi bilan Telegram faylni o'chiradi. Fayl yo'li yoki None."""
+    import os
+    import shutil
+    size = getattr(msg.file, "size", 0) or 0
+    if not size or size > config.DRIVE_MEDIA_MAX_MB * 1024 * 1024:
+        return None
+    folder = os.path.join(_spool_dir(), f"{doc['chat_id']}_{doc['msg_id']}")
+    os.makedirs(folder, exist_ok=True)
+    try:
+        path = await msg.download_media(file=folder + os.sep)
+    except Exception as e:
+        log.warning("O'chib ketadigan media yuklab olinmadi (%s)", type(e).__name__)
+        path = None
+    if not path:
+        shutil.rmtree(folder, ignore_errors=True)
+        return None
+    log.info("O'chib ketadigan media saqlab olindi: chat %s, xabar %s", doc["chat_id"], doc["msg_id"])
+    return path
 media_state = {"ok": None, "problem": "", "done": 0}
 
 
-def wants_drive_media(doc: dict) -> bool:
-    """Bu xabardagi media Drive'ga yuklanadimi."""
+def wants_drive_media(doc: dict, view_once_any: bool = False) -> bool:
+    """Bu xabardagi media Drive'ga yuklanadimi. O'chib ketadigan media — turidan qat'i nazar, doim."""
     import gdrive
     if not (gdrive.enabled() and runtime.get("drive_media")):
         return False
+    if view_once_any and doc.get("view_once") and doc.get("media"):
+        return True
     kind, mime = doc.get("media"), doc.get("mime") or ""
     if kind in DRIVE_MEDIA_KINDS:
         return True
@@ -413,8 +513,9 @@ def _media_name(doc: dict, msg, path: str) -> str:
     import os
     stamp = datetime.fromtimestamp(doc["date"], ZoneInfo(config.TIMEZONE)).strftime("%Y-%m-%d_%H-%M-%S")
     who = "men" if doc.get("out") else "u"
+    once = "_bir-martalik" if doc.get("view_once") else ""
     original = doc.get("file_name") or os.path.basename(path)
-    return f"{stamp}_{who}_{doc['msg_id']}_{original}"
+    return f"{stamp}_{who}_{doc['msg_id']}{once}_{original}"
 
 
 async def _upload_media(user, doc: dict) -> str:
@@ -423,26 +524,41 @@ async def _upload_media(user, doc: dict) -> str:
     import shutil
     import tempfile
     import gdrive
+    import mimetypes
     cid, mid = doc["chat_id"], doc["msg_id"]
-    msg = await user.get_messages(cid, ids=mid)
-    if msg is None or not msg.media:
-        await storage.archive_msg_set(cid, mid, drive_media="lost")  # yuklashga ulgurmay o'chirilgan
-        return "lost"
-    size = getattr(msg.file, "size", 0) or 0
-    if size > config.DRIVE_MEDIA_MAX_MB * 1024 * 1024:
-        await storage.archive_msg_set(cid, mid, drive_media="too_big")
-        return "too_big"
-    tmp = tempfile.mkdtemp(prefix="anna_drive_")
-    try:
-        path = await msg.download_media(file=tmp + os.sep)
+    local = doc.get("drive_local")
+    if local and os.path.isfile(local):
+        # o'chib ketadigan media — kelgan zahoti diskka olingan, Telegram'dan qayta so'ralmaydi
+        tmp, path, mime = os.path.dirname(local), local, doc.get("mime") or ""
+    else:
+        msg = await user.get_messages(cid, ids=mid)
+        if msg is None or not msg.media or getattr(msg.file, "size", None) is None:
+            await storage.archive_msg_set(cid, mid, drive_media="lost")  # yuklashga ulgurmay o'chirilgan
+            return "lost"
+        if (msg.file.size or 0) > config.DRIVE_MEDIA_MAX_MB * 1024 * 1024:
+            await storage.archive_msg_set(cid, mid, drive_media="too_big")
+            return "too_big"
+        tmp = tempfile.mkdtemp(prefix="anna_drive_")
+        try:
+            path = await msg.download_media(file=tmp + os.sep)
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        mime = getattr(msg.file, "mime_type", None) or doc.get("mime") or ""
         if not path:
+            shutil.rmtree(tmp, ignore_errors=True)
             await storage.archive_msg_set(cid, mid, drive_media="lost")
             return "lost"
-        mime = getattr(msg.file, "mime_type", None) or doc.get("mime") or "application/octet-stream"
-        name = _media_name(doc, msg, path)
+    mime = mime or mimetypes.guess_type(path)[0] or "application/octet-stream"
+    name = _media_name(doc, None, path)
+    spooled = path == local
+    try:
         res = await _in_folder(cid, None, lambda folder: gdrive.upload(name, mime=mime, parent=folder, path=path))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    except BaseException:
+        if not spooled:  # oddiy media keyin Telegram'dan qayta olinadi; o'chib ketadiganini esa saqlab turamiz
+            shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    shutil.rmtree(tmp, ignore_errors=True)
     await storage.archive_media_done(cid, mid, res["id"], _link(res))
     return "done"
 
@@ -474,11 +590,17 @@ async def drive_media_pending(user) -> int:
 
 async def _media_failed(doc: dict, reason: str) -> bool:
     """Xato: MEDIA_ATTEMPTS martagacha keyinroq qayta urinadi. Keyin urinish kerakmi — True."""
+    import os
+    import shutil
     attempts = doc.get("drive_attempts", 0) + 1
     log.warning("Media %s/%s Drive'ga yuklanmadi (%s), urinish %d", doc["chat_id"], doc["msg_id"], reason, attempts)
-    final = attempts >= MEDIA_ATTEMPTS
+    local = doc.get("drive_local")
+    # o'chib ketadigan media'ni Telegram'dan qayta olib bo'lmaydi — unga ko'proq imkoniyat
+    final = attempts >= (MEDIA_ATTEMPTS_SPOOLED if local else MEDIA_ATTEMPTS)
     await storage.archive_msg_set(doc["chat_id"], doc["msg_id"], drive_attempts=attempts,
                                   drive_error=reason, **({"drive_media": "failed"} if final else {}))
+    if final and local:
+        shutil.rmtree(os.path.dirname(local), ignore_errors=True)  # disk to'lib qolmasin
     return not final
 
 
@@ -486,6 +608,13 @@ async def drive_media_loop(user, alert) -> None:
     """Fon vazifasi: yangi rasm/video/ovozli xabarlar kelishi bilan Drive'ga yuklanadi."""
     import gdrive
     await asyncio.sleep(40)
+    if config.DRIVE_MEDIA_HISTORY and runtime.get("drive_media"):
+        try:  # oldin arxivlangan (mavjud chatlardan nusxalangan) rasm/videolar ham navbatga
+            n = await storage.archive_media_mark_history(sorted(DRIVE_MEDIA_KINDS), config.DRIVE_MEDIA_FILES)
+            if n:
+                log.info("Google Drive: arxivdagi %d ta eski rasm/video navbatga qo'yildi", n)
+        except Exception as e:
+            log.warning("Eski media navbatga qo'yilmadi (%s)", type(e).__name__)
     alerted = ""
     while True:
         wait = 120
@@ -621,7 +750,13 @@ def build_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]]
     by_id = {d["msg_id"]: d for d in docs}
     n_del = sum(1 for d in docs if d.get("deleted"))
     n_edit = sum(1 for d in docs if d.get("edits"))
-    budget = HTML_MEDIA_BUDGET
+    # Hammasi sig'masa: avval o'chirilganlarining mediasi (boshqa joyda qolmagan), keyin eng yangilari
+    embed, budget = set(), HTML_MEDIA_BUDGET
+    for d in sorted(docs, key=lambda x: (not x.get("deleted"), -(x.get("date") or 0))):
+        blob = media.get(d.get("media_id") or "") if d.get("media") else None
+        if blob and len(blob[0]) <= budget:
+            budget -= len(blob[0])
+            embed.add(d["msg_id"])
 
     sub = [f"@{_text(info['username'])}" if info.get("username") else "",
            f"id {_text(str(info.get('chat_id', '')))}",
@@ -650,10 +785,8 @@ def build_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]]
         if d.get("reply_to"):
             parts.append(f"<div class='reply'>↩️ {_text(_snippet(by_id.get(d['reply_to'])))}</div>")
         if d.get("media"):
-            blob = media.get(d.get("media_id") or "")
-            if blob and len(blob[0]) <= budget:
-                budget -= len(blob[0])
-                data, mime = blob
+            if d["msg_id"] in embed:
+                data, mime = media[d["media_id"]]
                 src = f"data:{mime};base64,{base64.b64encode(data).decode()}"
                 if mime.startswith("image/"):
                     parts.append(f"<img src='{src}' alt='rasm' loading='lazy'>")

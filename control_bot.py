@@ -478,6 +478,16 @@ async def _archive_panel() -> tuple[str, list]:
     except Exception as e:
         log.warning("Arxiv statistikasi olinmadi (%s)", type(e).__name__)
         st = {}
+    queue = ""
+    if gdrive.enabled():
+        try:
+            mc = await storage.archive_media_counts()
+            waiting = mc.get("pending", 0) + mc.get("history", 0)
+            skipped = mc.get("too_big", 0) + mc.get("failed", 0) + mc.get("lost", 0)
+            queue = (f"\n🖼 Drive'dagi media: {mc.get('done', 0)} ta yuklangan, {waiting} ta navbatda"
+                     + (f", {skipped} ta yuklanmadi (katta/o'chirilgan/xato)" if skipped else ""))
+        except Exception as e:
+            log.warning("Media navbati olinmadi (%s)", type(e).__name__)
     on, groups, alerts = (runtime.get("archive_enabled"), runtime.get("archive_groups"),
                           runtime.get("archive_alerts"))
     text = (
@@ -487,7 +497,7 @@ async def _archive_panel() -> tuple[str, list]:
         f"O'chirilganda xabar berish: {'🟢 yoqiq' if alerts else '⚪️ o‘chiq'}\n\n"
         f"💾 Saqlangan: {st.get('messages', '?')} ta xabar, {st.get('chats', '?')} ta chat\n"
         f"🗑 O'chirilganlari: {st.get('deleted', '?')} ta\n"
-        f"{_drive_line()}\n\n"
+        f"{_drive_line()}{queue}\n\n"
         "Chatni tanlang — yozishmani HTML fayl qilib yuboraman. Nomi bo'yicha topish: "
         "<code>/arxiv Ali</code>"
     )
