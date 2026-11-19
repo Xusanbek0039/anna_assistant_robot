@@ -49,7 +49,7 @@ class FakeArchive:
                 out.append(dict(d))
         return out
 
-    async def archive_touch_chat(self, chat_id, title, username, kind, ts, added=1):
+    async def archive_touch_chat(self, chat_id, title, username, kind, ts, added=1, account_deleted=False):
         c = self.chats.setdefault(chat_id, {"chat_id": chat_id, "count": 0})
         c.update(title=title, username=username, kind=kind)
         c["count"] += added

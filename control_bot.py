@@ -13,6 +13,7 @@ import availability
 import backup
 import bio_updater
 import config
+import deleted_accounts
 import finance
 import finder
 import gdrive
@@ -55,6 +56,8 @@ HELP = (
     "/arxiv — arxiv paneli, /arxiv &lt;ism&gt; — chatni nomi bo'yicha topish\n"
     "Kimdir xabarini tahrirlasa yoki ism/username/bio/rasmini o'zgartirsa — xabar beradi. "
     "Qidiruv o'chirilgan va tahrirlangan xabarlar ichidan ham topadi.\n"
+    "/deleted — akkauntini o'chirgan odamlar (taxminiy ismi bilan) va ular bilan yozishmalar. "
+    "Oddiy yozsangiz ham bo'ladi: «o'chirilgan akkauntlarni ko'rsat», «Aziz aka bilan chatni top»\n"
     "/xulosa &lt;ism&gt; — yozishmaning AI xulosasi, va'dalar va ochiq savollar\n"
     "/vadalar — bergan va'dalaringiz (muddati kelganda eslatadi)\n"
     "Har yakshanba — haftalik chat hisoboti, har kuni — bazaning Drive'ga zaxirasi. "
@@ -310,6 +313,7 @@ BOT_COMMANDS = [
     ("unmute", "🔊 Chatda kotibani qayta yoqish: /unmute id"),
     ("menu", "📋 Tugmali menyuni ochish"),
     ("arxiv", "🗂 Chat arxivi: o'chirilgan yozishmani HTML qilib olish"),
+    ("deleted", "👻 Akkauntini o'chirganlar — taxminiy ismi bilan"),
     ("xulosa", "🧠 Yozishma xulosasi va va'dalar: /xulosa Ali"),
     ("vadalar", "📌 Bergan va'dalaringiz ro'yxati"),
     ("find", "🔎 Chatlardan istalgan narsani topish"),
@@ -456,7 +460,7 @@ async def deleted_alert(chat_id: int, docs: list[dict]) -> None:
     theirs = sum(1 for d in docs if not d.get("out"))
     mine = len(docs) - theirs
     head = "🗑 <b>Yozishma o'chirildi</b>" if len(docs) >= 10 else "🗑 <b>Xabar o'chirildi</b>"
-    lines = [head, f"👤 {_who(info.get('title') or '', info.get('username'), chat_id)}",
+    lines = [head, f"👤 {_who(archive.chat_label({'chat_id': chat_id, **info}), info.get('username'), chat_id)}",
              f"{len(docs)} ta xabar (uniki: {theirs}, sizniki: {mine})", ""]
     for d in docs[-ARCHIVE_PREVIEW:]:
         body = (d.get("text") or "").strip() or f"[{d.get('media') or 'xabar'}]"
@@ -515,6 +519,7 @@ async def _archive_panel() -> tuple[str, list]:
     )
     buttons = [
         [Button.inline("💬 Chatlar", b"arc:list:0"), Button.inline("🗑 O'chirilgan bor chatlar", b"arc:dlist:0")],
+        [Button.inline("👻 O'chirilgan akkauntlar", b"arc:gone:0")],
         [Button.inline("⏸ Arxivni to'xtatish" if on else "▶️ Arxivni yoqish", b"arc:set:archive_enabled"),
          Button.inline("🔕 Xabar bermasin" if alerts else "🔔 Xabar bersin", b"arc:set:archive_alerts")],
         [Button.inline("⚪️ Guruhlarsiz" if groups else "👥 Guruhlar ham", b"arc:set:archive_groups")],
@@ -558,7 +563,7 @@ async def _archive_list(page: int, only_deleted: bool, name: str = "") -> tuple[
                 "💬 Arxiv hozircha bo'sh — yangi xabarlar kelgan sari to'ladi."), [back]
     buttons = []
     for r in rows:
-        label = (r.get("title") or str(r["chat_id"]))[:28]
+        label = ("👻 " if r.get("account_deleted") else "") + archive.chat_label(r)[:28]
         label += f" · 🗑{r['deleted']}" if r.get("deleted") else f" · {r.get('count', 0)}"
         buttons.append([Button.inline(label, f"arc:chat:{r['chat_id']}".encode())])
     kind = "dlist" if only_deleted else "list"
@@ -575,7 +580,11 @@ async def _archive_list(page: int, only_deleted: bool, name: str = "") -> tuple[
 
 async def _archive_chat_view(chat_id: int) -> tuple[str, list]:
     info = await storage.archive_chat(chat_id) or {}
-    text = (f"💬 {_who(info.get('title') or '', info.get('username'), chat_id)}\n"
+    gone = ""
+    if info.get("account_deleted"):
+        gone = (f"👻 <b>Akkaunt o'chirilgan</b> ({_when(info.get('account_deleted_at')) or '—'} da aniqlandi)\n"
+                f"Ism: {html.escape(deleted_accounts.describe({'chat_id': chat_id, **info}))}\n")
+    text = (f"💬 {_who(archive.chat_label({'chat_id': chat_id, **info}), info.get('username'), chat_id)}\n{gone}"
             f"💾 Arxivda: {info.get('count', 0)} ta xabar · 🗑 o'chirilgan: {info.get('deleted', 0)}\n"
             f"Oxirgi xabar: {_when(info.get('last')) or '—'}\n\n"
             "«Butun yozishma» ga Telegram'da hali turgan xabarlar ham qo'shiladi.")
@@ -583,6 +592,80 @@ async def _archive_chat_view(chat_id: int) -> tuple[str, list]:
     if info.get("drive_link"):
         buttons.append([Button.url("☁️ Google Drive'da ochish", info["drive_link"])])
     return text, buttons + [[Button.inline("⬅️ Chatlar", b"arc:list:0")]]
+
+
+GONE_PAGE = 15
+
+
+async def _gone_filter(rows: list[dict], text: str) -> tuple[list[dict], str]:
+    """So'rovda ism bo'lsa — ismi mos kelganlari; bo'lmasa so'zlar yozishmada uchraganlari («parol haqida
+    gaplashgan o'chirilgan akkaunt»). Hech biri topilmasa — hammasi. (qatorlar, izoh)."""
+    name = deleted_accounts.name_words(text)
+    if not name or not rows:
+        return rows, ""
+    hits = [r for r in rows if max(finder.score_name(name, r.get("title") or ""),
+                                   finder.score_name(name, r.get("guess_title") or "")) > 0]
+    if hits:
+        return hits, f"«{name}» ismiga mos"
+    words = [finder.stem(w) for w in name.split()]
+    try:
+        counts = await storage.archive_word_hits([r["chat_id"] for r in rows], words)
+    except Exception as e:
+        log.warning("O'chirilgan akkauntlar yozishmasidan qidirilmadi (%s)", type(e).__name__)
+        counts = {}
+    if counts:
+        found = sorted((r for r in rows if r["chat_id"] in counts), key=lambda r: -counts[r["chat_id"]])
+        return found, f"yozishmasida «{name}» uchraydiganlar"
+    return rows, f"«{name}» bo'yicha mos kelgani yo'q — hammasi"
+
+
+async def _gone_list(page: int = 0, text: str = "") -> tuple[str, list]:
+    rows, note = await _gone_filter(await storage.archive_deleted_accounts(), text)
+    back = [Button.inline("🔄 Qayta tekshirish", b"arc:gonescan"), Button.inline("⬅️ Arxiv", b"arc:panel")]
+    if not rows:
+        return ("👻 Akkauntini o'chirgan suhbatdosh topilmadi.\n"
+                "<i>«🔄 Qayta tekshirish» — barcha chatlar Telegram'dan qaytadan ko'rib chiqiladi.</i>"), [back]
+    chunk = rows[page * GONE_PAGE:(page + 1) * GONE_PAGE]
+    lines = [f"👻 <b>O'chirilgan akkauntlar</b> — {len(rows)} ta"
+             + (f" <i>({html.escape(note)})</i>" if note else ""), ""]
+    buttons = []
+    for i, r in enumerate(chunk, page * GONE_PAGE + 1):
+        about = deleted_accounts.describe(r)
+        lines.append(f"{i}. <b>{html.escape(archive.chat_label(r))}</b>  <code>{r['chat_id']}</code>\n"
+                     f"   {html.escape(about[:140])}\n"
+                     f"   💾 {r.get('count', 0)} ta xabar · oxirgi: {_when(r.get('last')) or '—'}")
+        buttons.append([Button.inline(f"{i}. {archive.chat_label(r)[:34]}", f"arc:chat:{r['chat_id']}".encode())])
+    lines.append("\n<i>≈ — ism yozishmadan taxmin qilingan (siz uni qanday chaqirganingizga qarab). "
+                 "Chatni tanlang — yozishmani HTML qilib olasiz.</i>")
+    nav = []
+    if page > 0:
+        nav.append(Button.inline("◀️", f"arc:gone:{page - 1}".encode()))
+    if (page + 1) * GONE_PAGE < len(rows):
+        nav.append(Button.inline("▶️", f"arc:gone:{page + 1}".encode()))
+    if nav:
+        buttons.append(nav)
+    buttons.append(back)
+    return "\n".join(lines), buttons
+
+
+async def _show_gone(event, text: str = "") -> None:
+    body, buttons = await _gone_list(0, text)
+    await event.respond(body, parse_mode="html", buttons=buttons)
+
+
+async def _gone_scan() -> None:
+    status = await ctx.bot.send_message(ctx.owner_id, "🔎 Chatlar ko'rib chiqilyapti — o'chirilgan akkauntlar "
+                                                      "qidirilmoqda, yozishmalar arxivga olinmoqda...")
+    try:
+        found, added, named = await deleted_accounts.refresh(ctx.user, await _ai_ok())
+    except Exception as e:
+        log.exception("O'chirilgan akkauntlar tekshirilmadi")
+        await status.edit(f"❌ Tekshirib bo'lmadi: {type(e).__name__}")
+        return
+    body, buttons = await _gone_list(0)
+    head = (f"✅ Tekshirildi: {found} ta o'chirilgan akkaunt, arxivga {added} ta yangi xabar"
+            + (f", {named} tasiga ism topildi" if named else "") + ".\n\n")
+    await status.edit(head + body, parse_mode="html", buttons=buttons)
 
 
 async def _send_archive_html(chat_id: int, only_deleted: bool) -> None:
@@ -922,16 +1005,55 @@ async def _ai_count(tokens: int) -> None:
 async def _archive_hits(chat_id: int | None, q: "finder.Query", keywords: list[str]) -> list:
     """Arxivdagi o'chirilgan/tahrirlangan xabarlardan mos kelganlari (xato bo'lsa — bo'sh)."""
     try:
-        docs = await storage.archive_search(chat_id, keywords or q.keywords or q.words, q.days, q.only_them)
+        everything = False
+        if chat_id is not None:  # akkaunt o'chirilgan bo'lsa — arxivdagi butun yozishmadan
+            everything = bool((await storage.archive_chat(chat_id) or {}).get("account_deleted"))
+        docs = await storage.archive_search(chat_id, keywords or q.keywords or q.words, q.days, q.only_them,
+                                            everything=everything)
         titles: dict[int, str] = {}
         if chat_id is None:
             for cid in {d["chat_id"] for d in docs}:
                 info = await storage.archive_chat(cid) or {}
-                titles[cid] = info.get("title") or str(cid)
+                titles[cid] = archive.chat_label({"chat_id": cid, **info})
         return [finder.from_archive(d, titles.get(d["chat_id"], "")) for d in docs]
     except Exception as e:
         log.warning("Arxivdan qidirilmadi (%s)", type(e).__name__)
         return []
+
+
+async def _fill_titles(items: list) -> None:
+    """O'chirilgan akkauntning chati Telegram'da nomsiz — arxivdagi (yoki taxminiy) ismi qo'yiladi."""
+    cache: dict[int, str] = {}
+    for f in items:
+        if f.chat_title or not f.chat_id:
+            continue
+        if f.chat_id not in cache:
+            try:
+                info = await storage.archive_chat(f.chat_id)
+            except Exception:
+                info = None
+            cache[f.chat_id] = archive.chat_label(info) if info else ""
+        f.chat_title = cache[f.chat_id]
+
+
+async def _archive_candidates(name: str, known: set[int]) -> list:
+    """Arxivdagi chatlar (akkaunti o'chirilganlar ham — eski yoki taxminiy ismi bo'yicha)."""
+    try:
+        rows = await storage.archive_chats(0, 10, False, name)
+    except Exception as e:
+        log.warning("Arxivdan chat qidirilmadi (%s)", type(e).__name__)
+        return []
+    out = []
+    for r in rows:
+        if r["chat_id"] in known:
+            continue
+        score = max(finder.score_name(name, r.get("title") or "", r.get("username")),
+                    finder.score_name(name, r.get("guess_title") or "")) or 1
+        if r.get("kind") == "user":
+            score += 0.5
+        out.append(finder.Candidate(id=r["chat_id"], title=archive.chat_label(r), username=r.get("username"),
+                                    score=score))
+    return out
 
 
 async def _find_in(event, chat_id: int | None, title: str, username: str | None, q: "finder.Query") -> None:
@@ -953,6 +1075,11 @@ async def _find_in(event, chat_id: int | None, title: str, username: str | None,
                 return
         # 2) istalgan narsa: Telegram qidiruvi nomzodlarni yig'adi, AI javobni tanlaydi
         keywords = finder.keywords_for(q, title if chat_id is not None else "", username)
+        if chat_id is not None and not keywords and not q.media and finder.wants_chat(q.text):
+            # «Aziz bilan chatni top» — xabar emas, yozishmaning o'zi kerak
+            text, buttons = await _archive_chat_view(chat_id)
+            await status.edit(text, parse_mode="html", buttons=buttons)
+            return
         if chat_id is None and not keywords and not q.media:
             await status.edit("Nimani qidiray? Masalan: «Ali yuborgan manzilni top» yoki «wifi parolini qidir».")
             return
@@ -962,6 +1089,8 @@ async def _find_in(event, chat_id: int | None, title: str, username: str | None,
             items = await finder.collect(ctx.user, chat_id, q, keywords)
         # Arxivdan: Telegram'da endi yo'q (o'chirilgan) va tahrirlangan xabarlar ham
         items = finder.merge_archive(items, await _archive_hits(chat_id, q, keywords))
+        if chat_id is None:
+            await _fill_titles(items)
         answer, picked, ai_done = "", [], False
         if items and use_ai:
             try:
@@ -1001,6 +1130,8 @@ async def _run_find(event, text: str) -> None:
         log.warning("Chatlar ro'yxati olinmadi (%s)", type(e).__name__)
         await event.respond(f"❌ Chatlar ro'yxatini olib bo'lmadi: {type(e).__name__}")
         return
+    # Akkaunti o'chirilganlar Telegram'da nomsiz — arxivdagi eski/taxminiy ismi bo'yicha qo'shamiz
+    cands = sorted(cands + await _archive_candidates(q.name, {c.id for c in cands}), key=lambda c: -c.score)
     if not cands:
         await event.respond(f"🤷 «{html.escape(q.name)}» nomli chat topilmadi — barcha chatlardan qidiraman.",
                             parse_mode="html")
@@ -1087,6 +1218,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             [Button.inline((r.get("title") or str(r["chat_id"]))[:40], f"arc:sum:{r['chat_id']}:7".encode())]
             for r in rows])
 
+    @bot.on(events.NewMessage(pattern=r"^/(?:deleted|ochirilganlar)(?:\s+([\s\S]+))?$", func=is_owner))
+    async def _deleted_cmd(event):
+        await _show_gone(event, event.pattern_match.group(1) or "")
+
     @bot.on(events.NewMessage(pattern=r"^/vadalar$", func=is_owner))
     async def _vadalar(event):
         await _show_promises(event)
@@ -1149,6 +1284,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
             await _show_promises(event)
             return
+        if action == "gonescan":
+            await event.answer("🔎 Tekshirilmoqda...")
+            await _gone_scan()
+            return
         await event.answer()
         if action == "set" and arg in ("archive_enabled", "archive_alerts", "archive_groups", "drive_media"):
             await runtime.update(**{arg: not runtime.get(arg)})
@@ -1162,6 +1301,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             text, buttons = await _archive_list(int(arg or 0), action == "dlist")
         elif action == "chat":
             text, buttons = await _archive_chat_view(int(arg))
+        elif action == "gone":
+            text, buttons = await _gone_list(int(arg or 0))
         else:
             text, buttons = await _archive_panel()
         try:
@@ -1436,6 +1577,9 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await status.edit("🤔 Ovozda gap eshitilmadi.")
             return
         await status.edit(f"🎤 Eshitdim: <i>{html.escape(text[:500])}</i>", parse_mode="html")
+        if deleted_accounts.asks_for_list(text):
+            await _show_gone(event, text)
+            return
         if finder.looks_like_search(text):
             await _run_find(event, text)
             return
@@ -1591,6 +1735,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                 return
         if chat_id is None:
             chat_id = _awaiting_reply.pop("chat", None)
+        # «o'chirilgan akkauntlarni ko'rsat» -> ro'yxat (taxminiy ismlari bilan)
+        if chat_id is None and deleted_accounts.asks_for_list(event.text):
+            await _show_gone(event, event.text)
+            return
         # «Ali menga tashlagan usernameni top» -> chatdan qidirish
         if chat_id is None and finder.looks_like_search(event.text):
             await _run_find(event, event.text)

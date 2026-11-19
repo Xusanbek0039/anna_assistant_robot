@@ -49,6 +49,28 @@ def display_name(entity) -> str:
     return getattr(entity, "title", "") or ""
 
 
+def is_deleted_account(entity) -> bool:
+    """Telegram'da «Deleted Account» — ismi va username'i yo'q, lekin yozishma chatda qolgan."""
+    return isinstance(entity, User) and bool(getattr(entity, "deleted", False))
+
+
+def has_real_title(info: dict) -> bool:
+    title = (info or {}).get("title") or ""
+    return bool(title) and title != str(info.get("chat_id"))
+
+
+def chat_label(info: dict) -> str:
+    """Chat nomi odam uchun: akkaunt o'chirilgan bo'lsa — eski ismi yoki taxminiy ismi."""
+    info = info or {}
+    if has_real_title(info):
+        return info["title"]
+    if info.get("guess_title"):
+        return f"≈ {info['guess_title']}"
+    if info.get("account_deleted"):
+        return f"O'chirilgan akkaunt #{info.get('chat_id')}"
+    return info.get("title") or str(info.get("chat_id") or "")
+
+
 def media_label(msg) -> str | None:
     if not msg.media or isinstance(msg.media, MessageMediaWebPage):
         return None
@@ -187,7 +209,8 @@ async def _store(event) -> None:
                 doc["drive_local"] = await _spool_now(msg, doc)
     added = await storage.archive_add(doc)
     await storage.archive_touch_chat(event.chat_id, display_name(chat) or str(event.chat_id),
-                                     getattr(chat, "username", None), kind, doc["date"], int(added))
+                                     getattr(chat, "username", None), kind, doc["date"], int(added),
+                                     account_deleted=is_deleted_account(chat))
     if added and doc.get("drive_media"):
         _media_wake.set()
 
@@ -320,7 +343,8 @@ async def backfill(user, chat_id: int, limit: int) -> int:
     if docs or await storage.archive_chat(chat_id) is None:
         await storage.archive_touch_chat(chat_id, display_name(entity) or str(chat_id),
                                          getattr(entity, "username", None), "group" if group else "user",
-                                         max((d["date"] for d in docs), default=0), added)
+                                         max((d["date"] for d in docs), default=0), added,
+                                         account_deleted=is_deleted_account(entity))
     return added
 
 
@@ -368,7 +392,8 @@ async def sync_existing(user, per_chat: int, pause: float = 0.5) -> tuple[int, i
             if docs:
                 await storage.archive_touch_chat(chat_id, display_name(dialog.entity) or str(chat_id),
                                                  getattr(dialog.entity, "username", None), kind,
-                                                 max(d["date"] for d in docs), added)
+                                                 max(d["date"] for d in docs), added,
+                                                 account_deleted=is_deleted_account(dialog.entity))
             if added:
                 chats += 1
                 added_total += added

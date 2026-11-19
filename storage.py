@@ -441,13 +441,47 @@ async def archive_mark_deleted(chat_id: int | None, msg_ids: list[int], ts: floa
     return docs
 
 
+def _real_title(chat_id: int, title: str | None) -> bool:
+    """O'chirilgan akkauntning ismi bo'sh keladi (yoki id ga aylanadi) — bunday "nom" eski ismni o'chirmasin."""
+    return bool(title) and title != str(chat_id)
+
+
 async def archive_touch_chat(chat_id: int, title: str, username: str | None, kind: str, ts: float,
-                             added: int = 1) -> None:
-    fields = {"title": title, "username": username, "kind": kind}
+                             added: int = 1, account_deleted: bool = False) -> None:
+    fields: dict = {"kind": kind}
+    update: dict = {"$set": fields, "$max": {"last": ts}, "$inc": {"count": added}}
+    if _real_title(chat_id, title):
+        fields["title"] = title
+    else:  # akkaunt o'chirilgan — oldin saqlangan ism qoladi
+        update["$setOnInsert"] = {"title": str(chat_id)}
+    if account_deleted:
+        fields["account_deleted"] = True
+        update["$min"] = {"account_deleted_at": time.time()}
+    else:
+        fields["username"] = username
     if added:  # yangi xabar bor — Drive'dagi nusxa yangilanishi kerak
         fields.update(changed=time.time(), drive_dirty=True)
-    await _get_db().archive_chats.update_one(
-        {"_id": chat_id}, {"$set": fields, "$max": {"last": ts}, "$inc": {"count": added}}, upsert=True)
+    await _get_db().archive_chats.update_one({"_id": chat_id}, update, upsert=True)
+
+
+async def archive_mark_account_deleted(chat_id: int, title: str = "") -> None:
+    """Suhbatdosh akkauntini o'chirgan. title — o'chishidan oldingi ismi (ma'lum bo'lsa)."""
+    fields: dict = {"account_deleted": True, "kind": "user"}
+    update: dict = {"$set": fields, "$min": {"account_deleted_at": time.time()},
+                    "$setOnInsert": {"count": 0, "last": 0}}
+    if _real_title(chat_id, title):
+        fields["title"] = title
+    else:
+        update["$setOnInsert"]["title"] = str(chat_id)
+    await _get_db().archive_chats.update_one({"_id": chat_id}, update, upsert=True)
+
+
+async def archive_deleted_accounts(limit: int = 300) -> list[dict]:
+    """Akkaunti o'chirilgan suhbatdoshlar (oxirgi yozishganidan boshlab)."""
+    rows = await _get_db().archive_chats.find({"account_deleted": True})         .sort("last", DESCENDING).limit(limit).to_list()
+    for r in rows:
+        r["chat_id"] = r.pop("_id")
+    return rows
 
 
 async def archive_drive_pending(limit: int = 50) -> list[dict]:
@@ -539,7 +573,7 @@ async def archive_chats(skip: int = 0, limit: int = 10, only_deleted: bool = Fal
         query["deleted"] = {"$gt": 0}
     if name:
         rx = {"$regex": re.escape(name.lstrip("@")), "$options": "i"}
-        query["$or"] = [{"title": rx}, {"username": rx}]
+        query["$or"] = [{"title": rx}, {"username": rx}, {"guess_title": rx}]
     sort = "last_deleted" if only_deleted else "last"
     rows = await _get_db().archive_chats.find(query).sort(sort, DESCENDING).skip(skip).limit(limit).to_list()
     for r in rows:
@@ -595,18 +629,18 @@ async def archive_stats() -> dict:
 
 # ---------- arxivdan qidirish (o'chirilgan / tahrirlangan) ----------
 async def archive_search(chat_id: int | None, keywords: list[str], days: int | None = None,
-                         only_them: bool = False, limit: int = 30) -> list[dict]:
-    """Telegram'da endi yo'q (o'chirilgan) yoki tahrirlangan xabarlar ichidan kalit so'zlar bo'yicha."""
+                         only_them: bool = False, limit: int = 30, everything: bool = False) -> list[dict]:
+    """Telegram'da endi yo'q (o'chirilgan) yoki tahrirlangan xabarlar ichidan kalit so'zlar bo'yicha.
+    everything=True — arxivdagi barcha xabarlardan (akkaunti o'chirilgan odam bilan yozishma)."""
     import re
     words = [w for w in (k.strip() for k in keywords) if len(w) >= 2][:8]
     if not words:
         return []
     rx = [{"$regex": re.escape(w), "$options": "i"} for w in words]
-    query: dict = {
-        "$and": [
-            {"$or": [{"deleted": True}, {"edits.0": {"$exists": True}}]},
-            {"$or": [{"text": r} for r in rx] + [{"edits.text": r} for r in rx]},
-        ]}
+    conds: list[dict] = [{"$or": [{"text": r} for r in rx] + [{"edits.text": r} for r in rx]}]
+    if not everything:
+        conds.insert(0, {"$or": [{"deleted": True}, {"edits.0": {"$exists": True}}]})
+    query: dict = {"$and": conds}
     if chat_id is not None:
         query["chat_id"] = chat_id
     if days:
@@ -614,6 +648,19 @@ async def archive_search(chat_id: int | None, keywords: list[str], days: int | N
     if only_them:
         query["out"] = False
     return await _get_db().archive.find(query, _ARCHIVE_FIELDS).sort("date", DESCENDING).limit(limit).to_list()
+
+
+async def archive_word_hits(chat_ids: list[int], keywords: list[str], limit: int = 30) -> dict[int, int]:
+    """Shu chatlardan qaysilarida bu so'zlar uchraydi: {chat_id: mos xabarlar soni}."""
+    import re
+    words = [w for w in (k.strip() for k in keywords) if len(w) >= 3][:8]
+    if not words or not chat_ids:
+        return {}
+    rx = [{"$regex": re.escape(w), "$options": "i"} for w in words]
+    cursor = await _get_db().archive.aggregate([
+        {"$match": {"chat_id": {"$in": list(chat_ids)}, "$or": [{"text": r} for r in rx]}},
+        {"$group": {"_id": "$chat_id", "n": {"$sum": 1}}}, {"$sort": {"n": -1}}, {"$limit": limit}])
+    return {r["_id"]: r["n"] for r in await cursor.to_list()}
 
 
 # ---------- haftalik hisobot ----------

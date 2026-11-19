@@ -125,7 +125,17 @@ async def check_user(client, user: User, about: str | None = None, history: bool
                 await _save_history(client, user)
             return []
         changes = diff(old, new)
-        await storage.profile_set(user.id, **new)
+        extra = {}
+        if new["deleted"] and not old.get("deleted"):
+            # akkaunt o'chdi — ismi Telegram'dan yo'qoladi; oxirgi ma'lum ismni saqlab qolamiz
+            known = " ".join(p for p in (old.get("first"), old.get("last")) if p)
+            if known:
+                extra["known_name"] = known
+            try:
+                await storage.archive_mark_account_deleted(user.id, known)
+            except Exception as e:
+                log.info("Arxivda o'chirilgan deb belgilanmadi (%s)", type(e).__name__)
+        await storage.profile_set(user.id, **new, **extra)
     if not changes:
         return []
     photo, link = None, None

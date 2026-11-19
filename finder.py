@@ -211,6 +211,15 @@ def looks_like_search(text: str) -> bool:
     return not _FIN_HINT.search(t)
 
 
+_CHAT_WORD = re.compile(r"\b(chat\w*|yozishma\w*|yozishuv\w*|suhbat\w*|perepiska\w*|переписк\w*|чат\w*|диалог\w*)",
+                        re.IGNORECASE)
+
+
+def wants_chat(text: str) -> bool:
+    """«Aziz bilan chatni top», «Dilnoza bilan yozishmani ber» — xabar emas, butun yozishma so'ralyapti."""
+    return bool(_CHAT_WORD.search(text or ""))
+
+
 def stem(word: str) -> str:
     """«manzilni» -> «manzil», «kitoblarni» -> «kitob» (Telegram qidiruvi o'zak bilan yaxshiroq topadi)."""
     w = _norm(word).strip("'.,!?")

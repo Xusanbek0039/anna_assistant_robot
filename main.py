@@ -9,6 +9,7 @@ import archive
 import backup
 import config
 import control_bot
+import deleted_accounts
 import finance
 import gdrive
 import health
@@ -57,6 +58,15 @@ async def _archive_sync(user) -> None:
     if added:
         await control_bot.alert(f"🗂 Arxiv: {chats} ta chatdan {added} ta xabar nusxalandi. "
                                 "Endi ular o'chirilsa ham HTML qilib olasiz.")
+    try:  # akkaunti o'chirilgan odamlar bilan yozishmalar — to'liq arxivga va taxminiy ism bilan
+        found, gone_added, _ = await deleted_accounts.refresh(user)
+        if gone_added:
+            await control_bot.alert(f"👻 {found} ta o'chirilgan akkaunt bilan yozishmadan {gone_added} ta xabar "
+                                    "arxivga olindi. Ro'yxat: /deleted")
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("O'chirilgan akkauntlar arxivlanmadi")
 
 
 async def main() -> None:
