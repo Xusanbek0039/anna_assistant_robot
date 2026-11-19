@@ -473,6 +473,12 @@ async def archive_messages(chat_id: int, only_deleted: bool = False, limit: int 
     return list(reversed(await cursor.to_list()))
 
 
+async def archive_last_msg_id(chat_id: int) -> int:
+    """Shu chatdan arxivdagi eng oxirgi xabar id si (yo'q bo'lsa 0) — keyingi nusxalash shundan davom etadi."""
+    doc = await _get_db().archive.find_one({"chat_id": chat_id}, {"msg_id": 1}, sort=[("msg_id", DESCENDING)])
+    return int(doc["msg_id"]) if doc else 0
+
+
 async def archive_media_put(data: bytes, mime: str) -> str:
     from bson import Binary
     res = await _get_db().archive_media.insert_one({"data": Binary(data), "mime": mime, "ts": time.time()})

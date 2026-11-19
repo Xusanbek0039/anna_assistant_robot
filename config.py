@@ -142,6 +142,8 @@ ARCHIVE_GROUPS = _bool("ARCHIVE_GROUPS", False)       # guruhlar ham (standart o
 ARCHIVE_ALERTS = _bool("ARCHIVE_ALERTS", True)        # xabar o'chirilsa — botga ogohlantirish
 ARCHIVE_MEDIA_MAX_KB = _int("ARCHIVE_MEDIA_MAX_KB", 512)  # rasm/ovozli xabar shu hajmgacha arxivga (0 = yo'q)
 ARCHIVE_EXPORT_LIMIT = _int("ARCHIVE_EXPORT_LIMIT", 5000)  # HTML da chatning oxirgi nechta xabari
+# Ishga tushganda mavjud chatlardan ham nusxa: birinchi marta har chatdan shuncha oxirgi xabar (0 = yo'q)
+ARCHIVE_SYNC_LIMIT = _int("ARCHIVE_SYNC_LIMIT", 1000)
 # Bir vaqtda faqat bitta nusxa ishlasin (ikki nusxa = bot har xabarni ikki marta yuboradi)
 SINGLE_INSTANCE = _bool("SINGLE_INSTANCE", True)
 HISTORY_LIMIT = _int("HISTORY_LIMIT", 30)  # AI ga beriladigan oxirgi xabarlar soni

@@ -253,6 +253,53 @@ async def backfill(user, chat_id: int, limit: int) -> int:
     return added
 
 
+def _dialog_kind(dialog) -> str | None:
+    """Nusxalanadigan chat turi yoki None."""
+    ent = dialog.entity
+    if dialog.is_user:
+        if not isinstance(ent, User) or ent.bot or ent.is_self or ent.id in (TELEGRAM_SERVICE_ID, _me_id):
+            return None
+        return "user"
+    if dialog.is_group and runtime.get("archive_groups"):
+        return "group"
+    return None
+
+
+async def sync_existing(user, per_chat: int, pause: float = 0.5) -> tuple[int, int]:
+    """Mavjud chatlardagi yozishmalarni arxivga nusxalaydi (faqat matn va media nomi, fayllar yuklanmaydi).
+    Birinchi marta — har chatdan oxirgi `per_chat` ta xabar; keyingi ishga tushishlarda — faqat arxivdagi
+    oxirgi xabardan keyin kelganlari (dastur o'chiq turgan paytdagilar). (chatlar, yangi xabarlar) soni."""
+    chats = added_total = 0
+    async for dialog in user.iter_dialogs():
+        if not runtime.get("archive_enabled"):
+            break
+        kind = _dialog_kind(dialog)
+        if kind is None or dialog.message is None:
+            continue
+        chat_id = dialog.id
+        try:
+            last = await storage.archive_last_msg_id(chat_id)
+            if last and dialog.message.id <= last:
+                continue  # yangi xabar yo'q
+            docs = []
+            async for m in user.iter_messages(dialog.entity, limit=per_chat, min_id=last):
+                if isinstance(m, Message):
+                    docs.append(message_doc(m, chat_id, display_name(m.sender) if kind == "group" and not m.out else ""))
+            added = await storage.archive_add_many(docs)
+            if docs:
+                await storage.archive_touch_chat(chat_id, display_name(dialog.entity) or str(chat_id),
+                                                 getattr(dialog.entity, "username", None), kind,
+                                                 max(d["date"] for d in docs), added)
+            if added:
+                chats += 1
+                added_total += added
+        except Exception as e:
+            log.warning("Chat %s nusxalanmadi (%s)", chat_id, type(e).__name__)
+        await asyncio.sleep(pause)  # Telegram cheklovi (FloodWait) ga tushmaslik uchun
+    log.info("Arxiv: mavjud chatlardan %d ta xabar nusxalandi (%d ta chat)", added_total, chats)
+    return chats, added_total
+
+
 async def export_html(user, chat_id: int, only_deleted: bool = False) -> tuple[bytes, str, int]:
     """(HTML fayl, fayl nomi, xabarlar soni)."""
     if not only_deleted:

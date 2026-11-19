@@ -38,6 +38,22 @@ async def supervise(name: str, coro) -> None:
                                 "Qolgan qismlar ishlashda davom etyapti.")
 
 
+async def _archive_sync(user) -> None:
+    """Mavjud chatlardagi yozishmalarni arxivga nusxalash (bir martalik fon vazifasi)."""
+    await asyncio.sleep(20)  # avval kotiba va bot to'liq ishga tushib olsin
+    try:
+        chats, added = await archive.sync_existing(user, config.ARCHIVE_SYNC_LIMIT)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.exception("Mavjud chatlar arxivga nusxalanmadi")
+        await control_bot.alert(f"⚠️ Mavjud chatlarni arxivga nusxalab bo'lmadi: {type(e).__name__}")
+        return
+    if added:
+        await control_bot.alert(f"🗂 Arxiv: {chats} ta chatdan {added} ta xabar nusxalandi. "
+                                "Endi ular o'chirilsa ham HTML qilib olasiz.")
+
+
 async def main() -> None:
     config.require("API_ID", "API_HASH", "BOT_TOKEN", "OPENAI_API_KEY", "MONGODB_URI")
     if config.BIO_ENABLED:
@@ -95,6 +111,8 @@ async def main() -> None:
         background.append(supervise("Bio yangilash", BioUpdater(user).run()))
     else:
         log.info("Avtomatik bio o'chirilgan (BIO_ENABLED=false)")
+    if config.ARCHIVE_SYNC_LIMIT > 0:
+        background.append(_archive_sync(user))
     if config.REPORT_ENABLED:
         background.append(supervise("Kunlik hisobot", report.run(control_bot.send_html)))
     if config.FINANCE_ENABLED:

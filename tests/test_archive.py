@@ -282,3 +282,47 @@ def test_deleted_alert_text(arc, monkeypatch):
 
 def test_config_defaults():
     assert config.ARCHIVE_ENABLED and not config.ARCHIVE_GROUPS and config.ARCHIVE_MEDIA_MAX_KB > 0
+
+
+def test_sync_existing_copies_only_people_and_then_only_new(arc, monkeypatch):
+    from telethon.tl.types import Message
+
+    async def last_id(chat_id):
+        ids = [m for (c, m) in arc.msgs if c == chat_id]
+        return max(ids, default=0)
+    monkeypatch.setattr(storage, "archive_last_msg_id", last_id, raising=False)
+
+    def tg_msg(i, text):
+        return Message(id=i, peer_id=PeerUser(5), date=datetime(2026, 1, 1, tzinfo=timezone.utc), message=text)
+
+    class Dialog:
+        def __init__(self, entity, msgs, user=True, group=False):
+            self.entity, self.id, self.msgs = entity, entity.id, msgs
+            self.is_user, self.is_group = user, group
+            self.message = msgs[-1] if msgs else None
+
+    class Tg:
+        def __init__(self, dialogs):
+            self.dialogs = dialogs
+
+        async def iter_dialogs(self):
+            for d in self.dialogs:
+                yield d
+
+        async def iter_messages(self, entity, limit=None, min_id=0):
+            d = next(x for x in self.dialogs if x.entity is entity)
+            for m in reversed([m for m in d.msgs if m.id > min_id][-limit:]):
+                yield m
+
+    ali = Dialog(_person(5), [tg_msg(1, "eski 1"), tg_msg(2, "eski 2"), tg_msg(3, "eski 3")])
+    service = Dialog(User(id=777000, first_name="Telegram"), [tg_msg(4, "Login code 1")])
+    bot = Dialog(User(id=9, first_name="B", bot=True), [tg_msg(5, "bot")])
+    tg = Tg([ali, service, bot])
+    assert run(archive.sync_existing(tg, per_chat=2, pause=0)) == (1, 2)   # oxirgi 2 tasi
+    assert sorted(d["text"] for d in arc.msgs.values()) == ["eski 2", "eski 3"]
+    assert arc.chats[5]["title"] == "Ali"
+
+    ali.msgs.append(tg_msg(6, "yangi"))
+    ali.message = ali.msgs[-1]
+    assert run(archive.sync_existing(tg, per_chat=2, pause=0)) == (1, 1)   # faqat yangisi
+    assert run(archive.sync_existing(tg, per_chat=2, pause=0)) == (0, 0)
