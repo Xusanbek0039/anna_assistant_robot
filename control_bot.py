@@ -25,6 +25,7 @@ import runtime
 import saver
 import storage
 import voicelab
+import watchers
 import weekly
 from config import OWNER_TAKEOVER_MINUTES
 
@@ -64,6 +65,13 @@ HELP = (
     "/vadalar — bergan va'dalaringiz (muddati kelganda eslatadi)\n"
     "Har yakshanba — haftalik chat hisoboti, har kuni — bazaning Drive'ga zaxirasi. "
     "Sozlash: 🗂 Chat arxivi → ⚙️ Kuzatuv sozlamalari\n\n"
+    "<b>🔔 Eslatmalar</b>\n"
+    "Botga oddiy yozing yoki ayting — hodisa haqiqatan ro'y berganda xabar beraman:\n"
+    "• «95 446 68 86 raqami tg ga qo'shilsa / akkaunt ochsa / yashirindan chiqarsa xabar ber»\n"
+    "• «@ali online bo'lsa xabar ber», «Vali onlayn bo'lsa ayt»\n"
+    "• «Ali har safar online bo'lganda xabar ber» — har gal (aks holda bir marta)\n"
+    "Bildirishnomaga reply qilib «shu user online bo'lsa menga xabar ber» deyish ham mumkin.\n"
+    "/eslatma — ro'yxat va o'chirish; /eslatma @user yoki /eslatma raqam — tez qo'yish\n\n"
     "<b>Profil</b>\n"
     "/bio — joriy bio va holat\n"
     "/bio on | off | now | restore — yoqish, to'xtatish, hozir yangilash, asl bio'ni qaytarish\n"
@@ -100,12 +108,14 @@ MENU_FIND = "🔎 Qidirish"
 MENU_REPORT = "📈 Hisobot"
 MENU_HELP = "❓ Yordam"
 MENU_PROMISES = "📌 Va'dalar"
-MENU_TEXTS = {MENU_PANEL, MENU_INBOX, MENU_ARCHIVE, MENU_FIN, MENU_FIND, MENU_REPORT, MENU_HELP, MENU_PROMISES}
+MENU_WATCH = "🔔 Eslatmalar"
+MENU_TEXTS = {MENU_PANEL, MENU_INBOX, MENU_ARCHIVE, MENU_FIN, MENU_FIND, MENU_REPORT, MENU_HELP, MENU_PROMISES,
+              MENU_WATCH}
 
 
 def main_keyboard() -> list:
     return [
-        [Button.text(MENU_PANEL, resize=True, persistent=True), Button.text(MENU_INBOX)],
+        [Button.text(MENU_PANEL, resize=True, persistent=True), Button.text(MENU_INBOX), Button.text(MENU_WATCH)],
         [Button.text(MENU_ARCHIVE), Button.text(MENU_PROMISES), Button.text(MENU_FIN)],
         [Button.text(MENU_FIND), Button.text(MENU_REPORT), Button.text(MENU_HELP)],
     ]
@@ -199,6 +209,35 @@ async def call_owner(chat_id: int, name: str, username: str | None, text: str, s
         _notif_map[msg.id] = chat_id
     except Exception:
         log.exception("Chaqiruv xabari yuborilmadi (botga /start bosganmisiz?)")
+
+
+def _inline(rows: list | None) -> list | None:
+    """[[(matn, data), ...], ...] -> Telethon inline tugmalari."""
+    return [[Button.inline(t, d.encode()) for t, d in row] for row in rows] if rows else None
+
+
+async def watch_alert(text: str, buttons: list | None = None) -> None:
+    """🔔 Eslatma bajarildi (watchers.py) — egasiga tugmalar bilan xabar."""
+    try:
+        msg = await ctx.bot.send_message(ctx.owner_id, text, parse_mode="html", buttons=_inline(buttons))
+    except Exception:
+        log.exception("Eslatma xabari botga yuborilmadi")
+        return
+    # boshqa bildirishnomalar kabi: reply qilib yozilsa — o'sha odamga ketadi (yoki unga yangi eslatma)
+    uid = next((d.split(":")[2] for row in buttons or [] for _, d in row if d.startswith("wch:dm:")), None)
+    if uid and uid.isdigit():
+        _notif_map[msg.id] = int(uid)
+
+
+async def _watch_request(event, req: "watchers.Request", note: str = "") -> None:
+    """Egasi aytgan eslatmani qo'yadi va natijani yozadi."""
+    try:
+        text, buttons = await watchers.handle(ctx.user, req)
+    except Exception as e:
+        log.exception("Eslatma qo'yilmadi")
+        await event.respond(f"❌ Eslatma qo'yilmadi: {type(e).__name__}")
+        return
+    await event.respond(text + note, parse_mode="html", buttons=_inline(buttons), link_preview=False)
 
 
 async def alert(text: str) -> None:
@@ -408,6 +447,7 @@ BOT_COMMANDS = [
     ("deleted", "👻 Akkauntini o'chirganlar — taxminiy ismi bilan"),
     ("xulosa", "🧠 Yozishma xulosasi va va'dalar: /xulosa Ali"),
     ("vadalar", "📌 Bergan va'dalaringiz ro'yxati"),
+    ("eslatma", "🔔 Eslatmalar: raqam tg ga qo'shilsa / odam online bo'lsa"),
     ("find", "🔎 Chatlardan istalgan narsani topish"),
     ("save", "💾 Havoladagi mediani Saqlangan xabarlarga joylash"),
     ("bio", "🕒 Bio, iqtibos va online — tugmali panel"),
@@ -1284,6 +1324,9 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.respond(await report.make_report(), parse_mode="html")
         elif choice == MENU_PROMISES:
             await _show_promises(event)
+        elif choice == MENU_WATCH:
+            text, buttons = await watchers.list_view()
+            await event.respond(text, parse_mode="html", buttons=_inline(buttons))
         elif choice == MENU_HELP:
             await event.respond(HELP, parse_mode="html", buttons=main_keyboard())
 
@@ -1314,6 +1357,51 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     @bot.on(events.NewMessage(pattern=r"^/(?:deleted|ochirilganlar)(?:\s+([\s\S]+))?$", func=is_owner))
     async def _deleted_cmd(event):
         await _show_gone(event, event.pattern_match.group(1) or "")
+
+    @bot.on(events.NewMessage(pattern=r"^/eslatma(?:lar)?(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
+    async def _eslatma(event):
+        arg = (event.pattern_match.group(1) or "").strip()
+        req = watchers.parse(arg, strict=False) if arg else None
+        if req is None:
+            text, buttons = await watchers.list_view()
+            await event.respond(text, parse_mode="html", buttons=_inline(buttons))
+            return
+        await _watch_request(event, req)
+
+    @bot.on(events.CallbackQuery(pattern=rb"^wch:", func=is_owner))
+    async def _watch_callback(event):
+        parts = event.data.decode().split(":")
+        action, arg = parts[1], parts[2] if len(parts) > 2 else ""
+        if action == "dm" and arg.isdigit():
+            await event.answer()
+            await _open_dm(event, arg)
+        elif action == "del":
+            ok = await watchers.remove(arg)
+            await event.answer("🗑 Eslatma o'chirildi" if ok else "Allaqachon o'chirilgan")
+            text, buttons = await watchers.list_view()
+            try:
+                await event.edit(text, parse_mode="html", buttons=_inline(buttons))
+            except Exception:
+                pass
+        elif action == "list":
+            await event.answer()
+            text, buttons = await watchers.list_view()
+            await event.respond(text, parse_mode="html", buttons=_inline(buttons))
+        elif action == "on" and arg.isdigit():
+            await event.answer("⏳")
+            await _watch_request(event, watchers.Request("online", user_ref=arg))
+        elif action == "ph" and arg.isdigit():
+            await event.answer("⏳")
+            await _watch_request(event, watchers.Request("phone", phone=arg, number=arg))
+        elif action == "pick" and len(parts) > 3 and parts[3].isdigit():
+            res = await watchers.pick(ctx.user, arg, int(parts[3]))
+            if res is None:
+                await event.answer("So'rov eskirgan — qaytadan yozing")
+                return
+            await event.answer()
+            await event.respond(res[0], parse_mode="html", buttons=_inline(res[1]))
+        else:
+            await event.answer()
 
     @bot.on(events.NewMessage(pattern=r"^/vadalar$", func=is_owner))
     async def _vadalar(event):
@@ -1690,6 +1778,9 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         if deleted_accounts.asks_for_list(text):
             await _show_gone(event, text)
             return
+        if (req := watchers.parse(text)) is not None:  # «Ali online bo'lsa xabar ber»
+            await _watch_request(event, req)
+            return
         if finder.looks_like_search(text):
             await _run_find(event, text)
             return
@@ -1837,6 +1928,14 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         chat_id = None
         if event.is_reply:
             chat_id = _notif_map.get(event.reply_to_msg_id)
+        # Bildirishnomaga reply: «shu user online bo'lsa menga xabar ber» — suhbatdoshga yuborilmaydi,
+        # o'sha odamga eslatma qo'yiladi
+        if (chat_id is not None and watchers.about_this(event.text)
+                and (req := watchers.parse(event.text)) is not None):
+            if not (req.user_ref or req.number):
+                req.kind, req.user_ref, req.name = "online", str(chat_id), ""
+            await _watch_request(event, req, "\nℹ️ Matn suhbatdoshga yuborilmadi — eslatma deb tushundim.")
+            return
         # Javob yozish kutilmayapti va matnda xabar havolasi bor -> mediani Saqlangan xabarlarga joylaymiz
         if chat_id is None and "chat" not in _awaiting_reply:
             links = saver.parse_links(event.text)
@@ -1852,6 +1951,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         # «o'chirilgan akkauntlarni ko'rsat» -> ro'yxat (taxminiy ismlari bilan)
         if chat_id is None and deleted_accounts.asks_for_list(event.text):
             await _show_gone(event, event.text)
+            return
+        # «95 446 68 86 raqami tg ga qo'shilsa xabar ber», «@ali online bo'lsa xabar ber» -> eslatma
+        if chat_id is None and (req := watchers.parse(event.text)) is not None:
+            await _watch_request(event, req)
             return
         # «Ali menga tashlagan usernameni top» -> chatdan qidirish
         if chat_id is None and finder.looks_like_search(event.text):

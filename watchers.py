@@ -159,6 +159,15 @@ def parse(text: str, strict: bool = True) -> Request | None:
     return req
 
 
+_ABOUT_RE = re.compile(r"\b(?:menga|shu|ushbu|bu|uni|buni|shuni|eslat\w*|kuzat\w*|мне|этот|его)\b", re.IGNORECASE)
+
+
+def about_this(text: str) -> bool:
+    """Bildirishnomaga reply qilingan gap suhbatdoshga emas, botga aytilganmi («shu user online bo'lsa menga
+    xabar ber»). Busiz suhbatdoshga yoziladigan «online bo'lsa xabar ber» ham eslatma deb olinardi."""
+    return bool(_ABOUT_RE.search(text or ""))
+
+
 def bad_number_text(number: str) -> str:
     if not number:
         return ("📱 Qaysi raqam? Masalan: «+998 90 123 45 67 raqami Telegram'ga qo'shilsa xabar ber».")
@@ -333,6 +342,8 @@ async def add_online(client, user: User, repeat: bool = False) -> tuple[str, lis
 
 async def handle(client, req: Request) -> tuple[str, list]:
     """Egasining so'rovi bo'yicha eslatma qo'yadi. (javob matni, tugmalar)."""
+    if not config.WATCH_ENABLED:
+        return "🔕 Eslatmalar o'chirilgan (.env: WATCH_ENABLED=false). Yoqib, dasturni qayta ishga tushiring.", []
     if req.kind == "phone":
         if not req.phone:
             return bad_number_text(req.number), []

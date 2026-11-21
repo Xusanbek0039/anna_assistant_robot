@@ -25,6 +25,7 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `archive.py` | Chat arxivi: barcha shaxsiy chatlar (istisnodagilar ham) saqlanadi; suhbatdosh xabar yoki butun chatni o'chirsa — bot xabar beradi va yozishmani **HTML fayl** qilib yuboradi (botda «🗂 Chat arxivi» tugmasi yoki /arxiv) |
 | `gdrive.py`, `drive_auth.py` | Chat arxivini Google Drive papkasiga HTML qilib yuklash (har chatga bitta fayl, o'zgarganda yangilanadi). Bir martalik sozlash: `python drive_auth.py` — `.env.example` dagi Google bo'limiga qarang |
 | `profiles.py` | Profil kuzatuvi: yozishgan odamlar ism, username, bio, rasmini o'zgartirsa yoki akkauntini o'chirsa — xabar; profil rasmlari tarixi Drive'ga |
+| `watchers.py` | 🔔 Eslatmalar: «95 446 68 86 raqami tg ga qo'shilsa xabar ber», «@ali online bo'lsa xabar ber» — hodisa ro'y berganda bot xabar beradi |
 | `promises.py` | AI chat xulosasi (/xulosa) va va'dalar kuzatuvi (/vadalar): kechqurun yangi va'dalarni topadi, ertalab muddati kelganlarini eslatadi |
 | `weekly.py` | Haftalik chat hisoboti: faol suhbatlar, kim o'chirdi/tahrirladi, kim javob kutyapti |
 | `backup.py`, `restore_backup.py` | Bazani har kuni Drive'ga zaxiralash (`Anna zaxira/<sana>/`) va undan tiklash: `python restore_backup.py <papka> --yes` |
@@ -229,9 +230,14 @@ Ovozli xabar yoki video-xabarga kotiba **ovozli xabar** bilan javob beradi (`VOI
   kirillcha o'zbek matni lotinga o'giriladi.
 - VoiceLab ishlamasa (kalit, kredit, tarmoq...) — suhbatdoshga matn yuboriladi va boshqaruv boti sizga
   muammo sababini yozadi (bir xil xato 30 daqiqada bir martadan ko'p emas).
-- **Bir nechta VoiceLab kaliti:** `VOICELAB_API_KEY=kalit1,kalit2,kalit3`. Birida kredit tugasa (yoki kalit
-  yaroqsiz bo'lsa) so'rov darhol keyingisi bilan qayta yuboriladi va bot sizga yozadi. Tugagan kalit 6 soatdan
-  keyin yana birinchi navbatga qaytadi — oylik kredit yangilansa, bot o'zi unga qaytadi.
+- **Bir nechta VoiceLab kaliti (soni cheklanmagan — 5, 6 ta ham bo'ladi):**
+  `VOICELAB_API_KEY=kalit1,kalit2,kalit3,kalit4,kalit5`. Kalitlar **aylanma** ishlatiladi: 1 → 2 → 3 → … →
+  oxirgisi → yana 1. Joriy kalit tugamaguncha o'sha ishlatiladi; kredit tugasa (yoki kalit yaroqsiz bo'lsa) so'rov
+  darhol navbatdagisi bilan qayta yuboriladi va bot yozadi: `⚠️ VoiceLab 3-kalit (…abcd): kredit tugadi.
+  1-kalit (…5SEw) ga o'tildi.` Yaqinda (6 soat ichida) tugagan kalit navbat oxiriga suriladi, lekin baribir
+  sinab ko'riladi — kredit to'ldirilsa, bot o'zi unga qaytadi. Hammasi tugasa — bir marta ogohlantiradi.
+  Joriy kalit bazada eslab qolinadi (kalitning o'zi emas), qayta ishga tushganda ham 1-kalitdan boshlamaydi.
+  Hozir qaysi kalit ishlayotgani: `/health`.
 - O'chirish: `VOICE_REPLY_ENABLED=false`.
 
 ## 5. Online holat
@@ -319,6 +325,37 @@ Xulosa xabariga *reply* qilsangiz yoki «✍️ Javob berish» bosilgan bo'lsa �
 **Avtomatik hisobotlar** `FINANCE_REPORT_TIME` (standart 22:00) da: har kuni — kunlik, har 3 kunda — 3 kunlik,
 `FINANCE_WEEK_DAY` kuni (standart yakshanba) — haftalik, oyning oxirgi kuni — oylik. Bugun hech narsa
 yozilmagan bo'lsa — eslatma keladi. O'chirish: `FINANCE_ENABLED=false`.
+
+## 6.2. 🔔 Eslatmalar (raqam Telegram'ga qo'shilsa / odam online bo'lsa)
+
+Nazorat botiga oddiy yozing yoki **ovozli** ayting — hodisa haqiqatan ro'y berganda bot xabar beradi:
+
+| Siz yozasiz / aytasiz | Nima bo'ladi |
+|---|---|
+| `95 446 68 86 raqami tg ga qo'shilsa / akkaunt ochsa / yashirindan chiqarsa menga xabar ber` | Har 15 daqiqada tekshiriladi. Raqam Telegram'da topilsa (yangi akkaunt ochsa yoki «Raqamim orqali kim topa oladi» maxfiyligini ochsa) — xabar: ismi, username, ID va «💬 Lichkaga o'tish» tugmasi |
+| `@username online bo'lsa xabar ber`, `Vali onlayn bo'lsa ayt`, `id 123456789 online bo'lsa xabar ber` | U online bo'lganda **bir marta** xabar keladi |
+| `Ali har safar online bo'lganda xabar ber` | **Har gal** online bo'lganda (orada kamida 10 daqiqa) |
+| `95 446 68 86 raqami online bo'lsa xabar ber` | Raqam egasi topiladi va uning online holati kuzatiladi |
+| Bildirishnomaga *reply*: `shu user online bo'lsa menga xabar ber` | O'sha odamga eslatma qo'yiladi (matn unga yuborilmaydi) |
+
+- **🔔 Eslatmalar** tugmasi yoki `/eslatma` — ro'yxat va 🗑 bilan o'chirish. Tez qo'yish: `/eslatma @username`,
+  `/eslatma 954466886` (raqam — Telegram'da paydo bo'lishi), `/eslatma Ali har safar`.
+- Raqam Telegram'ning `contacts.resolvePhone` usuli bilan tekshiriladi — **kontaktlaringizga qo'shilmaydi**,
+  u odamga hech narsa ko'rinmaydi. O'zbekiston raqamini 9 xonali (`95 446 68 86`) yoki `+998` bilan yozing;
+  boshqa davlat raqami `+` bilan to'liq yoziladi.
+- Online holat real vaqtda (Telegram yuboradigan yangilanish) va zaxira sifatida har 60 soniyada tekshiriladi.
+  Agar odam «So'nggi faollik»ni sizdan yashirgan bo'lsa (yoki siz o'zingiznikini yashirgan bo'lsangiz), Telegram
+  online holatini ko'rsatmaydi — eslatma qo'yilayotganda bot buni aytadi.
+- Odam eslatma qo'yilgan paytda allaqachon online bo'lsa — keyingi safar online bo'lganda xabar keladi.
+- Eslatmalar MongoDB'da saqlanadi — qayta ishga tushganda ham davom etadi.
+
+| Sozlama | Standart | Izoh |
+|---|---|---|
+| `WATCH_ENABLED` | `true` | Eslatmalarni o'chirish: `false` |
+| `WATCH_PHONE_MINUTES` | `15` | Raqam tekshiruvi oralig'i (min. 5) |
+| `WATCH_ONLINE_SECONDS` | `60` | Online holat zaxira tekshiruvi (min. 30) |
+| `WATCH_ONLINE_COOLDOWN_MINUTES` | `10` | «Har safar» rejimida xabarlar orasidagi eng kam vaqt |
+| `WATCH_COUNTRY_CODE` | `998` | 9 xonali raqamga qo'shiladigan kod |
 
 ## 7. Ishga tushirish va to'xtatish
 

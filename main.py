@@ -21,6 +21,7 @@ import runtime
 import storage
 import userbot
 import voicelab
+import watchers
 import weekly
 from bio_updater import BioUpdater, validate_settings
 from presence import keep_online
@@ -103,6 +104,8 @@ async def main() -> None:
     # o'chirilgan / tahrirlangan yozishmalar
     archive.setup(user, me.id, control_bot.deleted_alert, control_bot.edited_alert)
     profiles.setup(user, control_bot.profile_alert)  # ism, username, bio, rasm o'zgarishlari
+    if config.WATCH_ENABLED:  # 🔔 eslatmalar: raqam Telegram'da paydo bo'lsa / odam online bo'lsa
+        watchers.setup(user, control_bot.watch_alert)
     monitor = health.Monitor(user, control_bot.alert)
     control_bot.ctx.monitor = monitor
 
@@ -138,6 +141,7 @@ async def main() -> None:
         log.info("Google Drive arxivi o'chiq - .env da yo'q: %s", ", ".join(gdrive.missing()))
     background += [
         supervise("Profil kuzatuvi", profiles.run(user)),
+        *([supervise("Eslatmalar", watchers.run(user))] if config.WATCH_ENABLED else []),
         supervise("Va'dalar tekshiruvi", promises.run_scan(control_bot.send_promises)),
         supervise("Va'dalar eslatmasi", promises.run_remind(control_bot.send_promises)),
         supervise("Haftalik chat hisoboti", weekly.run(control_bot.send_weekly)),

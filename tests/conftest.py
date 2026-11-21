@@ -47,6 +47,7 @@ class FakeStorage:
         self.d_tx: list[dict] = []
         self.d_budget: dict = {}
         self._tx_seq = 0
+        self.d_watches: list[dict] = []
 
     # --- shaxsiy buxgalter ---
     async def add_transactions(self, docs):
@@ -98,6 +99,28 @@ class FakeStorage:
             self.d_budget[category] = limit
         else:
             self.d_budget.pop(category, None)
+
+    # --- eslatmalar ---
+    async def watch_add(self, doc):
+        self._tx_seq += 1
+        wid = f"{self._tx_seq:024x}"
+        self.d_watches.append({**doc, "id": wid, "active": True, "created": self._tx_seq})
+        return wid
+
+    async def watch_list(self, active_only=True):
+        return [dict(r) for r in self.d_watches if r["active"] or not active_only]
+
+    async def watch_update(self, watch_id, **fields):
+        for r in self.d_watches:
+            if r["id"] == watch_id:
+                r.update(fields)
+                return True
+        return False
+
+    async def watch_delete(self, watch_id):
+        before = len(self.d_watches)
+        self.d_watches = [r for r in self.d_watches if r["id"] != watch_id]
+        return len(self.d_watches) < before
 
     async def acquire_lock(self, owner, ttl):
         holder = getattr(self, "d_lock", None)
