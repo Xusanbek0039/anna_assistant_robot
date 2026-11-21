@@ -164,6 +164,13 @@ PROFILE_WATCH = _bool("PROFILE_WATCH", True)          # ism, username, bio, rasm
 PROFILE_CHECK_HOURS = max(1, _int("PROFILE_CHECK_HOURS", 6))
 PROFILE_PHOTOS = _bool("PROFILE_PHOTOS", True)        # profil rasmlari tarixi Drive'dagi chat papkasiga
 
+# --- 🔔 Eslatmalar: raqam Telegram'da paydo bo'lsa / odam online bo'lsa — xabar (watchers.py) ---
+WATCH_ENABLED = _bool("WATCH_ENABLED", True)
+WATCH_PHONE_MINUTES = max(5, _int("WATCH_PHONE_MINUTES", 15))      # raqam har shuncha daqiqada tekshiriladi
+WATCH_ONLINE_SECONDS = max(30, _int("WATCH_ONLINE_SECONDS", 60))   # online holat zaxira tekshiruvi
+WATCH_ONLINE_COOLDOWN_MINUTES = max(1, _int("WATCH_ONLINE_COOLDOWN_MINUTES", 10))  # «har safar» oralig'i
+WATCH_COUNTRY_CODE = _str("WATCH_COUNTRY_CODE", "998")  # 9 xonali raqamga qo'shiladi: 90 123 45 67
+
 # --- Va'dalar (AI chat yozishmalaridan topadi va eslatadi) ---
 PROMISE_SCAN = _bool("PROMISE_SCAN", True)
 PROMISE_SCAN_TIME = _str("PROMISE_SCAN_TIME", "21:30")

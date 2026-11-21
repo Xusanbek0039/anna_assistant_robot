@@ -57,6 +57,7 @@ async def init(retry_forever: bool = True) -> bool:
             await db.archive.create_index([("edited_at", DESCENDING)], sparse=True)
             await db.promises.create_index([("done", ASCENDING), ("due", ASCENDING)])
             await db.promises.create_index([("chat_id", ASCENDING), ("key", ASCENDING)])
+            await db.watches.create_index([("active", ASCENDING), ("created", ASCENDING)])
             log.info("MongoDB'ga ulandi (baza: %s)", MONGODB_DB)
             return True
         except OperationFailure as e:
@@ -773,6 +774,38 @@ async def promise_delete(promise_id: str) -> bool:
     from bson.errors import InvalidId
     try:
         res = await _get_db().promises.delete_one({"_id": ObjectId(promise_id)})
+    except InvalidId:
+        return False
+    return res.deleted_count > 0
+
+
+# ---------- eslatmalar (watchers.py): raqam Telegram'da paydo bo'lsa / odam online bo'lsa ----------
+async def watch_add(doc: dict) -> str:
+    res = await _get_db().watches.insert_one({**doc, "active": True, "created": time.time()})
+    return str(res.inserted_id)
+
+
+async def watch_list(active_only: bool = True) -> list[dict]:
+    rows = await _get_db().watches.find({"active": True} if active_only else {}) \
+        .sort("created", ASCENDING).to_list()
+    return [_prm_out(r) for r in rows]
+
+
+async def watch_update(watch_id: str, **fields) -> bool:
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        res = await _get_db().watches.update_one({"_id": ObjectId(watch_id)}, {"$set": fields})
+    except InvalidId:
+        return False
+    return res.matched_count > 0
+
+
+async def watch_delete(watch_id: str) -> bool:
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        res = await _get_db().watches.delete_one({"_id": ObjectId(watch_id)})
     except InvalidId:
         return False
     return res.deleted_count > 0

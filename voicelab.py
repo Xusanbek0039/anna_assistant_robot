@@ -10,9 +10,11 @@ Qo'shimcha kutubxona kerak emas: standart urllib, alohida oqimda (asyncio.to_thr
 """
 import asyncio
 import contextvars
+import hashlib
 import json
 import logging
 import mimetypes
+import re
 import time
 import urllib.error
 import urllib.request
@@ -39,16 +41,25 @@ def enabled() -> bool:
     return bool(keys())
 
 
-# ---------- bir nechta kalit: birida kredit tugasa — keyingisiga o'tish ----------
+# ---------- bir nechta kalit: aylanma navbat 1 -> 2 -> 3 -> ... -> 1 ----------
+# Joriy kalit tugamaguncha o'sha ishlatiladi; tugasa — navbatdagisiga, oxirgisidan keyin yana 1-kalitga.
+# Joriy kalit va tugaganlar bazada saqlanadi (kalitning o'zi emas — barmoq izi), shunda qayta ishga
+# tushganda yana 1-kalitdan boshlab, tugagan kalitlar haqida qayta xabar yuborilmaydi.
 SWITCH_CODES = {"insufficient_credits": "kredit tugadi", "invalid_api_key": "kalit noto'g'ri yoki bekor qilingan"}
-KEY_RETRY_AFTER = 6 * 3600   # tugagan kalit shu vaqtdan keyin yana birinchi navbatga qaytadi (oylik yangilanish)
-_exhausted: dict[str, float] = {}  # kalit -> qachongacha chetga qo'yilgan
+KEY_RETRY_AFTER = 6 * 3600   # tugagan kalit shuncha vaqt navbat oxiriga suriladi (baribir sinab ko'riladi)
+_exhausted: dict[str, float] = {}  # kalit -> qachongacha navbat oxirida turadi
+_state = {"current": None, "loaded": False}  # current — hozir ishlatilayotgan kalit
 _current_key: contextvars.ContextVar[str | None] = contextvars.ContextVar("voicelab_key", default=None)
 
 
 def keys() -> list[str]:
-    """VOICELAB_API_KEY=kalit1,kalit2,kalit3 — tartib bo'yicha ishlatiladi."""
-    return [k.strip() for k in (config.VOICELAB_API_KEY or "").replace(";", ",").split(",") if k.strip()]
+    """VOICELAB_API_KEY=kalit1,kalit2,kalit3,... — kalitlar soni cheklanmagan (vergul, nuqtali vergul
+    yoki bo'sh joy bilan ajratiladi; takrorlangani bir marta olinadi)."""
+    out: list[str] = []
+    for k in re.split(r"[,;\s]+", config.VOICELAB_API_KEY or ""):
+        if k and k not in out:
+            out.append(k)
+    return out
 
 
 def _label(key: str) -> str:
@@ -57,12 +68,49 @@ def _label(key: str) -> str:
     return f"{n}-kalit (…{key[-4:]})"
 
 
+def _fp(key: str) -> str:
+    """Kalitning barmoq izi — bazaga kalitning o'zi yozilmaydi."""
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
 def _candidates() -> list[str]:
-    """Avval ishlayotgan kalitlar (tartib bilan), keyin chetga qo'yilganlar — ular ham baribir sinab ko'riladi
-    (402 kredit yechmaydi), shunda hamma kalit tugagan bo'lsa ham yangilangani darhol ishlay boshlaydi."""
-    now = time.time()
+    """Joriy kalitdan boshlab aylanma tartib: [joriy, keyingi, ..., oxirgi, 1, 2, ...]. Yaqinda tugaganlar
+    navbat oxiriga suriladi, lekin baribir sinab ko'riladi (402 kredit yechmaydi) — kredit to'ldirilgan
+    kalit darhol ishlay boshlaydi."""
     ks = keys()
-    return [k for k in ks if _exhausted.get(k, 0) <= now] + [k for k in ks if _exhausted.get(k, 0) > now]
+    cur = _state["current"]
+    i = ks.index(cur) if cur in ks else 0
+    order = ks[i:] + ks[:i]
+    now = time.time()
+    return [k for k in order if _exhausted.get(k, 0) <= now] + [k for k in order if _exhausted.get(k, 0) > now]
+
+
+async def _load_state() -> None:
+    if _state["loaded"]:
+        return
+    _state["loaded"] = True
+    try:
+        import storage
+        saved = (await storage.get_runtime()).get("voicelab") or {}
+    except Exception:
+        return  # baza ishlamasa — 1-kalitdan boshlanadi
+    by_fp = {_fp(k): k for k in keys()}
+    if saved.get("current") in by_fp and _state["current"] is None:
+        _state["current"] = by_fp[saved["current"]]
+    for fp, until in (saved.get("exhausted") or {}).items():
+        if fp in by_fp:
+            _exhausted.setdefault(by_fp[fp], float(until))
+
+
+async def _save_state() -> None:
+    ks = keys()
+    cur = _state["current"]
+    try:
+        import storage
+        await storage.set_runtime(voicelab={"current": _fp(cur) if cur in ks else None,
+                                            "exhausted": {_fp(k): t for k, t in _exhausted.items() if k in ks}})
+    except Exception as e:
+        log.debug("VoiceLab kalit holati saqlanmadi (%s)", type(e).__name__)
 
 
 async def _notify_owner(text: str) -> None:
@@ -73,34 +121,64 @@ async def _notify_owner(text: str) -> None:
         log.warning("Egasiga xabar yuborilmadi: %s", text)
 
 
+def _reasons(failed: list[tuple[str, "VoiceLabError"]]) -> str:
+    return "; ".join(f"{_label(k)}: {SWITCH_CODES[e.code]}" for k, e in failed)
+
+
+async def _switched(key: str, failed: list, came_back: bool) -> None:
+    """`key` ishladi: u joriy kalit bo'ladi. Shu so'rovda tugagan kalitlar bo'lsa — egasiga bitta xabar."""
+    changed = key != _state["current"]
+    _state["current"] = key
+    msg = None
+    if failed:
+        msg = f"⚠️ VoiceLab {_reasons(failed)}. {_label(key)} ga o'tildi."
+        if came_back:
+            msg += " (Unda kredit yangilangan ekan.)"
+    elif came_back:
+        msg = f"✅ VoiceLab {_label(key)} yana ishlayapti (kredit yangilandi)."
+    if changed or failed or came_back:
+        await _save_state()
+    if msg:
+        log.warning(msg)
+        await _notify_owner(msg)
+
+
 async def _with_keys(fn):
-    """fn() ni navbatdagi kalit bilan bajaradi; kredit tugasa / kalit yaroqsiz bo'lsa — keyingi kalit bilan."""
+    """fn() ni joriy kalit bilan bajaradi; kredit tugasa / kalit yaroqsiz bo'lsa — aylanma navbatdagi
+    keyingi kalit bilan (oxirgisidan keyin yana 1-kalit)."""
+    await _load_state()
     ks = _candidates()
     if not ks:
         raise VoiceLabError(0, "no_api_key", "VOICELAB_API_KEY yo'q")
+    failed: list[tuple[str, VoiceLabError]] = []  # shu so'rovda YANGI tugagan kalitlar (xabar faqat ular uchun)
     last = None
-    for i, key in enumerate(ks):
+    for key in ks:
         token = _current_key.set(key)
         try:
             result = await fn()
-            if _exhausted.pop(key, None) is not None:
-                log.info("VoiceLab %s yana ishlayapti", _label(key))
-            return result
         except VoiceLabError as e:
             if e.code not in SWITCH_CODES:
+                if failed:  # oldingi kalitlar tugagan, bu kalit esa boshqa sabab bilan ishlamadi (tarmoq...)
+                    await _switched(key, failed, False)
                 raise
             last = e
             now = time.time()
-            was_ok = _exhausted.get(key, 0) <= now
+            if _exhausted.get(key, 0) <= now:
+                failed.append((key, e))
             _exhausted[key] = now + KEY_RETRY_AFTER
-            if was_ok:  # faqat holat o'zgarganda xabar beramiz
-                nxt = next((k for k in ks[i + 1:] if _exhausted.get(k, 0) <= now), None)
-                msg = f"⚠️ VoiceLab {_label(key)}: {SWITCH_CODES[e.code]}."
-                msg += f" {_label(nxt)} ga o'tildi." if nxt else " Ishlaydigan boshqa kalit qolmadi!"
-                log.warning(msg)
-                await _notify_owner(msg)
+            continue
         finally:
             _current_key.reset(token)
+        await _switched(key, failed, _exhausted.pop(key, None) is not None)
+        return result
+    await _save_state()
+    if failed:
+        msg = f"⚠️ VoiceLab {_reasons(failed)}. "
+        msg += (f"Ishlaydigan kalit qolmadi — barcha {len(ks)} ta kalit tugagan. " if len(ks) > 1
+                else "Boshqa kalit yo'q. ")
+        msg += "Kredit to'ldiring yoki yangi kalit qo'shing (.env: VOICELAB_API_KEY=kalit1,kalit2,...)."
+        log.warning(msg)
+        await _notify_owner(msg)
     if len(ks) > 1:
         raise VoiceLabError(last.status, last.code, f"barcha {len(ks)} ta kalitda: {SWITCH_CODES[last.code]}")
     raise last
@@ -118,7 +196,10 @@ def audio_tools_problem() -> str | None:
 
 def describe() -> str:
     """Ovoz qaysi xizmat orqali ishlayotgani (log va /health uchun; kalit ko'rsatilmaydi)."""
-    stt = f"VoiceLab (til: {config.VOICELAB_LANGUAGE}, kalitlar: {len(keys())})" if enabled() else "OpenAI (VOICELAB_API_KEY yo'q)"
+    cur = _state["current"] if _state["current"] in keys() else (keys() or [None])[0]
+    now_key = f", hozir: {_label(cur)}" if cur and len(keys()) > 1 else ""
+    stt = (f"VoiceLab (til: {config.VOICELAB_LANGUAGE}, kalitlar: {len(keys())}{now_key})" if enabled()
+           else "OpenAI (VOICELAB_API_KEY yo'q)")
     tts = f"VoiceLab ({config.VOICELAB_TTS_VOICE})" if enabled() else "o'chiq (VOICELAB_API_KEY yo'q)"
     problem = audio_tools_problem()
     return f"ovoz -> matn: {stt}; javob ovozi: {tts}" + (f"\n⚠️ {problem}" if problem else "")
