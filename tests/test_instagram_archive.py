@@ -116,7 +116,7 @@ def test_backfill_request_does_not_mark_seen_or_open_media(ig):
         saved.append(filename)
         return True
 
-    async def download(url):
+    async def download(url, limit=0, on_progress=None):
         return b"D", "image/jpeg"
 
     instagram.setup(lambda t: asyncio.sleep(0), send_media, None)

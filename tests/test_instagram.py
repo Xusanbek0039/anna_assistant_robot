@@ -234,7 +234,7 @@ def ig(monkeypatch):
     async def notify(tid, text):
         out.notes.append((tid, text))
 
-    async def download(url):
+    async def download(url, limit=0, on_progress=None):
         out.downloads.append(url)
         return b"DATA:" + url.encode(), "video/mp4" if url.endswith(".mp4") else "image/jpeg"
 
@@ -334,7 +334,7 @@ def test_download_failure_retried_next_check(ig, monkeypatch):
     connect(FakeCl([thread("t1", [raven("a")])]))
     calls = []
 
-    async def flaky(url):
+    async def flaky(url, limit=0, on_progress=None):
         calls.append(url)
         if len(calls) == 1:
             raise RuntimeError("cdn")

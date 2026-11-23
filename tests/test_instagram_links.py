@@ -79,7 +79,7 @@ def ig(monkeypatch):
                          "video": video, "as_file": as_file})
         return True
 
-    async def download(url, limit=0):
+    async def download(url, limit=0, on_progress=None):
         out.downloads.append((url, limit))
         if url.endswith(".mp4"):
             return b"VIDEO", "video/mp4"
@@ -212,7 +212,7 @@ def test_session_error_disconnects(ig):
 def test_download_failure_reported(ig, monkeypatch):
     connect(LinkCl(post()))
 
-    async def dead(url, limit=0):
+    async def dead(url, limit=0, on_progress=None):
         raise RuntimeError("juda katta")
 
     monkeypatch.setattr(instagram, "_download", dead)

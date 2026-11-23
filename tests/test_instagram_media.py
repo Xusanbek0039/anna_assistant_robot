@@ -69,7 +69,7 @@ def ig(monkeypatch):
         out.media.append(filename)
         return True
 
-    async def download(url, limit=0):
+    async def download(url, limit=0, on_progress=None):
         out.downloads.append((url, limit))
         if url.endswith(".mp4"):
             return b"VIDEO" * 10, "video/mp4"
@@ -131,7 +131,7 @@ def test_expired_link_retried_then_given_up(ig, monkeypatch):
     connect(FakeCl([thread("t1", [photo_item()])]))
     run(instagram.check_once())
 
-    async def dead(url, limit=0):
+    async def dead(url, limit=0, on_progress=None):
         raise RuntimeError("HTTP 403 Forbidden")
 
     monkeypatch.setattr(instagram, "_download", dead)
@@ -146,7 +146,7 @@ def test_temporary_error_is_retried(ig, monkeypatch):
     run(instagram.check_once())
     calls = []
 
-    async def flaky(url, limit=0):
+    async def flaky(url, limit=0, on_progress=None):
         calls.append(url)
         if len(calls) == 1:
             raise TimeoutError("tarmoq")
