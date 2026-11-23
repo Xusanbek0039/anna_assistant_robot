@@ -1028,7 +1028,10 @@ IP_PROBE_URL = "https://api.ipify.org"
 def _probe(url: str, proxy: str | None) -> tuple[bool, str, float]:
     """(yetib bordimi, qiymat yoki xato, soniya). Har qanday HTTP javob = server yetib bordi.
     instagrapi kabi requests ishlatiladi (socks5 ham PySocks orqali ishlaydi)."""
-    import requests
+    try:
+        import requests  # instagrapi bilan birga o'rnatiladi
+    except ImportError:
+        return False, "requests o'rnatilmagan — pip install -r requirements.txt", 0.0
     started = time.monotonic()
     try:
         r = requests.get(url, timeout=15, headers={"User-Agent": _UA},
@@ -1046,11 +1049,7 @@ def _shown(res: tuple[bool, str, float]) -> str:
 
 async def net_check() -> str:
     """Botdagi «🌐 Ulanish testi»: server Instagram'ga to'g'ridan-to'g'ri va proksi orqali yetadimi."""
-    try:
-        import requests  # noqa: F401 — instagrapi bilan birga o'rnatiladi
-    except ImportError:
-        return "❌ requests kutubxonasi yo'q — pip install -r requirements.txt"
-    mark = lambda res: "✅" if res[0] else "❌"  # noqa: E731
+    mark =lambda res: "✅" if res[0] else "❌"  # noqa: E731
     ip = await asyncio.to_thread(_probe, IP_PROBE_URL, None)
     ig = await asyncio.to_thread(_probe, IG_PROBE_URL, None)
     lines = ["🌐 <b>Instagram ulanish testi</b>", "",

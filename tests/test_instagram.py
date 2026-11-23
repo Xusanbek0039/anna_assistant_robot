@@ -548,14 +548,14 @@ def test_bad_sessionid_rejected(ig, monkeypatch):
 # ---------- panel ----------
 def test_panel_and_toggles(ig):
     text, rows = run(instagram.panel())
-    assert "ulanmagan" in text and rows[-1] == [("🔑 Ulash", "ig:help")]
+    assert "ulanmagan" in text and rows[-1] == [("🔑 Ulash", "ig:help"), ("🌐 Ulanish testi", "ig:net")]
     data = [d for row in rows for _, d in row]
     assert all(len(d.encode()) <= 64 for d in data)
     assert "ig:set:ig_autoreply" in data
     assert "yoqildi" in run(instagram.toggle("ig_autoreply")) and runtime.get("ig_autoreply") is True
     connect(FakeCl())
     text, rows = run(instagram.panel())
-    assert "@husan" in text and rows[-1] == [("🚪 Chiqish", "ig:logout")]
+    assert "@husan" in text and rows[-1][0] == ("🚪 Chiqish", "ig:logout")
     assert "✅ 🤖 Avtojavob" in [t for row in rows for t, _ in row]
 
 
@@ -631,3 +631,71 @@ def test_saved_app_version_not_reused():
     assert "user_agent" not in s and s["uuids"] == {"uuid": "u"} and s["cookies"] == {"sessionid": "s"}
     assert saved["device_settings"]["app_version"] == "269.0.0.18.75"              # asl lug'at o'zgarmaydi
     assert "user_agent" not in instagram._device_only(saved)
+
+
+# ---------- proksi va ulanish testi ----------
+@pytest.mark.parametrize("raw,url", [
+    ("", ""),
+    ("http://u:p@1.2.3.4:8000", "http://u:p@1.2.3.4:8000"),
+    ("socks5://u:p@host.io:1080", "socks5://u:p@host.io:1080"),
+    ("1.2.3.4:8000:user1:pa55", "http://user1:pa55@1.2.3.4:8000"),      # provayder ko'rinishi
+    ("user1:pa55@gate.pr.io:7000", "http://user1:pa55@gate.pr.io:7000"),
+    ("1.2.3.4:8000", "http://1.2.3.4:8000"),
+    (' "http://u:p@h:1" ', "http://u:p@h:1"),
+])
+def test_normalize_proxy(raw, url):
+    assert instagram.normalize_proxy(raw) == url
+
+
+def test_proxy_password_never_shown(monkeypatch):
+    monkeypatch.setattr(config, "IG_PROXY", "1.2.3.4:8000:user1:Secr3tPass")
+    monkeypatch.setattr(instagram, "PROXY", "http://user1:Secr3tPass@1.2.3.4:8000")
+    ProxyError = type("ProxyError", (Exception,), {})
+    text = instagram.explain(ProxyError("Cannot connect to proxy http://user1:Secr3tPass@1.2.3.4:8000 refused"))
+    assert "Secr3tPass" not in text and "proksiga ulanib bo'lmadi" in text and "Ulanish testi" in text
+    assert instagram.mask_proxy(instagram.PROXY) == "http://***@1.2.3.4:8000"
+    Conn = type("ClientConnectionError", (Exception,), {})
+    assert "407" in instagram.explain(Conn("407 Proxy Authentication Required"))
+
+
+def test_connection_error_without_proxy(monkeypatch):
+    monkeypatch.setattr(instagram, "PROXY", "")
+    Timeout = type("ReadTimeout", (Exception,), {})
+    text = instagram.explain(Timeout("Read timed out"))
+    assert "vaqt tugadi" in text and "IG_PROXY bo'sh" in text
+
+
+def _fake_probe(results):
+    def probe(url, proxy):
+        return results[(url == instagram.IP_PROBE_URL, bool(proxy))]
+    return probe
+
+
+def test_net_check_broken_proxy(monkeypatch):
+    monkeypatch.setattr(config, "IG_PROXY", "1.2.3.4:8000:user1:Secr3tPass")
+    monkeypatch.setattr(instagram, "PROXY", instagram.normalize_proxy(config.IG_PROXY))
+    monkeypatch.setattr(instagram, "_probe", _fake_probe({
+        (True, False): (True, "35.1.1.1", 0.2), (False, False): (True, "HTTP 200", 0.3),
+        (True, True): (False, "ProxyError: refused", 0.0), (False, True): (False, "ProxyError: refused", 0.0)}))
+    text = run(instagram.net_check())
+    assert "35.1.1.1" in text and "Secr3tPass" not in text and "http://***@1.2.3.4:8000" in text
+    assert "avtomatik to'g'rilandi" in text and "Proksi ishlamayapti" in text
+
+
+def test_net_check_proxy_ok_and_not_used(monkeypatch):
+    monkeypatch.setattr(config, "IG_PROXY", "http://u:p@h:1")
+    monkeypatch.setattr(instagram, "PROXY", "http://u:p@h:1")
+    ok = {(True, False): (True, "35.1.1.1", 0.2), (False, False): (True, "HTTP 200", 0.3),
+          (True, True): (True, "91.2.2.2", 0.5), (False, True): (True, "HTTP 200", 0.6)}
+    monkeypatch.setattr(instagram, "_probe", _fake_probe(ok))
+    assert "Proksi ishlayapti" in run(instagram.net_check())
+    ok[(True, True)] = (True, "35.1.1.1", 0.5)                 # chiquvchi IP o'zgarmadi
+    assert "proksi ishlamayapti" in run(instagram.net_check())
+
+
+def test_net_check_no_proxy(monkeypatch):
+    monkeypatch.setattr(instagram, "PROXY", "")
+    monkeypatch.setattr(instagram, "_probe", _fake_probe({
+        (True, False): (True, "35.1.1.1", 0.2), (False, False): (False, "ConnectTimeout: x", 0.0)}))
+    text = run(instagram.net_check())
+    assert "IG_PROXY: bo'sh" in text and "residential proksi kerak" in text

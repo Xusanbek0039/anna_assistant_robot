@@ -1527,6 +1527,9 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         elif action == "help":
             await event.answer()
             await event.respond(instagram.LOGIN_HELP, parse_mode="html")
+        elif action == "net":
+            await event.answer("🌐 Tekshirilmoqda (15 soniyagacha)...")
+            await event.respond(await instagram.net_check(), parse_mode="html", link_preview=False)
         elif action == "logout":
             await event.answer()
             await event.respond("🚪 Instagram akkauntidan chiqaymi? Bir martalik media saqlanmay qoladi.",

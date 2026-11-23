@@ -22,6 +22,15 @@ class _RedactSecrets(logging.Filter):
             # URI ichidagi login:parol qismi alohida ham yashiriladi
             creds = config.MONGODB_URI.split("://", 1)[-1].split("@", 1)[0]
             secrets += [creds, *creds.split(":", 1)]
+        if config.IG_PROXY:
+            # Instagram proksisi: butun qiymat va login:parol qismi (ip:port:login:parol ko'rinishi ham)
+            raw = config.IG_PROXY.strip()
+            secrets.append(raw)
+            if "@" in raw:
+                creds = raw.split("://", 1)[-1].rsplit("@", 1)[0]
+                secrets += [creds, *creds.split(":", 1)]
+            elif raw.count(":") >= 3:
+                secrets += raw.split(":", 3)[2:]
         self._secrets = sorted({s for s in secrets if s and len(s) >= 4}, key=len, reverse=True)
 
     def filter(self, record: logging.LogRecord) -> bool:
