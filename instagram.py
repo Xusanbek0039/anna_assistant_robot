@@ -21,6 +21,7 @@ Login: /iglogin <username> <parol> (parolli xabar darhol o'chiriladi, parol hech
 /igsession <sessionid> (brauzer cookie'si). Faqat sessiya MongoDB'da saqlanadi — qayta login so'ralmaydi.
 """
 import asyncio
+import base64
 import concurrent.futures
 import functools
 import html
@@ -32,11 +33,12 @@ import re
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 
 import ai
-import archive
 import availability
 import config
 import runtime

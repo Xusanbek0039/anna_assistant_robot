@@ -70,6 +70,7 @@ class FakeIgStorage:
         self.saved: dict[str, dict] = {}
         self.archive: dict[tuple, dict] = {}
         self.chats: dict[str, dict] = {}
+        self.media: dict[tuple, tuple[bytes, str]] = {}
 
     async def ig_get_session(self):
         return self.session
@@ -163,11 +164,39 @@ class FakeIgStorage:
         rows = [{"thread_id": k, **v} for k, v in self.chats.items() if "backfilled" not in v]
         return sorted(rows, key=lambda r: -(r.get("last") or 0))[:limit]
 
+    # --- media fayllari ---
+    async def ig_media_pending(self, limit=10):
+        rows = [dict(d) for d in self.archive.values() if d.get("media_state") in ("pending", "retry")]
+        return sorted(rows, key=lambda d: -d["date"])[:limit]
+
+    async def ig_media_save(self, tid, mid, data, mime):
+        self.media[(tid, mid)] = (bytes(data), mime)
+
+    async def ig_media_get(self, tid, msg_ids):
+        return {mid: blob for (t, mid), blob in self.media.items() if t == tid and mid in msg_ids}
+
+    async def ig_media_set(self, tid, mid, **fields):
+        if (tid, mid) in self.archive:
+            self.archive[(tid, mid)].update(fields)
+
+    async def ig_media_counts(self):
+        out: dict = {}
+        for d in self.archive.values():
+            if d.get("media_state"):
+                out[d["media_state"]] = out.get(d["media_state"], 0) + 1
+        return out
+
+    async def ig_media_bytes(self):
+        return sum(len(b) for b, _ in self.media.values())
+
     async def ig_stats(self):
         return {"chats": len(self.chats), "messages": len(self.archive),
                 "unsent": sum(1 for d in self.archive.values() if d.get("deleted")),
                 "pending": sum(1 for c in self.chats.values() if c.get("drive_dirty")),
-                "left": sum(1 for c in self.chats.values() if "backfilled" not in c)}
+                "left": sum(1 for c in self.chats.values() if "backfilled" not in c),
+                "media": len(self.media),
+                "media_left": sum(1 for d in self.archive.values()
+                                  if d.get("media_state") in ("pending", "retry"))}
 
     async def get_mode(self):
         return "on"
@@ -382,7 +411,7 @@ def test_export_html_marks_deleted(ig):
     data, name, n = run(instagram.export_html("t1"))
     page = data.decode()
     assert n == 2 and name == "instagram_Ali_Valiyev.html"
-    assert "Instagram: Ali Valiyev" in page and "salom &lt;b&gt;" in page
+    assert "📸 Ali Valiyev" in page and "salom &lt;b&gt;" in page
     assert page.count("class='msg del'") == 1                 # qaytarib olingan xabar qizil
     text, rows = run(instagram.chats_view(0))
     assert rows[0][0] == ("Ali Valiyev · 2", "ig:view:t1:0")

@@ -201,7 +201,7 @@ def test_drive_upload_creates_html_in_instagram_folder(ig, drive):
     assert len(drive) == 1
     f = drive[0]
     assert f["name"] == "Ali Valiyev (@ali.v).html" and f["parent"] == "folder-Instagram"
-    assert f["file_id"] is None and b"Instagram: Ali Valiyev" in f["data"] and b"xabar 1" in f["data"]
+    assert f["file_id"] is None and "📸 Ali Valiyev".encode() in f["data"] and b"xabar 1" in f["data"]
     assert link.endswith("/view") and ig.fs.chats["t1"]["drive_link"] == link
     assert ig.fs.chats["t1"]["drive_dirty"] is False            # yuklandi — belgi olindi
 
