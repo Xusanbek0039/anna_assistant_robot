@@ -82,8 +82,7 @@ class Monitor:
         self._mem_alert = time.time()
         log.warning("Xotira sarfi yuqori: %.0f MB", self.memory)
         await self._safe_alert(
-            f"🧠 Xotira sarfi yuqori: {self.memory:.0f} MB.
-"
+            f"🧠 Xotira sarfi yuqori: {self.memory:.0f} MB.\n"
             "Server chegarasi (masalan Render bepul tarifi — 512 MB) oshsa, dastur logga xato yozmasdan "
             "qayta ishga tushadi. Yengillashtirish: .env da IG_SYNC_LIMIT ni kamaytiring (masalan 300), "
             "ARCHIVE_SYNC_LIMIT ni kamaytiring yoki INSTAGRAM_ENABLED=false qiling.")
