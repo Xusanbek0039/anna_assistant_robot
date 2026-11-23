@@ -627,7 +627,7 @@ class Progress:
 async def _download_ig_links(event, links: list) -> None:
     """Instagram havolalaridagi mediani yuklab egasiga yuboradi (jonli ko'rsatkich bilan)."""
     start = "Instagram'dan olinmoqda..."
-    status = await event.respond(f"{SPIN[0]} {start}")
+    status = await event.respond(f"{SPIN[0]}  {start}")
     async with Progress(status, ctx.bot, ctx.owner_id, "document", start) as bar:
         result = await instagram.download_links(links, bar)
         await bar.finish(result, event)
@@ -711,14 +711,15 @@ async def _save_links(event, links: list) -> None:
     """Havolalardagi mediani egasining Saqlangan xabarlariga joylaydi (jonli ko'rsatkich bilan)."""
     many = len(links) > 1
     start = "Saqlanmoqda..."
-    status = await event.respond(f"{SPIN[0]} {start}")
+    status = await event.respond(f"{SPIN[0]}  {start}")
     done: list[str] = []
     async with Progress(status, ctx.bot, ctx.owner_id, "document", start) as bar:
         for i, link in enumerate(links, 1):
             prefix = f"{i}/{len(links)} " if many else ""
 
-            async def show(text: str, fraction: float | None = None, p=prefix) -> None:
-                bar.set(f"{p}{text}", fraction)
+            async def show(text: str, fraction: float | None = None, got: int = 0,
+                           size: int = 0, p=prefix) -> None:
+                bar.set(f"{p}{text}", fraction, done=got, total=size)
 
             await show("Saqlanmoqda...")
             result = await saver.save_link(ctx.user, link, show)
