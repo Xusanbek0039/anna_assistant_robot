@@ -365,16 +365,15 @@ Instagram akkauntingiz nazorat botiga ulanadi va botdan boshqariladi: **📸 Ins
 
 **Ulash** (bir marta):
 
-1. Instagram qismi **ixtiyoriy** va asosiy talablarga kirmaydi (u og'ir kutubxonalar keltiradi, o'rnatilmasa ham bot normal ishlaydi). O'rnatish:
-   ```bash
-   pip install -r requirements-instagram.txt
-   ```
-   Render'da **Build Command**: `pip install -r requirements.txt && pip install -r requirements-instagram.txt`
+1. `pip install -r requirements.txt` — `instagrapi` shu yerda (serverda: qayta deploy qiling).
+   Kutubxona o'rnatilmasa, `/ig` paneli shuni aytadi va **qolgan hamma narsa normal ishlaydi**.
 2. Botga yozing: `/iglogin username parol` — xabaringiz **darhol o'chiriladi**, parol hech qayerga yozilmaydi.
    Instagram SMS/email kod yoki ikki bosqichli himoya kodini so'rasa — bot so'raydi, kodni botga yozasiz
-   (bekor qilish: `bekor`).
+   (bekor qilish: `bekor`). Instagram «ilova eski» desa, bot bir nechta Instagram ilova versiyasini o'zi
+   sinab ko'radi.
 3. Bu usul ishlamasa (Instagram «shubhali kirish» desa): kompyuterda instagram.com ga kiring →
    F12 → *Application* → *Cookies* → `sessionid` qiymatini nusxalang → botga `/igsession QIYMAT`.
+   Bu yo'l login bosqichini chetlab o'tadi, shuning uchun serverda ishonchliroq.
 
 Faqat sessiya MongoDB'da saqlanadi — dastur qayta ishga tushganda login so'ralmaydi. Chiqish: `/iglogout`.
 
@@ -481,7 +480,7 @@ Har bir o'zgarishdan keyin ishga tushiring — eski funksiyalar buzilmaganini ko
 | Sozlama | Qiymat |
 |---|---|
 | Servis turi | **Background Worker** (Web Service emas — bot HTTP port ochmaydi) |
-| Build Command | `pip install -r requirements.txt` — Instagram ham kerak bo'lsa: `pip install -r requirements.txt && pip install -r requirements-instagram.txt` |
+| Build Command | `pip install -r requirements.txt` |
 | Start Command | `python main.py` |
 
 Muhim nuqtalar:
