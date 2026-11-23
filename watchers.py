@@ -596,6 +596,9 @@ def setup(client, alert) -> None:
 
 async def run(client) -> None:
     """Fon vazifasi: online holat (zaxira) va raqamlarni davriy tekshiradi."""
+    await _load_pause()
+    if (left := phone_pause_left()) > 0:
+        log.info("Raqam tekshiruvi Telegram cheklovi sabab %.1f soat to'xtab turadi", left / 3600)
     await asyncio.sleep(15)
     while True:
         try:
