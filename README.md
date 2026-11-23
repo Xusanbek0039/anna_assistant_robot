@@ -350,6 +350,8 @@ Nazorat botiga oddiy yozing yoki **ovozli** ayting — hodisa haqiqatan ro'y ber
   online holatini ko'rsatmaydi — eslatma qo'yilayotganda bot buni aytadi.
 - Odam eslatma qo'yilgan paytda allaqachon online bo'lsa — keyingi safar online bo'lganda xabar keladi.
 - **➕ Yangi eslatma** tugmasi: bosib, raqam yoki `@username` yozsangiz — eslatma qo'yiladi.
+- Botga **faqat raqam** yoki **faqat `@username`** yozsangiz ham bot «Buni eslatma deb tushundim, qo'yaymi?»
+  deb so'raydi (oldin bunday matn «Kimga javob yozmoqchisiz?» degan foydasiz javob olardi).
 - Telegram raqam tekshiruvini (`contacts.resolvePhone`) qattiq cheklaydi. Cheklov kelsa, ro'yxatda «Telegram raqam tekshiruvini vaqtincha cheklab qo'ydi — N soatdan keyin davom etadi» deb ko'rsatiladi. Bu dasturdagi xato emas: kutish vaqti bazada saqlanadi, shuning uchun qayta ishga tushganda ham cheklov qaytadan boshlanmaydi.
 - Eslatmalar MongoDB'da saqlanadi — qayta ishga tushganda ham davom etadi.
 
@@ -396,6 +398,23 @@ Faqat sessiya MongoDB'da saqlanadi — dastur qayta ishga tushganda login so'ral
 | ☁️ Drive'ga saqlash | Har bir chat Google Drive'dagi **`Instagram/`** papkasiga HTML fayl bo'lib yuklanadi va o'zgargan sayin yangilanib boradi. Katta fayllar asl holida `Instagram/<chat>/` papkasiga ketadi |
 
 Instagram bildirishnomasiga **reply** qilib yozsangiz (yoki «✍️ Javob berish») — javob Instagram'ga sizning nomingizdan ketadi.
+
+### 📥 Havoladan yuklash (post, reels, storis)
+
+Instagram havolasini botga **shunchaki tashlang** — media yuklab beradi. Boshqa bot kerak emas:
+
+| Havola | Natija |
+|---|---|
+| `instagram.com/p/XXXX/` | Post rasmi yoki videosi; **albom** bo'lsa hammasi ketma-ket |
+| `instagram.com/reel/XXXX/` | Reels videosi (davomiyligi bilan) |
+| `instagram.com/tv/XXXX/` | IGTV videosi |
+| `instagram.com/stories/user/123456/` | Storis rasmi yoki videosi |
+
+Buyruq bilan ham bo'ladi: `/igyukla <havola>`. Bir xabarda 5 tagacha havola, albomdan 10 tagacha fayl.
+Fayl nomida post kodi qoladi, izohda muallif (`@username`) va post matni keladi.
+
+> **Yopiq akkauntdan** olish uchun ulangan Instagram akkauntingiz unga obuna bo'lishi kerak — bot sizning
+> akkauntingiz ko'radigan narsani ko'radi, undan ortig'ini emas.
 
 ### HTML arxiv — Instagram ko'rinishida
 
