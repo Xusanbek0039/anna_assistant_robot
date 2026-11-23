@@ -171,6 +171,17 @@ WATCH_ONLINE_SECONDS = max(30, _int("WATCH_ONLINE_SECONDS", 60))   # online hola
 WATCH_ONLINE_COOLDOWN_MINUTES = max(1, _int("WATCH_ONLINE_COOLDOWN_MINUTES", 10))  # «har safar» oralig'i
 WATCH_COUNTRY_CODE = _str("WATCH_COUNTRY_CODE", "998")  # 9 xonali raqamga qo'shiladi: 90 123 45 67
 
+# --- 📸 Instagram (instagram.py, botda /ig): bir martalik media, avtojavob, chat arxivi ---
+INSTAGRAM_ENABLED = _bool("INSTAGRAM_ENABLED", True)
+IG_POLL_SECONDS = max(15, _int("IG_POLL_SECONDS", 30))   # Direct shuncha soniyada bir tekshiriladi
+IG_AUTOREPLY = _bool("IG_AUTOREPLY", False)              # standart holat (botdan yoqib-o'chiriladi)
+IG_FORWARD = _bool("IG_FORWARD", False)                  # yangi Direct xabarlarini botga yuborish
+IG_PROXY = _str("IG_PROXY")                              # ixtiyoriy: http://user:pass@host:port (server IP bloklansa)
+
+# --- 👀 Kim qiziqdi (viewers.py, botda /korganlar): storis ko'ruvchilari va profildagi havola ---
+VIEWERS_ENABLED = _bool("VIEWERS_ENABLED", True)
+VIEWERS_CHECK_MINUTES = max(1, _int("VIEWERS_CHECK_MINUTES", 3))
+
 # --- Va'dalar (AI chat yozishmalaridan topadi va eslatadi) ---
 PROMISE_SCAN = _bool("PROMISE_SCAN", True)
 PROMISE_SCAN_TIME = _str("PROMISE_SCAN_TIME", "21:30")

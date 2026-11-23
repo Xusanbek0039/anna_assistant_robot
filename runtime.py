@@ -26,6 +26,14 @@ DEFAULTS = {
     "promise_scan": config.PROMISE_SCAN,
     "weekly_report": config.WEEKLY_REPORT,
     "drive_backup": config.BACKUP_ENABLED,
+    # 📸 Instagram (/ig)
+    "ig_save": True,                  # bir martalik rasm/videolarni saqlash
+    "ig_autoreply": config.IG_AUTOREPLY,
+    "ig_archive": True,               # yozishmalar arxivi + qaytarib olingan xabar ogohlantirishi
+    "ig_forward": config.IG_FORWARD,  # yangi Direct xabarlari botga
+    # 👀 Kim qiziqdi (/korganlar)
+    "story_viewers": True,
+    "bot_visitors": True,
 }
 
 _values: dict = dict(DEFAULTS)
