@@ -59,6 +59,8 @@ PENDING_EVERY = 4            # «So'rovlar» (message requests) papkasi har nech
 CODE_TIMEOUT = 5 * 60        # Instagram tasdiqlash kodini kutish (soniya)
 THROTTLE_PAUSE = 15 * 60     # Instagram «biroz kuting» desa — shuncha tekshirilmaydi
 SETTINGS_SAVE_EVERY = 3600   # sessiya (cookie) bazaga shuncha soniyada bir yangilanadi
+LOGIN_ATTEMPTS = 4           # «ilova eski» xatosida sinaladigan Instagram ilova profillari soni
+LOGIN_PAUSE = 3.0            # urinishlar orasidagi pauza (soniya)
 MISSING_CONFIRM = 2          # xabar ketma-ket shuncha tekshiruvda ko'rinmasa — qaytarib olingan
 FAIL_ALERT = 5               # shuncha ketma-ket xatodan keyin egasi ogohlantiriladi
 MAX_MEDIA_BYTES = config.MAX_MEDIA_MB * 1024 * 1024
@@ -202,7 +204,7 @@ def explain(e: BaseException) -> str:
     if isinstance(e, LoginError):
         return str(e)
     low = str(e).lower()
-    if "ClientNeedsUpgradeError" in names or "needs_upgrade" in low or "out of date" in low:
+    if needs_upgrade(e):
         return NEEDS_UPGRADE_HELP
     if names & {"BadPassword", "BadCredentials"}:
         return "login yoki parol noto'g'ri"
@@ -705,10 +707,13 @@ async def login(username: str, password: str, say) -> str:
     if _login_lock.locked():
         return "⏳ Login allaqachon ketyapti — Instagram yuborgan kodni shu yerga yozing."
     async with _login_lock:
-        ask = _asker(asyncio.get_running_loop(), say)
+        loop = asyncio.get_running_loop()
+        ask = _asker(loop, say)
+        # Oqim ichidan egasiga xabar (javob kutmasdan): «boshqa variant sinalmoqda...»
+        tell = (lambda text: asyncio.run_coroutine_threadsafe(say(text), loop)) if say else None
         old = await _saved_settings()
         try:
-            cl = await asyncio.to_thread(_login_sync, username.strip().lstrip("@"), password, ask, old)
+            cl = await asyncio.to_thread(_login_sync, username.strip().lstrip("@"), password, ask, old, tell)
         except Exception as e:
             log.warning("Instagram login bo'lmadi: %s: %s", type(e).__name__, _scrub(str(e))[:300])
             return f"❌ Instagram'ga kirilmadi: {explain(e)}"
