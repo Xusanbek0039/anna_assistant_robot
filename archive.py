@@ -7,10 +7,6 @@ bot orqali uni HTML fayl qilib qayta yuklab olish mumkin.
   bot orqali ogohlantirish keladi (bir vaqtda o'chirilganlari bitta xabarda).
 - Kichik rasm va ovozli xabarlar (ARCHIVE_MEDIA_MAX_KB gacha) ham saqlanadi va HTML ichiga joylanadi.
 """
-
-
-
-
 import asyncio
 import base64
 import html
