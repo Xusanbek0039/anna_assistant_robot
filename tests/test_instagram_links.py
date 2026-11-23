@@ -150,16 +150,30 @@ def test_reels_video_keeps_duration(ig):
     assert sent["filename"].endswith(".mp4") and sent["video"] == {"duration": 9.5, "w": 720, "h": 1280}
 
 
+class FakeBar:
+    """control_bot.Progress o'rniga: set/render chaqiruvlarini yozib boradi."""
+
+    def __init__(self):
+        self.states: list[tuple[str, float | None]] = []
+
+    def set(self, text=None, fraction=None):
+        self.states.append((text, fraction))
+
+    async def render(self):
+        pass
+
+
 def test_album_sends_every_file_with_counter(ig):
     connect(LinkCl(post([photo_block("https://cdn/ig/a.jpg"), video_block("https://cdn/ig/b.mp4"),
                          photo_block("https://cdn/ig/c.jpg")])))
-    shown = []
-
-    async def status(text):
-        shown.append(text)
-
+    bar = FakeBar()
     link = instagram.parse_media_links("instagram.com/p/AL1abcdefgh/")[0]
-    assert run(instagram.download_link(link, status)) == "✅ Yuborildi (3 ta fayl)"
+    assert run(instagram.download_link(link, bar)) == "✅ Yuborildi (3 ta fayl)"
+    texts = [t for t, _ in bar.states if t]
+    assert any("1/3" in t and "yuklanmoqda" in t for t in texts)
+    assert any("3/3" in t for t in texts) and any("Telegram'ga yuborilmoqda" in t for t in texts)
+    assert any("🎬" in t for t in texts) and any("🖼" in t for t in texts)   # tur belgisi
+    shown = texts
     assert [s["filename"] for s in ig.sent] == ["instagram_pk-AL1abcdefgh_1.jpg", "instagram_pk-AL1abcdefgh_2.mp4",
                                                 "instagram_pk-AL1abcdefgh_3.jpg"]
     assert "1/3" in ig.sent[0]["caption"] and "3/3" in ig.sent[2]["caption"]
