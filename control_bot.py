@@ -19,11 +19,13 @@ import deleted_accounts
 import finance
 import finder
 import gdrive
+import instagram
 import promises
 import report
 import runtime
 import saver
 import storage
+import viewers
 import voicelab
 import watchers
 import weekly
@@ -72,6 +74,15 @@ HELP = (
     "• «Ali har safar online bo'lganda xabar ber» — har gal (aks holda bir marta)\n"
     "Bildirishnomaga reply qilib «shu user online bo'lsa menga xabar ber» deyish ham mumkin.\n"
     "/eslatma — ro'yxat va o'chirish; /eslatma @user yoki /eslatma raqam — tez qo'yish\n\n"
+    "<b>📸 Instagram</b>\n"
+    "/ig — Instagram paneli: 🔥 bir marta ko'riladigan rasm/videolarni saqlash, 🤖 avtojavob (yoqish/o'chirish), "
+    "🗂 chat arxivi (qaytarib olingan xabarlar bilan), 📥 Direct xabarlari botga\n"
+    "/iglogin &lt;username&gt; &lt;parol&gt; — ulash (xabar darhol o'chiriladi), /igsession &lt;sessionid&gt; — "
+    "cookie bilan ulash, /iglogout — chiqish\n"
+    "Instagram bildirishnomasiga reply qilib yozsangiz — javob Instagram'ga ketadi.\n\n"
+    "<b>👀 Kim qiziqdi</b>\n"
+    "/korganlar — storis'ingizni kim ko'rgani va profilingizdagi havola orqali botni kim ochgani "
+    "(ism, familiya, ID, username), istisnolar. Telegram profilni kim ochganini hech kimga bermaydi.\n\n"
     "<b>Profil</b>\n"
     "/bio — joriy bio va holat\n"
     "/bio on | off | now | restore — yoqish, to'xtatish, hozir yangilash, asl bio'ni qaytarish\n"
@@ -109,8 +120,10 @@ MENU_REPORT = "📈 Hisobot"
 MENU_HELP = "❓ Yordam"
 MENU_PROMISES = "📌 Va'dalar"
 MENU_WATCH = "🔔 Eslatmalar"
+MENU_IG = "📸 Instagram"
+MENU_VIEWERS = "👀 Kim qiziqdi"
 MENU_TEXTS = {MENU_PANEL, MENU_INBOX, MENU_ARCHIVE, MENU_FIN, MENU_FIND, MENU_REPORT, MENU_HELP, MENU_PROMISES,
-              MENU_WATCH}
+              MENU_WATCH, MENU_IG, MENU_VIEWERS}
 
 
 def main_keyboard() -> list:
@@ -118,6 +131,7 @@ def main_keyboard() -> list:
         [Button.text(MENU_PANEL, resize=True, persistent=True), Button.text(MENU_INBOX), Button.text(MENU_WATCH)],
         [Button.text(MENU_ARCHIVE), Button.text(MENU_PROMISES), Button.text(MENU_FIN)],
         [Button.text(MENU_FIND), Button.text(MENU_REPORT), Button.text(MENU_HELP)],
+        [Button.text(MENU_IG), Button.text(MENU_VIEWERS)],
     ]
 
 MODE_NAMES = {"on": "🟢 doim yoqiq (/on)", "off": "⚪️ o'chirilgan (/off)", "auto": "🤖 aqlli (/auto)"}
@@ -140,6 +154,8 @@ _awaiting_reply: dict[str, int] = {}
 _find_pending: dict[str, tuple] = {}
 _find_saved: dict[str, list[tuple[int, int]]] = {}
 _find_seq = itertools.count(1)
+# Instagram bildirishnomasi id -> Instagram chat (thread) id — reply qilib yozilsa javob Instagram'ga ketadi
+_ig_notif_map: dict[int, str] = {}
 
 
 class Ctx:
@@ -147,6 +163,7 @@ class Ctx:
     user: TelegramClient
     owner_id: int
     monitor = None  # health.Monitor (main.py o'rnatadi)
+    bot_username: str | None = None  # profildagi havola uchun (main.py o'rnatadi)
 
 
 ctx = Ctx()
@@ -293,6 +310,73 @@ async def send_media(chat_id: int, name: str, data: bytes, filename: str | None 
     except Exception:
         log.exception("Media botga yuborilmadi")
         return None
+
+
+# ---------- 📸 Instagram ----------
+async def send_ig_media(data: bytes, filename: str, caption: str, video: dict | None = None,
+                        as_file: bool = False) -> bool:
+    """Instagram'dagi bir martalik rasm/video — egasiga oddiy (saqlasa bo'ladigan) holda. Yuborilsa True."""
+    def _file() -> io.BytesIO:
+        f = io.BytesIO(data)
+        f.name = filename
+        return f
+
+    attrs = None
+    if video:
+        attrs = [types.DocumentAttributeVideo(duration=float(video.get("duration") or 0),
+                                              w=int(video.get("w") or 0) or 720, h=int(video.get("h") or 0) or 1280,
+                                              supports_streaming=True)]
+    try:
+        try:
+            await ctx.bot.send_file(ctx.owner_id, _file(), caption=caption, parse_mode="html",
+                                    force_document=as_file, supports_streaming=bool(video), attributes=attrs)
+        except Exception:
+            log.exception("Instagram media asl ko'rinishida yuborilmadi — fayl sifatida yuboriladi")
+            await ctx.bot.send_file(ctx.owner_id, _file(), caption=caption, parse_mode="html", force_document=True)
+        return True
+    except Exception:
+        log.exception("Instagram media botga yuborilmadi")
+        return False
+
+
+def _ig_buttons(thread_id: str) -> list:
+    return [[Button.inline("✍️ Javob berish", f"ig:reply:{thread_id}".encode()),
+             Button.inline("🔇 Bu chatda AI jim", f"ig:mute:{thread_id}".encode())],
+            [Button.inline("📄 Yozishma (HTML)", f"ig:html:{thread_id}".encode())]]
+
+
+async def ig_notify(thread_id: str, text: str) -> None:
+    """Instagram xabari / qaytarib olingan xabar — egasiga. Reply qilib yozilsa javob Instagram'ga ketadi."""
+    try:
+        msg = await ctx.bot.send_message(ctx.owner_id, text, parse_mode="html", buttons=_ig_buttons(thread_id),
+                                         link_preview=False)
+        _ig_notif_map[msg.id] = thread_id
+    except Exception:
+        log.exception("Instagram bildirishnomasi botga yuborilmadi")
+
+
+async def _send_ig_panel(event, extra: str = "", edit: bool = False) -> None:
+    text, rows = await instagram.panel()
+    if extra:
+        text += f"\n\n{extra}"
+    if edit:
+        try:
+            await event.edit(text, parse_mode="html", buttons=_inline(rows), link_preview=False)
+            return
+        except Exception:
+            pass  # o'zgarmagan bo'lsa Telegram xato qaytaradi
+    await event.respond(text, parse_mode="html", buttons=_inline(rows), link_preview=False)
+
+
+async def _send_viewers_panel(event, edit: bool = False) -> None:
+    text, rows = await viewers.panel(ctx.bot_username)
+    if edit:
+        try:
+            await event.edit(text, parse_mode="html", buttons=_inline(rows), link_preview=False)
+            return
+        except Exception:
+            pass
+    await event.respond(text, parse_mode="html", buttons=_inline(rows), link_preview=False)
 
 
 async def _send_as_owner(chat_id: int, text: str, event) -> None:
@@ -448,6 +532,9 @@ BOT_COMMANDS = [
     ("xulosa", "🧠 Yozishma xulosasi va va'dalar: /xulosa Ali"),
     ("vadalar", "📌 Bergan va'dalaringiz ro'yxati"),
     ("eslatma", "🔔 Eslatmalar: raqam tg ga qo'shilsa / odam online bo'lsa"),
+    ("ig", "📸 Instagram: bir martalik media, avtojavob, arxiv"),
+    ("iglogin", "🔑 Instagram'ni ulash: /iglogin username parol"),
+    ("korganlar", "👀 Storis'ni kim ko'rdi, havola orqali kim keldi"),
     ("find", "🔎 Chatlardan istalgan narsani topish"),
     ("save", "💾 Havoladagi mediani Saqlangan xabarlarga joylash"),
     ("bio", "🕒 Bio, iqtibos va online — tugmali panel"),
@@ -1327,6 +1414,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         elif choice == MENU_WATCH:
             text, buttons = await watchers.list_view()
             await event.respond(text, parse_mode="html", buttons=_inline(buttons))
+        elif choice == MENU_IG:
+            await _send_ig_panel(event)
+        elif choice == MENU_VIEWERS:
+            await _send_viewers_panel(event)
         elif choice == MENU_HELP:
             await event.respond(HELP, parse_mode="html", buttons=main_keyboard())
 
@@ -1367,6 +1458,155 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.respond(text, parse_mode="html", buttons=_inline(buttons))
             return
         await _watch_request(event, req)
+
+    # ---------- 📸 Instagram ----------
+    @bot.on(events.NewMessage(pattern=r"^/ig(?:@\w+)?$", func=is_owner))
+    async def _ig_cmd(event):
+        await _send_ig_panel(event)
+
+    @bot.on(events.NewMessage(pattern=r"^/iglogin(?:@\w+)?(?:\s+([\s\S]*))?$", func=is_owner))
+    async def _ig_login(event):
+        args = (event.pattern_match.group(1) or "").strip().split(maxsplit=1)
+        username, password = (args + ["", ""])[:2]
+        try:
+            await event.delete()  # parol chatda qolmasin
+        except Exception:
+            log.warning("Parolli xabar o'chirilmadi — uni o'zingiz o'chiring")
+        if not username or not password:
+            await event.respond(instagram.LOGIN_HELP, parse_mode="html")
+            return
+        status = await event.respond("⏳ Instagram'ga kirilmoqda... (parolli xabaringiz o'chirildi)")
+
+        async def say(text: str) -> None:
+            await bot.send_message(owner_id, text)
+
+        result = await instagram.login(username, password.strip(), say)
+        try:
+            await status.edit(result)
+        except Exception:
+            await event.respond(result)
+        if instagram.connected():
+            await _send_ig_panel(event)
+
+    @bot.on(events.NewMessage(pattern=r"^/igsession(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
+    async def _ig_session(event):
+        raw = event.pattern_match.group(1)
+        try:
+            await event.delete()  # sessionid — parol bilan barobar
+        except Exception:
+            pass
+        if not raw:
+            await event.respond(instagram.LOGIN_HELP, parse_mode="html")
+            return
+        status = await event.respond("⏳ Sessiya tekshirilmoqda... (xabaringiz o'chirildi)")
+        result = await instagram.login_session(raw)
+        try:
+            await status.edit(result, parse_mode="html")
+        except Exception:
+            await event.respond(result, parse_mode="html")
+        if instagram.connected():
+            await _send_ig_panel(event)
+
+    @bot.on(events.NewMessage(pattern=r"^/iglogout(?:@\w+)?$", func=is_owner))
+    async def _ig_logout(event):
+        await event.respond(await instagram.logout())
+
+    @bot.on(events.CallbackQuery(pattern=rb"^ig:", func=is_owner))
+    async def _ig_callback(event):
+        parts = event.data.decode().split(":")
+        action, arg = parts[1], parts[2] if len(parts) > 2 else ""
+        if action == "set":
+            await event.answer((await instagram.toggle(arg))[:190])
+            await _send_ig_panel(event, edit=True)
+        elif action == "panel":
+            await event.answer()
+            await _send_ig_panel(event, edit=True)
+        elif action == "check":
+            await event.answer("🔄 Tekshirilmoqda...")
+            await _send_ig_panel(event, extra=await instagram.check_now(), edit=True)
+        elif action == "help":
+            await event.answer()
+            await event.respond(instagram.LOGIN_HELP, parse_mode="html")
+        elif action == "logout":
+            await event.answer()
+            await event.respond("🚪 Instagram akkauntidan chiqaymi? Bir martalik media saqlanmay qoladi.",
+                                buttons=[[Button.inline("✅ Ha, chiqish", b"ig:logout_ok"),
+                                          Button.inline("↩️ Yo'q", b"ig:panel")]])
+        elif action == "logout_ok":
+            await event.answer()
+            await event.edit(await instagram.logout())
+        elif action == "chats":
+            await event.answer()
+            text, rows = await instagram.chats_view(int(arg) if arg.isdigit() else 0)
+            try:
+                await event.edit(text, parse_mode="html", buttons=_inline(rows))
+            except Exception:
+                await event.respond(text, parse_mode="html", buttons=_inline(rows))
+        elif action == "html" and arg:
+            await event.answer("📄 Tayyorlanmoqda...")
+            try:
+                data, fname, n = await instagram.export_html(arg)
+            except Exception as e:
+                log.exception("Instagram yozishmasi HTML qilinmadi")
+                await event.respond(f"❌ Tayyorlanmadi: {type(e).__name__}")
+                return
+            f = io.BytesIO(data)
+            f.name = fname
+            await bot.send_file(owner_id, f, caption=f"📄 Instagram yozishmasi — {n} ta xabar "
+                                                     "(qaytarib olinganlari qizil bilan)", force_document=True)
+        elif action == "reply" and arg:
+            _awaiting_reply.pop("chat", None)
+            _awaiting_reply["ig"] = arg
+            await event.answer()
+            await event.respond("✍️ Instagram'ga yuboriladigan javob matnini yozing:")
+        elif action == "mute" and arg:
+            instagram.mute(arg)
+            await event.answer(f"Bu Instagram chatida AI {OWNER_TAKEOVER_MINUTES} daqiqa jim turadi")
+        else:
+            await event.answer()
+
+    # ---------- 👀 Kim qiziqdi: storis ko'ruvchilari, havola orqali kelganlar ----------
+    @bot.on(events.NewMessage(pattern=r"^/korganlar(?:@\w+)?$", func=is_owner))
+    async def _viewers_cmd(event):
+        await _send_viewers_panel(event)
+
+    @bot.on(events.CallbackQuery(pattern=rb"^vw:", func=is_owner))
+    async def _viewers_callback(event):
+        parts = event.data.decode().split(":")
+        action, arg = parts[1], parts[2] if len(parts) > 2 else ""
+        if action == "set":
+            await event.answer((await viewers.toggle(arg))[:190])
+            await _send_viewers_panel(event, edit=True)
+        elif action == "panel":
+            await event.answer()
+            await _send_viewers_panel(event, edit=True)
+        elif action == "check":
+            await event.answer((await viewers.check_now(user))[:190])
+        elif action == "list":
+            await event.answer()
+            text, rows = await viewers.ignore_view()
+            await event.respond(text, parse_mode="html", buttons=_inline(rows))
+        elif action == "ign" and arg.isdigit():
+            uid = int(arg)
+            label = str(uid)
+            try:
+                ent = await user.get_entity(uid)
+                label = (_display_name(ent) or label) + (f" (@{ent.username})" if getattr(ent, "username", None)
+                                                         else f" ({uid})")
+            except Exception:
+                pass
+            await storage.viewer_ignore_add(uid, label)
+            await event.answer(f"🚫 {label[:150]} — endi bu odam haqida xabar kelmaydi", alert=True)
+        elif action == "unign" and arg.isdigit():
+            ok = await storage.viewer_ignore_remove(int(arg))
+            await event.answer("↩️ Istisnodan chiqarildi" if ok else "Ro'yxatda yo'q")
+            text, rows = await viewers.ignore_view()
+            try:
+                await event.edit(text, parse_mode="html", buttons=_inline(rows))
+            except Exception:
+                pass
+        else:
+            await event.answer()
 
     @bot.on(events.CallbackQuery(pattern=rb"^wch:", func=is_owner))
     async def _watch_callback(event):
@@ -1500,6 +1740,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return  # bir odamga (yoki boshqa botga) qayta-qayta yozmaymiz
         _stranger_replied[event.sender_id] = now
         await event.respond("Bu shaxsiy bot.")
+        try:  # 👀 kim botni ochdi (profildagi havola orqali) — egasiga ism, ID, username bilan
+            await viewers.bot_visitor(await event.get_sender(), event.raw_text or "")
+        except Exception:
+            log.exception("Bot tashrifchisi haqida xabar berilmadi")
 
     @bot.on(events.NewMessage(pattern=r"^/on$", func=is_owner))
     async def _on(event):
@@ -1719,7 +1963,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         await event.respond("\n".join(f"{'✅' if p is None else '❌'} {name}" + (f": {p}" if p else "")
                                       for name, p in results.items())
                             + f"\n\n🎤 {voicelab.describe()}"
-                            + f"\n☁️ Google Drive: {await gdrive.check() or 'ishlayapti'}")
+                            + f"\n☁️ Google Drive: {await gdrive.check() or 'ishlayapti'}"
+                            + f"\n📸 Instagram: {instagram.describe()}")
 
     # ---------- profil: bio, iqtibos, online ----------
     # /bio, /online, /quote — argumentsiz bo'lsa tugmali panel, argument bilan — to'g'ridan-to'g'ri
@@ -1925,6 +2170,22 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     @bot.on(events.NewMessage(func=lambda e: is_owner(e) and e.text and not e.text.startswith("/")
                               and e.raw_text.strip() not in MENU_TEXTS))
     async def _plain(event):
+        # Instagram login paytida tasdiqlash kodi kutilmoqda
+        if instagram.waiting_code():
+            if instagram.submit_code(event.text):
+                await event.respond("⏳ Kod Instagram'ga yuborildi, tekshirilmoqda...")
+                return
+            if event.text.strip().lower() in ("bekor", "cancel", "stop", "отмена"):
+                instagram.cancel_code()
+                await event.respond("❌ Instagram'ga kirish bekor qilindi.")
+                return
+        # Instagram bildirishnomasiga reply yoki «✍️ Javob berish» -> matn Instagram chatiga ketadi
+        ig_thread = _ig_notif_map.get(event.reply_to_msg_id) if event.is_reply else None
+        if ig_thread is None and not event.is_reply:
+            ig_thread = _awaiting_reply.pop("ig", None)
+        if ig_thread:
+            await event.respond(await instagram.send_text(ig_thread, event.text))
+            return
         chat_id = None
         if event.is_reply:
             chat_id = _notif_map.get(event.reply_to_msg_id)
@@ -1975,6 +2236,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         action, _, raw = event.data.decode().partition(":")
         chat_id = int(raw)
         if action == "reply":
+            _awaiting_reply.pop("ig", None)
             _awaiting_reply["chat"] = chat_id
             await event.answer()
             await event.respond(f"✍️ <code>{chat_id}</code> ga javob matnini yozing:", parse_mode="html")
