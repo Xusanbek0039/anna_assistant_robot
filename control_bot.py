@@ -478,7 +478,10 @@ def progress_parts(done: float) -> tuple[str, str]:
 
 
 def human_size(n: float) -> str:
-    return f"{n / 1024 / 1024:.1f} MB" if n >= 1024 * 1024 else f"{max(0, n) / 1024:.0f} KB"
+    n = max(0, n)
+    if n >= 1024 * 1024:
+        return f"{n / 1024 / 1024:.1f} MB"
+    return f"{n / 1024:.0f} KB" if n >= 1024 else f"{n:.0f} B"
 
 
 def human_left(seconds: float) -> str:

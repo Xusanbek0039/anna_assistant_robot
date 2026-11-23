@@ -156,7 +156,7 @@ class FakeBar:
     def __init__(self):
         self.states: list[tuple[str, float | None]] = []
 
-    def set(self, text=None, fraction=None):
+    def set(self, text=None, fraction=None, done=0, total=0):
         self.states.append((text, fraction))
 
     async def render(self):

@@ -71,7 +71,8 @@ def test_progress_parts(done, full, empty):
 
 
 @pytest.mark.parametrize("size,text", [
-    (512, "1 KB"), (1024 * 700, "700 KB"), (1024 * 1024 * 4.25, "4.2 MB"), (0, "0 KB"),
+    (512, "512 B"), (1024, "1 KB"), (1024 * 700, "700 KB"),
+    (1024 * 1024 * 4.25, "4.2 MB"), (0, "0 B"),
 ])
 def test_human_size(size, text):
     assert control_bot.human_size(size) == text
