@@ -85,13 +85,14 @@ def test_protected_channel_is_downloaded_and_reuploaded():
     user = FakeUser([FakeMsg(5, text="izoh")], protected=True)
     seen = []
 
-    async def status(text):
-        seen.append(text)
+    async def status(text, fraction=None):
+        seen.append((text, fraction))
 
     assert run(saver.save_link(user, _link(5), status)).startswith("✅")
     chat, file, kw = user.files[0]
     assert chat == "me" and file.endswith("v.mp4") and kw["supports_streaming"] is True
-    assert seen and "100%" in seen[0]
+    text, fraction = seen[0]
+    assert "Yuklab olinmoqda" in text and "0.0 MB / 0.0 MB" in text and fraction == 1.0
     assert not os.path.exists(file)                # vaqtinchalik fayl o'chirildi
 
 

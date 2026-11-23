@@ -170,7 +170,8 @@ async def save_link(user, link: Link, status=None) -> str:
             now = time.time()
             if status and total and now - last[0] >= PROGRESS_EVERY:
                 last[0] = now
-                await status(f"{title}: {done * 100 // total}% ({_mb(done)} / {_mb(total)})")
+                # status(matn, ulush) — ulush jonli progress bar uchun (eski chaqiruvlar uchun ixtiyoriy)
+                await status(f"{title} — {_mb(done)} / {_mb(total)}", done / total)
         return cb
 
     async with _lock:

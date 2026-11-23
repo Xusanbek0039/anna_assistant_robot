@@ -1,4 +1,5 @@
 """Nazorat boti: egasiga xulosalar yuboradi va buyruqlarni qabul qiladi."""
+import asyncio
 import html
 import io
 import itertools
@@ -620,22 +621,21 @@ async def _send_as_owner(chat_id: int, text: str, event) -> None:
 
 
 async def _save_links(event, links: list) -> None:
-    """Havolalardagi mediani egasining Saqlangan xabarlariga joylaydi; jarayon bitta xabarda ko'rsatiladi."""
+    """Havolalardagi mediani egasining Saqlangan xabarlariga joylaydi (jonli ko'rsatkich bilan)."""
     many = len(links) > 1
     status = await event.respond("⏳ Saqlanmoqda...")
     done: list[str] = []
+    async with Progress(status, ctx.bot, ctx.owner_id, "document") as bar:
+        for i, link in enumerate(links, 1):
+            prefix = f"{i}/{len(links)} " if many else ""
 
-    async def show(text: str) -> None:
-        try:
-            await status.edit("\n".join(done + ([text] if text else [])), link_preview=False)
-        except Exception:
-            pass  # matn o'zgarmagan yoki Telegram cheklovi — jarayon ko'rsatkichi muhim emas
+            async def show(text: str, fraction: float | None = None, p=prefix) -> None:
+                bar.set(f"{p}{text}", fraction)
 
-    for i, link in enumerate(links, 1):
-        prefix = f"{i}/{len(links)} " if many else ""
-        result = await saver.save_link(ctx.user, link, lambda t, p=prefix: show(f"{p}{t}"))
-        done.append(f"{prefix}{result}" + (f" — {link.url}" if many else ""))
-        await show("⏳ Keyingisi..." if i < len(links) else "")
+            await show("Saqlanmoqda...")
+            result = await saver.save_link(ctx.user, link, show)
+            done.append(f"{prefix}{result}" + (f" — {link.url}" if many else ""))
+        await bar.finish("\n".join(done), event)
 
 
 async def _resolve_user_id(arg: str) -> int | None:

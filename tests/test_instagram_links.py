@@ -173,11 +173,10 @@ def test_album_sends_every_file_with_counter(ig):
     assert any("1/3" in t and "yuklanmoqda" in t for t in texts)
     assert any("3/3" in t for t in texts) and any("Telegram'ga yuborilmoqda" in t for t in texts)
     assert any("🎬" in t for t in texts) and any("🖼" in t for t in texts)   # tur belgisi
-    shown = texts
     assert [s["filename"] for s in ig.sent] == ["instagram_pk-AL1abcdefgh_1.jpg", "instagram_pk-AL1abcdefgh_2.mp4",
                                                 "instagram_pk-AL1abcdefgh_3.jpg"]
     assert "1/3" in ig.sent[0]["caption"] and "3/3" in ig.sent[2]["caption"]
-    assert shown and "1/3" in shown[0]
+    assert texts[0].endswith("olinmoqda...")      # avval ma'lumot, keyin fayllar
 
 
 def test_album_limited(ig):
