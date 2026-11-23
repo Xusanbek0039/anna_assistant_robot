@@ -112,3 +112,71 @@ async def login(client: TelegramClient) -> None:
     if me is None or getattr(me, "bot", False):
         sys.exit("[telegram] Shaxsiy akkaunt bilan kirish kerak (bot token emas).")
     log.info("Akkauntga kirildi: %s (id=%s)", me.first_name, me.id)
+
+
+# ---------- nazorat boti ----------
+BOT_CONNECT_TIMEOUT = 60   # Telethon qotib qolmasligi uchun (serverda log jim qolib restart bo'lardi)
+BOT_ME_TIMEOUT = 30
+
+
+def _bot_session_files() -> list[str]:
+    return [f"{config.BOT_SESSION}.session", f"{config.BOT_SESSION}.session-journal"]
+
+
+def _wipe_bot_session() -> bool:
+    """Bot sessiya faylini o'chiradi (tokendan qayta yaratiladi). Biror fayl o'chirilgan bo'lsa True."""
+    import os
+    removed = False
+    for path in _bot_session_files():
+        try:
+            os.remove(path)
+            removed = True
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log.warning("%s o'chirilmadi (%s)", path, type(e).__name__)
+    return removed
+
+
+async def start_bot() -> tuple[TelegramClient, object]:
+    """Nazorat botini tokendan ulaydi va (bot, bot_me) qaytaradi.
+
+    Sessiya fayli eskirgan bo'lsa (masalan BOT_TOKEN @BotFather'da bekor qilinib yangilangan), Telethon
+    ulanishni kutib QOTIB qolishi mumkin — logda hech narsa chiqmaydi va server dasturni qayta ishga
+    tushiradi. Shuning uchun kutish vaqti cheklangan: birinchi urinish o'tmasa, sessiya fayli tozalanib
+    bitta qayta urinish qilinadi.
+    """
+    import asyncio
+
+    last: Exception | None = None
+    for attempt in (1, 2):
+        bot = TelegramClient(config.BOT_SESSION, config.API_ID, config.API_HASH)
+        try:
+            await asyncio.wait_for(bot.start(bot_token=config.BOT_TOKEN), timeout=BOT_CONNECT_TIMEOUT)
+            me = await asyncio.wait_for(bot.get_me(), timeout=BOT_ME_TIMEOUT)
+            if me is None:
+                raise RuntimeError("bot o'zini tanimadi (sessiya yaroqsiz)")
+            return bot, me
+        except (errors.AccessTokenInvalidError, errors.AccessTokenExpiredError):
+            sys.exit("[telegram] BOT_TOKEN noto'g'ri yoki bekor qilingan. @BotFather -> /mybots -> "
+                     "<botingiz> -> API Token dan yangisini oling va .env (serverda: Environment) ga qo'ying.")
+        except errors.FloodWaitError as e:
+            sys.exit(f"[telegram] Bot uchun Telegram cheklovi: {e.seconds} soniya kutish kerak.")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            last = e
+            name = type(e).__name__
+            reason = "kutish vaqti tugadi" if isinstance(e, asyncio.TimeoutError) else name
+            try:
+                await bot.disconnect()
+            except Exception:
+                pass
+            if attempt == 1:
+                log.warning("Nazorat botiga ulanib bo'lmadi (%s) — sessiya fayli tozalanib qayta urinaman",
+                            reason)
+                _wipe_bot_session()
+                continue
+            sys.exit(f"[telegram] Nazorat botiga ulanib bo'lmadi ({reason}). BOT_TOKEN to'g'riligini va "
+                     "serverning internet aloqasini tekshiring.")
+    raise last if last else RuntimeError("botga ulanib bo'lmadi")

@@ -2,7 +2,6 @@ import asyncio
 import logging
 import sys
 
-from telethon import TelegramClient
 
 import ai
 import archive
@@ -27,7 +26,7 @@ import watchers
 import weekly
 from bio_updater import BioUpdater, validate_settings
 from presence import keep_online
-from tg_client import create_user_client, login, setup_logging
+from tg_client import create_user_client, login, setup_logging, start_bot
 
 log = logging.getLogger("main")
 
@@ -104,9 +103,7 @@ async def main() -> None:
     log.info("Akkaunt: %s (id %s)", me.first_name, me.id)
 
     log.info("5/6 Nazorat botiga ulanyapti (BOT_TOKEN)")
-    bot = TelegramClient(config.BOT_SESSION, config.API_ID, config.API_HASH)
-    await bot.start(bot_token=config.BOT_TOKEN)
-    bot_me = await bot.get_me()
+    bot, bot_me = await start_bot()
     log.info("Nazorat boti: @%s — botga /start bosishni unutmang", bot_me.username)
 
     control_bot.setup(bot, user, owner_id=me.id)
