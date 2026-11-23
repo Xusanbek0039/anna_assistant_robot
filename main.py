@@ -170,7 +170,8 @@ async def main() -> None:
     if config.FINANCE_ENABLED:
         background.append(supervise("Moliya hisoboti", finance.run_reports(control_bot.send_html)))
 
-    log.info("6/6 Hammasi ishga tushdi (%d fon vazifasi). To'xtatish: Ctrl+C", len(background))
+    log.info("6/6 Hammasi ishga tushdi: %d fon vazifasi, xotira %s. To'xtatish: Ctrl+C",
+             len(background), health.memory_note())
     try:
         # Telegram klientlaridan biri uzilsa — dastur tugaydi (run.bat qayta ishga tushiradi)
         await asyncio.gather(user.run_until_disconnected(), bot.run_until_disconnected(), *background)
