@@ -34,6 +34,8 @@ DEFAULTS = {
     "ig_proxy": True,                 # IG_PROXY ishlatilsinmi (ishlamasa botdan o'chiriladi)
     "ig_drive": config.IG_DRIVE,      # Instagram arxivi Google Drive'ga
     "ig_media": config.IG_MEDIA_ENABLED,   # rasm/video/ovozni yuklab olib arxivda saqlash
+    # 🔔 Eslatmalar: Telegram raqam tekshiruvini cheklaganda (FloodWait) qachongacha kutish
+    "watch_phone_pause": 0.0,
     # 👀 Kim qiziqdi (/korganlar)
     "story_viewers": True,
     "bot_visitors": True,

@@ -1751,6 +1751,12 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
             text, buttons = await watchers.list_view()
             await event.respond(text, parse_mode="html", buttons=_inline(buttons))
+        elif action == "add":
+            _awaiting_reply.pop("chat", None)
+            _awaiting_reply.pop("ig", None)
+            _awaiting_reply["watch"] = 1
+            await event.answer()
+            await event.respond(watchers.ADD_HELP, parse_mode="html")
         elif action == "on" and arg.isdigit():
             await event.answer("⏳")
             await _watch_request(event, watchers.Request("online", user_ref=arg))
@@ -2304,6 +2310,21 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                 instagram.cancel_code()
                 await event.respond("❌ Instagram'ga kirish bekor qilindi.")
                 return
+        # «➕ Yangi eslatma» bosilgan -> keyingi matn eslatma deb tushuniladi
+        if _awaiting_reply.get("watch") and not event.is_reply:
+            if event.text.strip().lower() in ("bekor", "cancel", "stop", "отмена"):
+                _awaiting_reply.pop("watch", None)
+                await event.respond("❌ Bekor qilindi.")
+                return
+            req = watchers.parse(event.text, strict=False)
+            if req is None:
+                await event.respond("🤔 Tushunmadim. Raqam (<code>+998 90 123 45 67</code>), "
+                                    "<code>@username</code> yoki <code>id 123456789</code> yozing. "
+                                    "Bekor qilish: «bekor»", parse_mode="html")
+                return
+            _awaiting_reply.pop("watch", None)
+            await _watch_request(event, req)
+            return
         # Instagram bildirishnomasiga reply yoki «✍️ Javob berish» -> matn Instagram chatiga ketadi
         ig_thread = _ig_notif_map.get(event.reply_to_msg_id) if event.is_reply else None
         if ig_thread is None and not event.is_reply:
