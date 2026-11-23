@@ -116,7 +116,7 @@ def test_media_downloaded_and_saved_to_db(ig):
     run(instagram.check_once())
     assert run(storage.ig_stats())["media_left"] == 2
     assert run(instagram.media_sync_pending()) == 2
-    assert [u for u, _ in ig.downloads] == ["https://cdn/ig/big.jpg", "https://cdn/ig/voice.m4a"]
+    assert [u for u, _ in ig.downloads] == ["https://cdn/ig/voice.m4a", "https://cdn/ig/big.jpg"]
     saved = ig.fs.media
     assert saved[("t1", "p1")][1] == "image/jpeg" and saved[("t1", "a1")][1] == "audio/mp4"
     doc = ig.fs.archive[("t1", "p1")]
@@ -160,7 +160,7 @@ def test_temporary_error_is_retried(ig, monkeypatch):
 
 
 def test_big_file_without_drive_marked_too_big(ig, monkeypatch):
-    monkeypatch.setattr(config, "IG_MEDIA_MAX_KB", 1)        # 1 KB dan katta bazaga sig'maydi
+    monkeypatch.setattr(config, "IG_MEDIA_MAX_KB", 0)        # bazaga umuman saqlanmaydi
     connect(FakeCl([thread("t1", [video_item()])]))
     run(instagram.check_once())
     run(instagram.media_sync_pending())
@@ -169,7 +169,7 @@ def test_big_file_without_drive_marked_too_big(ig, monkeypatch):
 
 
 def test_big_file_goes_to_drive(ig, monkeypatch):
-    monkeypatch.setattr(config, "IG_MEDIA_MAX_KB", 1)
+    monkeypatch.setattr(config, "IG_MEDIA_MAX_KB", 0)
     uploads = []
 
     async def ensure_folder(name, parent=None):
@@ -192,12 +192,15 @@ def test_big_file_goes_to_drive(ig, monkeypatch):
 
 
 def test_media_disabled_skips_download(ig, monkeypatch):
+    """O'chirilgan bo'lsa fayllar yuklanmaydi (faqat matn arxivlanadi)."""
     monkeypatch.setitem(runtime._values, "ig_media", False)
     connect(FakeCl([thread("t1", [photo_item()])]))
     run(instagram.check_once())
-    assert "o'chirildi" in run(instagram.toggle("ig_media")) or True
-    assert ig.downloads == []                                # media_loop ishlamaydi
-    assert "yuklab olinadi" in run(instagram.toggle("ig_media"))
+    assert ig.downloads == []
+    assert "yuklab olinadi" in run(instagram.toggle("ig_media"))     # yoqildi
+    assert runtime.get("ig_media") is True
+    assert "o'chirildi" in run(instagram.toggle("ig_media"))         # yana o'chirildi
+    assert runtime.get("ig_media") is False
 
 
 def test_view_once_media_both_sent_and_archived(ig):
@@ -308,5 +311,5 @@ def test_panel_shows_media_counts(ig):
     run(storage.ig_archive_add_many(_docs_with_media()))
     run(storage.ig_media_save("t1", "p1", b"X" * 2048, "image/jpeg"))
     text, rows = run(instagram.panel())
-    assert "Fayllar:" in text and "3 ta saqlandi" in text
+    assert "Fayllar:" in text and "4 ta saqlandi" in text and "1 tasi olinmadi" in text
     assert "ig:set:ig_media" in [d for row in rows for _, d in row]

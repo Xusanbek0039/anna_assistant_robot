@@ -25,7 +25,7 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `archive.py` | Chat arxivi: barcha shaxsiy chatlar (istisnodagilar ham) saqlanadi; suhbatdosh xabar yoki butun chatni o'chirsa — bot xabar beradi va yozishmani **HTML fayl** qilib yuboradi (botda «🗂 Chat arxivi» tugmasi yoki /arxiv) |
 | `gdrive.py`, `drive_auth.py` | Chat arxivini Google Drive papkasiga HTML qilib yuklash (har chatga bitta fayl, o'zgarganda yangilanadi). Bir martalik sozlash: `python drive_auth.py` — `.env.example` dagi Google bo'limiga qarang |
 | `profiles.py` | Profil kuzatuvi: yozishgan odamlar ism, username, bio, rasmini o'zgartirsa yoki akkauntini o'chirsa — xabar; profil rasmlari tarixi Drive'ga |
-| `watchers.py` | 🔔 Eslatmalar: «95 446 68 86 raqami tg ga qo'shilsa xabar ber», «@ali online bo'lsa xabar ber» — hodisa ro'y berganda bot xabar beradi |
+| `watchers.py` | 🔔 Eslatmalar: «95 446 68 86 raqami tg ga qo'shilsa xabar ber», «@ali online bo'lsa xabar ber» — hodisa ro'y berganda bot xabar beradi; panelda «➕ Yangi eslatma» tugmasi va Telegram cheklovi holati ko'rinadi |
 | `instagram.py` | 📸 Instagram (`/ig`): bir marta ko'riladigan rasm/videolarni ochmasdan saqlash, Direct'ga avtojavob, yozishmalar arxivi (eski tarix bilan) va Google Drive'ga HTML nusxasi, qaytarib olingan (unsend) xabarlar, chatni botda o'qish |
 | `viewers.py` | 👀 Kim qiziqdi (`/korganlar`): storis'ingizni kim ko'rgani va profildagi havola orqali botni kim ochgani — ism, familiya, ID, username, istisnolar bilan |
 | `promises.py` | AI chat xulosasi (/xulosa) va va'dalar kuzatuvi (/vadalar): kechqurun yangi va'dalarni topadi, ertalab muddati kelganlarini eslatadi |
@@ -349,6 +349,8 @@ Nazorat botiga oddiy yozing yoki **ovozli** ayting — hodisa haqiqatan ro'y ber
   Agar odam «So'nggi faollik»ni sizdan yashirgan bo'lsa (yoki siz o'zingiznikini yashirgan bo'lsangiz), Telegram
   online holatini ko'rsatmaydi — eslatma qo'yilayotganda bot buni aytadi.
 - Odam eslatma qo'yilgan paytda allaqachon online bo'lsa — keyingi safar online bo'lganda xabar keladi.
+- **➕ Yangi eslatma** tugmasi: bosib, raqam yoki `@username` yozsangiz — eslatma qo'yiladi.
+- Telegram raqam tekshiruvini (`contacts.resolvePhone`) qattiq cheklaydi. Cheklov kelsa, ro'yxatda «Telegram raqam tekshiruvini vaqtincha cheklab qo'ydi — N soatdan keyin davom etadi» deb ko'rsatiladi. Bu dasturdagi xato emas: kutish vaqti bazada saqlanadi, shuning uchun qayta ishga tushganda ham cheklov qaytadan boshlanmaydi.
 - Eslatmalar MongoDB'da saqlanadi — qayta ishga tushganda ham davom etadi.
 
 | Sozlama | Standart | Izoh |
@@ -390,9 +392,27 @@ Faqat sessiya MongoDB'da saqlanadi — dastur qayta ishga tushganda login so'ral
 | 🤖 Avtojavob | Anna Direct'dagi shaxsiy yozishmalarga ham javob beradi. Telegram rejimiga (`/auto`, `/on`, `/off`) bo'ysunadi; Instagram'da o'zingiz yozsangiz — o'sha chatda 120 daqiqa jim turadi. Guruhlar va «So'rovlar» papkasiga javob bermaydi |
 | 🗂 Arxiv | Har bir yozishma **avtomatik** arxivlanadi (MongoDB). Kimdir xabarini **qaytarib olsa** (unsend) — botga matni bilan xabar keladi va arxivda qizil belgi bilan qoladi |
 | 📥 Xabarlar botga | Direct'ga kelgan har bir yangi xabar botga keladi |
-| ☁️ Drive'ga saqlash | Har bir chat Google Drive'dagi **`Instagram/`** papkasiga HTML fayl bo'lib yuklanadi va o'zgargan sayin yangilanib boradi |
+| 🖼 Rasm/video/ovozni saqlash | Yozishmalardagi **rasm, video, ovozli xabar va GIF** arxivga yuklab olinadi. Suhbatdosh keyin o'chirsa ham sizda qoladi. Bir martalik media ham shu yerga tushadi |
+| ☁️ Drive'ga saqlash | Har bir chat Google Drive'dagi **`Instagram/`** papkasiga HTML fayl bo'lib yuklanadi va o'zgargan sayin yangilanib boradi. Katta fayllar asl holida `Instagram/<chat>/` papkasiga ketadi |
 
 Instagram bildirishnomasiga **reply** qilib yozsangiz (yoki «✍️ Javob berish») — javob Instagram'ga sizning nomingizdan ketadi.
+
+### HTML arxiv — Instagram ko'rinishida
+
+**📄 HTML fayl** tugmasi yozishmani **Instagram uslubidagi** bitta faylga yig'adi (brauzerda ochiladi,
+internet kerak emas):
+
+- **rasm** ko'rinadi, **video** va **ovozli xabar** shu faylning o'zida ochilib eshitiladi/ko'riladi;
+- 🔥 bir martalik media, 🗑 qaytarib olingan xabar, 🤖 Anna javobi — belgilangan holda;
+- fayl yuklab olinmagan bo'lsa, sababi yoziladi («havolasi eskirgan» — Instagram uni endi bermaydi);
+- katta fayllar HTML'ga sig'masa, ularning **Google Drive havolasi** qo'yiladi.
+
+Fayllar bazada saqlanadi (`IG_MEDIA_MAX_KB` gacha) va kattalari Drive'ga. Yuklab olish holati `/ig`
+panelida ko'rinadi: «🖼 Fayllar: 128 ta saqlandi (84 MB), 3 ta yuklanmoqda».
+
+> Instagram media havolalari **tez eskiradi**, shuning uchun fayllar xabar kelganidan keyin darhol
+> (20 soniya ichida) yuklab olinadi. Dastur o'chiq bo'lgan vaqtdagi media esa olinmay qolishi mumkin —
+> bunda arxivda «havolasi eskirgan» deb belgilanadi.
 
 ### Yozishmalarni botda o'qish
 
@@ -404,8 +424,8 @@ Xohlasangiz, **📄 HTML fayl** tugmasi butun yozishmani Telegram ko'rinishidagi
 ### Eski yozishmalar
 
 Instagram ulangandan ~1 daqiqa keyin dastur **mavjud chatlarning eski yozishmalarini** ham arxivga oladi
-(har chatdan `IG_SYNC_LIMIT` ta oxirgi xabar, standart 1000). Bu bir martalik ish — tugagach faqat yangilari
-qo'shilib boradi. Jarayon panelda ko'rinadi: «⏳ Eski yozishmalar olinmoqda — yana N ta chat».
+(har chatdan `IG_SYNC_LIMIT` ta oxirgi xabar, standart 1000) — rasm va videolari bilan. Bu bir martalik
+ish — tugagach har bir yangi xabar avtomatik arxivlanib boradi. Jarayon panelda ko'rinadi: «⏳ Eski yozishmalar olinmoqda — yana N ta chat».
 Keyin yangi chat paydo bo'lsa, uning tarixi ham o'zi olinadi (har soatda tekshiriladi).
 
 Bilish kerak:
@@ -427,6 +447,10 @@ Bilish kerak:
 | `IG_FORWARD` | `false` | «Xabarlar botga»ning boshlang'ich holati |
 | `IG_SYNC_LIMIT` | `1000` | Eski yozishmalardan har chatdan nechta xabar olinadi (`0` — olmaslik) |
 | `IG_DRIVE` | `true` | Instagram arxivi Google Drive'ga yuklanadi (oralig'i — `DRIVE_SYNC_MINUTES`) |
+| `IG_MEDIA_ENABLED` | `true` | Rasm, video, ovozli xabarlarni arxivga yuklab olish |
+| `IG_MEDIA_MAX_KB` | `3072` | Shu hajmgacha fayl bazaga saqlanadi va HTML ichida ochiladi |
+| `IG_MEDIA_DRIVE_MAX_MB` | `100` | Drive'ga shu hajmgacha asl fayl yuklanadi |
+| `IG_HTML_MEDIA_MB` | `40` | Bitta HTML faylga joylanadigan media hajmi |
 | `IG_PROXY` | — | Faqat sotib olingan **proksi** ma'lumoti (Instagram paroli emas): `http://login:parol@ip:port` |
 
 ## 6.4. 👀 Kim qiziqdi (storis ko'ruvchilari, profildagi havola)
