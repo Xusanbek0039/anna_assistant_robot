@@ -808,3 +808,126 @@ def test_disabled_placeholder_proxy_does_not_block_login(ig, monkeypatch):
     monkeypatch.setattr(instagram, "PROXY", "http://login:parol@host:port")
     monkeypatch.setitem(runtime._values, "ig_proxy", False)
     assert instagram.proxy_problem() is None                         # o'chirilgan — xalaqit bermaydi
+
+
+# ---------- parol bilan login: «ilova eski» xatosida boshqa profillar sinaladi ----------
+def test_needs_upgrade_detector():
+    Up = type("ClientNeedsUpgradeError", (Exception,), {})
+    assert instagram.needs_upgrade(Up())
+    assert instagram.needs_upgrade(RuntimeError("needs_upgrade"))
+    assert instagram.needs_upgrade(RuntimeError("Your version of Instagram is out of date."))
+    assert not instagram.needs_upgrade(RuntimeError("bad password"))
+
+
+class UpgradeCl(FakeCl):
+    """Faqat berilgan ilova profili bilan login qiladi, qolganlariga «ilova eski» deydi."""
+    accept = ""
+    attempts: list = []
+
+    def __init__(self):
+        super().__init__()
+        self.app = "default"
+        self.last_json = {}
+        self.username = "husan"
+
+    def set_app(self, version):
+        self.app = version
+
+    def set_user_agent(self, user_agent=None):
+        pass
+
+    def login(self, username, password, verification_code=""):
+        UpgradeCl.attempts.append(self.app)
+        if self.app != UpgradeCl.accept:
+            raise type("ClientNeedsUpgradeError", (Exception,), {})("out of date")
+        return True
+
+
+@pytest.fixture
+def upgrade(monkeypatch):
+    UpgradeCl.attempts = []
+    monkeypatch.setattr(instagram, "lib_problem", lambda: None)
+    monkeypatch.setattr(instagram, "_new_client", lambda settings=None: UpgradeCl())
+    monkeypatch.setattr(instagram, "LOGIN_PAUSE", 0)
+    monkeypatch.setattr(instagram, "app_versions", lambda: ["449.0.0.52.84", "448.0.0.0.20", "446.0.0.49.77"])
+    return UpgradeCl
+
+
+def test_login_retries_older_app_profiles(ig, upgrade):
+    upgrade.accept = "446.0.0.49.77"          # faqat uchinchi profil o'tadi
+    notes = []
+
+    async def say(text):
+        notes.append(text)
+
+    assert run(instagram.login("husan", "parol", say)).startswith("✅")
+    assert upgrade.attempts == ["default", "448.0.0.0.20", "446.0.0.49.77"]
+    assert len(notes) == 2 and "2/3" in notes[0] and "3/3" in notes[1]
+    assert instagram.connected()
+
+
+def test_login_first_profile_wins_without_retries(ig, upgrade):
+    upgrade.accept = "default"
+
+    async def say(text):
+        raise AssertionError("ortiqcha xabar")
+
+    assert run(instagram.login("husan", "parol", say)).startswith("✅")
+    assert upgrade.attempts == ["default"]
+
+
+def test_login_all_profiles_rejected(ig, upgrade):
+    upgrade.accept = "yo'q"
+
+    async def say(text):
+        pass
+
+    result = run(instagram.login("husan", "parol", say))
+    assert len(upgrade.attempts) == 3 and "/igsession" in result and not instagram.connected()
+
+
+def test_login_other_errors_not_retried(ig, upgrade, monkeypatch):
+    """Noto'g'ri parol yoki tasdiqlash so'ralsa — qayta urinilmaydi (akkaunt bloklanmasligi uchun)."""
+    class Bad(UpgradeCl):
+        def login(self, username, password, verification_code=""):
+            UpgradeCl.attempts.append(self.app)
+            raise type("BadPassword", (Exception,), {})()
+
+    monkeypatch.setattr(instagram, "_new_client", lambda settings=None: Bad())
+
+    async def say(text):
+        pass
+
+    assert "parol noto'g'ri" in run(instagram.login("husan", "x", say))
+    assert len(UpgradeCl.attempts) == 1
+
+
+def test_app_versions_from_library(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    fake = SimpleNamespace(DEFAULT_APP_VERSION="449.0", APP_SETTINGS={"449.0": {}, "448.0": {}, "446.0": {},
+                                                                     "428.0": {}, "385.0": {}, "364.0": {}})
+    monkeypatch.setitem(sys.modules, "instagrapi", SimpleNamespace(config=fake))
+    monkeypatch.setitem(sys.modules, "instagrapi.config", fake)
+    versions = instagram.app_versions()
+    assert versions[0] == "449.0" and len(versions) == instagram.LOGIN_ATTEMPTS
+    assert len(set(versions)) == len(versions)
+
+
+def test_app_versions_without_library(monkeypatch):
+    import builtins
+    real = builtins.__import__
+
+    def no_ig(name, *a, **kw):
+        if name == "instagrapi":
+            raise ImportError("yo'q")
+        return real(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", no_ig)
+    assert instagram.app_versions() == [""]
+
+
+def test_lib_problem_points_to_main_requirements(monkeypatch):
+    monkeypatch.setattr(instagram, "lib_version", lambda: None)
+    problem = instagram.lib_problem()
+    assert "requirements.txt" in problem and "requirements-instagram" not in problem

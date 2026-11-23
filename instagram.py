@@ -188,14 +188,16 @@ def error_kind(e: BaseException) -> str:
 
 
 NEEDS_UPGRADE_HELP = (
-    "Instagram «ilova versiyasi eski» dedi. Bu instagrapi kutubxonasining hozirgi ma'lum xatosi (GitHub #2971): "
-    "Instagram aslida boshqa narsani so'ragan — odatda yangi joydan (server IP'sidan) kirishni tasdiqlash, "
-    "email kod yoki parol noto'g'ri.\n"
+    "Instagram «ilova versiyasi eski» dedi — bot bir nechta Instagram ilova versiyasini sinab ko'rdi, "
+    "hammasini rad etdi. Bu instagrapi kutubxonasining ma'lum muammosi (GitHub #2971): Instagram aslida "
+    "boshqa narsani so'ragan bo'ladi — odatda yangi joydan (server IP'sidan) kirishni tasdiqlash, email kod "
+    "yoki parol noto'g'ri.\n"
     "Nima qilish kerak:\n"
-    "1) Telefoningizda Instagram ilovasini oching. «Bu siz edingizmi?» chiqsa — «Ha, men edim» ni bosing va "
-    "/iglogin ni qaytadan yuboring.\n"
-    "2) Bo'lmasa /igsession usuli bilan ulang — u login bosqichini umuman chetlab o'tadi "
-    "(yo'riqnoma: /ig → 🔑 Ulash)."
+    "1) Telefoningizda Instagram ilovasini oching. «Bu siz edingizmi?» chiqsa — «Ha, men edim» ni bosing, "
+    "keyin /iglogin ni qaytadan yuboring.\n"
+    "2) Parolni tekshirib, qaytadan yuboring (bo'sh joy yoki qo'shimcha belgi tushib qolmaganmi).\n"
+    "3) Baribir bo'lmasa — /igsession usuli bilan ulang: u login bosqichini umuman chetlab o'tadi va "
+    "ishlashi aniq (yo'riqnoma: /ig → 🔑 Ulash)."
 )
 
 
