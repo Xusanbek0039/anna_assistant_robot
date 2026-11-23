@@ -832,16 +832,19 @@ async def backfill_loop(alert) -> None:
         return
     while True:
         await asyncio.sleep(BACKFILL_START_DELAY)
-        if st.client is not None and runtime.get("ig_archive"):
-            try:
-                if await storage.ig_backfill_pending(1):
-                    log.info("Instagram: eski yozishmalar arxivga olinmoqda")
-                    await backfill_all(alert)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("Instagram tarixi arxivlanmadi")
-        # Keyin ham davom etadi: yangi chat paydo bo'lsa yoki keyinroq ulansa, uning tarixi ham olinadi
+        # Hali ulanmagan yoki arxiv o'chirilgan bo'lsa — uzoq kutmaymiz, keyingi daqiqada yana tekshiramiz
+        # (shunda botdan ulangandan keyin tarix darhol olinadi)
+        if st.client is None or not runtime.get("ig_archive"):
+            continue
+        try:
+            if await storage.ig_backfill_pending(1):
+                log.info("Instagram: eski yozishmalar arxivga olinmoqda")
+                await backfill_all(alert)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Instagram tarixi arxivlanmadi")
+        # Keyin ham davom etadi: yangi chat paydo bo'lsa, uning tarixi ham olinadi
         await asyncio.sleep(BACKFILL_IDLE)
 
 
@@ -1066,7 +1069,10 @@ async def _archive_thread(th: Thread) -> None:
             gone.append(d)
     if not gone:
         return
-    await storage.ig_archive_mark_deleted(th.thread_id, [d["msg_id"] for d in gone], time.time())
+    now = time.time()
+    await storage.ig_archive_mark_deleted(th.thread_id, [d["msg_id"] for d in gone], now)
+    # Drive'dagi nusxa ham yangilansin — o'chirilgan xabar u yerda belgilangan holda qoladi
+    await storage.ig_chat_set(th.thread_id, changed=now, drive_dirty=True)
     theirs = [d for d in gone if not d.get("out")]
     if theirs and _notify:
         await _notify(th.thread_id, unsent_text(th, theirs))
@@ -1418,6 +1424,15 @@ async def panel() -> tuple[str, list]:
     except Exception:
         pass
     try:
+        s = await storage.ig_stats()
+        lines.append(f"🗂 Arxiv: {s['chats']} ta chat, {s['messages']} ta xabar"
+                     + (f", 🗑 {s['unsent']} ta qaytarib olingan" if s["unsent"] else ""))
+        if s["left"]:
+            lines.append(f"⏳ Eski yozishmalar olinmoqda — yana {s['left']} ta chat")
+    except Exception:
+        pass
+    lines.append(_drive_line())
+    try:
         mode = await storage.get_mode()
     except Exception:
         mode = "?"
@@ -1427,6 +1442,10 @@ async def panel() -> tuple[str, list]:
               "🗂 — yozishmalar arxivi, qaytarib olingan xabar haqida xabar\n📥 — yangi xabarlar botga keladi"]
     btn = [(f"{'✅' if runtime.get(k) else '▫️'} {label}", f"ig:set:{k}") for k, label in TOGGLES.items()]
     rows = [btn[0:2], btn[2:4], [("💬 Chatlar arxivi", "ig:chats:0"), ("🔄 Hozir tekshirish", "ig:check")]]
+    import gdrive
+    if gdrive.enabled():
+        rows.append([(f"{'✅' if runtime.get('ig_drive') else '▫️'} ☁️ Drive'ga saqlash", "ig:set:ig_drive"),
+                     ("☁️ Hozir yuklash", "ig:drive")])
     if PROXY:
         rows.append([(f"{'✅' if active_proxy() else '▫️'} 🧦 Proksi (bosib o'chirish/yoqish)", "ig:set:ig_proxy")])
     rows += [[("🚪 Chiqish", "ig:logout") if st.client is not None else ("🔑 Ulash", "ig:help"),
@@ -1434,9 +1453,29 @@ async def panel() -> tuple[str, list]:
     return "\n".join(lines), rows
 
 
+def _drive_line() -> str:
+    import gdrive
+    if not gdrive.enabled():
+        return "☁️ Google Drive sozlanmagan (.env: " + ", ".join(gdrive.missing()) + ")"
+    if not runtime.get("ig_drive"):
+        return "☁️ Drive'ga saqlash o'chirilgan"
+    if drive_state["ok"] is False:
+        return f"☁️❌ Drive: {_esc(drive_state['problem'])[:120]}"
+    when = f", oxirgi: {_when(drive_state['last'])}" if drive_state["last"] else ""
+    return f"☁️ Drive papkasi «{DRIVE_FOLDER}» — {drive_state['files']} ta fayl yuklandi{when}"
+
+
 async def toggle(key: str) -> str:
     if key == "ig_proxy":
         return await _toggle_proxy()
+    if key == "ig_drive":
+        value = not runtime.get("ig_drive")
+        await runtime.update(ig_drive=value)
+        if value:
+            await storage.ig_drive_mark_all()
+            drive_wake()
+        return ("☁️ Drive'ga saqlash yoqildi — chatlar «Instagram» papkasiga yuklanadi" if value
+                else "☁️ Drive'ga saqlash o'chirildi")
     if key not in TOGGLES:
         return "Noma'lum sozlama"
     value = not runtime.get(key)

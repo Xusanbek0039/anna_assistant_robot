@@ -440,7 +440,8 @@ async def send_ig_media(data: bytes, filename: str, caption: str, video: dict | 
 def _ig_buttons(thread_id: str) -> list:
     return [[Button.inline("✍️ Javob berish", f"ig:reply:{thread_id}".encode()),
              Button.inline("🔇 Bu chatda AI jim", f"ig:mute:{thread_id}".encode())],
-            [Button.inline("📄 Yozishma (HTML)", f"ig:html:{thread_id}".encode())]]
+            [Button.inline("💬 Yozishmani ko'rish", f"ig:view:{thread_id}:0".encode()),
+             Button.inline("📄 HTML", f"ig:html:{thread_id}".encode())]]
 
 
 async def ig_notify(thread_id: str, text: str) -> None:
@@ -454,6 +455,14 @@ async def ig_notify(thread_id: str, text: str) -> None:
         _ig_notif_map[msg.id] = thread_id
     except Exception:
         log.exception("Instagram bildirishnomasi botga yuborilmadi")
+
+
+async def _edit_or_send(event, text: str, rows: list) -> None:
+    """Tugmali ko'rinishni o'rniga yangilaydi; sig'masa yoki tahrirlanmasa — yangi xabar(lar) qilib yuboradi."""
+    try:
+        await event.edit(text, parse_mode="html", buttons=_inline(rows), link_preview=False)
+    except Exception:
+        await send_long(event.respond, text, parse_mode="html", buttons=_inline(rows), link_preview=False)
 
 
 async def _send_ig_panel(event, extra: str = "", edit: bool = False) -> None:
@@ -1647,10 +1656,15 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         elif action == "chats":
             await event.answer()
             text, rows = await instagram.chats_view(int(arg) if arg.isdigit() else 0)
-            try:
-                await event.edit(text, parse_mode="html", buttons=_inline(rows))
-            except Exception:
-                await event.respond(text, parse_mode="html", buttons=_inline(rows))
+            await _edit_or_send(event, text, rows)
+        elif action == "view" and arg:
+            page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+            await event.answer()
+            text, rows = await instagram.chat_view(arg, page)
+            await _edit_or_send(event, text, rows)
+        elif action == "drive":
+            await event.answer("☁️ Yuklanmoqda...")
+            await _send_ig_panel(event, extra=await instagram.drive_now(), edit=True)
         elif action == "html" and arg:
             await event.answer("📄 Tayyorlanmoqda...")
             try:

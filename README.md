@@ -26,7 +26,7 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `gdrive.py`, `drive_auth.py` | Chat arxivini Google Drive papkasiga HTML qilib yuklash (har chatga bitta fayl, o'zgarganda yangilanadi). Bir martalik sozlash: `python drive_auth.py` — `.env.example` dagi Google bo'limiga qarang |
 | `profiles.py` | Profil kuzatuvi: yozishgan odamlar ism, username, bio, rasmini o'zgartirsa yoki akkauntini o'chirsa — xabar; profil rasmlari tarixi Drive'ga |
 | `watchers.py` | 🔔 Eslatmalar: «95 446 68 86 raqami tg ga qo'shilsa xabar ber», «@ali online bo'lsa xabar ber» — hodisa ro'y berganda bot xabar beradi |
-| `instagram.py` | 📸 Instagram (`/ig`): bir marta ko'riladigan rasm/videolarni ochmasdan saqlash, Direct'ga avtojavob, chat arxivi va qaytarib olingan (unsend) xabarlar, Direct xabarlari botga |
+| `instagram.py` | 📸 Instagram (`/ig`): bir marta ko'riladigan rasm/videolarni ochmasdan saqlash, Direct'ga avtojavob, yozishmalar arxivi (eski tarix bilan) va Google Drive'ga HTML nusxasi, qaytarib olingan (unsend) xabarlar, chatni botda o'qish |
 | `viewers.py` | 👀 Kim qiziqdi (`/korganlar`): storis'ingizni kim ko'rgani va profildagi havola orqali botni kim ochgani — ism, familiya, ID, username, istisnolar bilan |
 | `promises.py` | AI chat xulosasi (/xulosa) va va'dalar kuzatuvi (/vadalar): kechqurun yangi va'dalarni topadi, ertalab muddati kelganlarini eslatadi |
 | `weekly.py` | Haftalik chat hisoboti: faol suhbatlar, kim o'chirdi/tahrirladi, kim javob kutyapti |
@@ -389,10 +389,25 @@ Faqat sessiya MongoDB'da saqlanadi — dastur qayta ishga tushganda login so'ral
 |---|---|
 | 🔥 Bir martalik media | Kimdir Direct'da bir marta ko'riladigan (yoki «qayta ko'rish mumkin») rasm/video yuborsa — dastur uni **ochmasdan** yuklab oladi va botga oddiy, saqlasa bo'ladigan holda yuboradi. Instagram'da media «ochilmagan» bo'lib qoladi, yuboruvchiga hech narsa bildirilmaydi |
 | 🤖 Avtojavob | Anna Direct'dagi shaxsiy yozishmalarga ham javob beradi. Telegram rejimiga (`/auto`, `/on`, `/off`) bo'ysunadi; Instagram'da o'zingiz yozsangiz — o'sha chatda 120 daqiqa jim turadi. Guruhlar va «So'rovlar» papkasiga javob bermaydi |
-| 🗂 Arxiv | Yozishmalar MongoDB'ga yoziladi. Kimdir xabarini **qaytarib olsa** (unsend) — botga matni bilan xabar keladi. «💬 Chatlar arxivi» — yozishmani HTML fayl qilib olish |
+| 🗂 Arxiv | Har bir yozishma **avtomatik** arxivlanadi (MongoDB). Kimdir xabarini **qaytarib olsa** (unsend) — botga matni bilan xabar keladi va arxivda qizil belgi bilan qoladi |
 | 📥 Xabarlar botga | Direct'ga kelgan har bir yangi xabar botga keladi |
+| ☁️ Drive'ga saqlash | Har bir chat Google Drive'dagi **`Instagram/`** papkasiga HTML fayl bo'lib yuklanadi va o'zgargan sayin yangilanib boradi |
 
 Instagram bildirishnomasiga **reply** qilib yozsangiz (yoki «✍️ Javob berish») — javob Instagram'ga sizning nomingizdan ketadi.
+
+### Yozishmalarni botda o'qish
+
+**💬 Chatlar arxivi** tugmasi → chatlar ro'yxati (har birida xabarlar soni) → chatni bossangiz, yozishma
+**bot ichida** ochiladi: yangi xabarlardan boshlab, 15 tadan, «◀️ Yangiroq / ▶️ Eskiroq» tugmalari bilan.
+Belgilar: 🫵 — sizning xabaringiz, 🔥 — bir martalik media, 🗑 — qaytarib olingan, 🤖 — Anna javobi.
+Xohlasangiz, **📄 HTML fayl** tugmasi butun yozishmani Telegram ko'rinishidagi fayl qilib yuboradi.
+
+### Eski yozishmalar
+
+Instagram ulangandan ~1 daqiqa keyin dastur **mavjud chatlarning eski yozishmalarini** ham arxivga oladi
+(har chatdan `IG_SYNC_LIMIT` ta oxirgi xabar, standart 1000). Bu bir martalik ish — tugagach faqat yangilari
+qo'shilib boradi. Jarayon panelda ko'rinadi: «⏳ Eski yozishmalar olinmoqda — yana N ta chat».
+Keyin yangi chat paydo bo'lsa, uning tarixi ham o'zi olinadi (har soatda tekshiriladi).
 
 Bilish kerak:
 
@@ -402,7 +417,8 @@ Bilish kerak:
 - Uchidan-uchiga shifrlangan (end-to-end) Instagram chatlarini Instagram serveri ham o'qiy olmaydi — ular ko'rinmaydi.
 - Bu Instagram'ning **norasmiy** yo'li (rasmiy API shaxsiy Direct'ni bermaydi). Juda tez tekshirish akkauntga
   vaqtinchalik cheklov olib kelishi mumkin — Instagram «biroz kuting» desa, dastur 15 daqiqa o'zi to'xtab turadi.
-- Arxiv Instagram ulangan paytdan boshlab yig'iladi (har chatdan oxirgi 20 xabar bilan boshlanadi).
+  Tarix olinayotganda so'rovlar orasida 2.5 soniya pauza bor, shuning uchun u sekin ishlaydi.
+- Arxivni o'qish so'rovlari chatni **«o'qildi» deb belgilamaydi** va bir martalik mediani ochmaydi.
 
 | Sozlama | Standart | Izoh |
 |---|---|---|
@@ -410,7 +426,9 @@ Bilish kerak:
 | `IG_POLL_SECONDS` | `30` | Direct shuncha soniyada bir tekshiriladi (min. 15) |
 | `IG_AUTOREPLY` | `false` | Avtojavobning boshlang'ich holati (keyin botdan) |
 | `IG_FORWARD` | `false` | «Xabarlar botga»ning boshlang'ich holati |
-| `IG_PROXY` | — | Server IP'si Instagram'da bloklansa: `http://user:pass@host:port` |
+| `IG_SYNC_LIMIT` | `1000` | Eski yozishmalardan har chatdan nechta xabar olinadi (`0` — olmaslik) |
+| `IG_DRIVE` | `true` | Instagram arxivi Google Drive'ga yuklanadi (oralig'i — `DRIVE_SYNC_MINUTES`) |
+| `IG_PROXY` | — | Faqat sotib olingan **proksi** ma'lumoti (Instagram paroli emas): `http://login:parol@ip:port` |
 
 ## 6.4. 👀 Kim qiziqdi (storis ko'ruvchilari, profildagi havola)
 

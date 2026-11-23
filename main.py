@@ -156,7 +156,10 @@ async def main() -> None:
     background += [
         supervise("Profil kuzatuvi", profiles.run(user)),
         *([supervise("Eslatmalar", watchers.run(user))] if config.WATCH_ENABLED else []),
-        *([supervise("Instagram", instagram.run())] if config.INSTAGRAM_ENABLED else []),
+        *([supervise("Instagram", instagram.run()),
+           supervise("Instagram arxivi", instagram.backfill_loop(control_bot.alert)),
+           *([supervise("Instagram Drive", instagram.drive_loop(control_bot.alert))] if gdrive.enabled() else []),
+           ] if config.INSTAGRAM_ENABLED else []),
         *([supervise("Storis ko'ruvchilari", viewers.run(user))] if config.VIEWERS_ENABLED else []),
         supervise("Va'dalar tekshiruvi", promises.run_scan(control_bot.send_promises)),
         supervise("Va'dalar eslatmasi", promises.run_remind(control_bot.send_promises)),

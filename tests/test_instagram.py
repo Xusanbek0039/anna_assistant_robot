@@ -119,6 +119,8 @@ class FakeIgStorage:
         c = self.chats.setdefault(tid, {"count": 0, "last": 0})
         c.update(title=title, usernames=usernames, group=group, last=max(c["last"], last))
         c["count"] += added
+        if added:
+            c.update(changed=time.time(), drive_dirty=True)
 
     async def ig_chats(self, page, per):
         rows = sorted(({"thread_id": k, **v} for k, v in self.chats.items()), key=lambda r: -r["last"])
@@ -126,6 +128,46 @@ class FakeIgStorage:
 
     async def ig_chat_get(self, tid):
         return {"thread_id": tid, **self.chats[tid]} if tid in self.chats else None
+
+    async def ig_chat_set(self, tid, **fields):
+        self.chats.setdefault(tid, {"count": 0, "last": 0}).update(fields)
+
+    async def ig_chat_count(self, tid):
+        return sum(1 for (t, _) in self.archive if t == tid)
+
+    async def ig_archive_page(self, tid, skip, limit):
+        rows = sorted((dict(d) for (t, _), d in self.archive.items() if t == tid),
+                      key=lambda d: -d["date"])
+        return rows[skip:skip + limit + 1]
+
+    async def ig_drive_pending(self, limit=50):
+        rows = [{"thread_id": k, **v} for k, v in self.chats.items() if v.get("drive_dirty")]
+        return sorted(rows, key=lambda r: r.get("changed") or 0)[:limit]
+
+    async def ig_drive_done(self, tid, changed, file_id, link):
+        c = self.chats[tid]
+        c.update(drive_file_id=file_id, drive_link=link, drive_synced=time.time())
+        if c.get("changed") == changed:
+            c["drive_dirty"] = False
+
+    async def ig_drive_mark_all(self, only_missing=False):
+        n = 0
+        for c in self.chats.values():
+            if c.get("count") and not (only_missing and c.get("drive_file_id")):
+                c["drive_dirty"] = True
+                c.setdefault("changed", time.time())
+                n += 1
+        return n
+
+    async def ig_backfill_pending(self, limit=50):
+        rows = [{"thread_id": k, **v} for k, v in self.chats.items() if "backfilled" not in v]
+        return sorted(rows, key=lambda r: -(r.get("last") or 0))[:limit]
+
+    async def ig_stats(self):
+        return {"chats": len(self.chats), "messages": len(self.archive),
+                "unsent": sum(1 for d in self.archive.values() if d.get("deleted")),
+                "pending": sum(1 for c in self.chats.values() if c.get("drive_dirty")),
+                "left": sum(1 for c in self.chats.values() if "backfilled" not in c)}
 
     async def get_mode(self):
         return "on"
@@ -343,7 +385,7 @@ def test_export_html_marks_deleted(ig):
     assert "Instagram: Ali Valiyev" in page and "salom &lt;b&gt;" in page
     assert page.count("class='msg del'") == 1                 # qaytarib olingan xabar qizil
     text, rows = run(instagram.chats_view(0))
-    assert rows[0][0] == ("Ali Valiyev · 2", "ig:html:t1")
+    assert rows[0][0] == ("Ali Valiyev · 2", "ig:view:t1:0")
 
 
 # ---------- 🤖 avtojavob va 📥 xabarlar botga ----------
