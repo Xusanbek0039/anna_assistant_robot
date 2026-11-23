@@ -898,11 +898,70 @@ async def ig_archive_export(thread_id: str, limit: int) -> list[dict]:
 
 async def ig_chat_touch(thread_id: str, title: str, usernames: list[str], group: bool, last: float,
                         added: int) -> None:
-    await _get_db().ig_chats.update_one(
-        {"_id": thread_id},
-        {"$set": {"title": title, "usernames": usernames, "group": group}, "$max": {"last": last},
-         "$inc": {"count": added}},
-        upsert=True)
+    """Chat ma'lumotini yangilaydi. Yangi xabar qo'shilgan bo'lsa — Drive'ga qayta yuklashga belgilanadi."""
+    update: dict = {"$set": {"title": title, "usernames": usernames, "group": group},
+                    "$max": {"last": last}, "$inc": {"count": added}}
+    if added:
+        update["$set"].update(changed=time.time(), drive_dirty=True)
+    await _get_db().ig_chats.update_one({"_id": thread_id}, update, upsert=True)
+
+
+async def ig_chat_set(thread_id: str, **fields) -> None:
+    await _get_db().ig_chats.update_one({"_id": thread_id}, {"$set": fields}, upsert=True)
+
+
+async def ig_chat_count(thread_id: str) -> int:
+    return await _get_db().ig_archive.count_documents({"thread_id": thread_id})
+
+
+async def ig_archive_page(thread_id: str, skip: int, limit: int) -> list[dict]:
+    """Botda ko'rish uchun: eng yangi xabarlardan boshlab bir sahifa (bittasi ortiqcha — davomi bormi)."""
+    rows = await _get_db().ig_archive.find({"thread_id": thread_id}, {"_id": 0}) \
+        .sort("date", DESCENDING).skip(skip).limit(limit + 1).to_list()
+    return rows
+
+
+async def ig_drive_pending(limit: int = 50) -> list[dict]:
+    """Drive'ga yuklanishi kerak (o'zgargan) Instagram chatlari."""
+    rows = await _get_db().ig_chats.find({"drive_dirty": True}).sort("changed", ASCENDING) \
+        .limit(limit).to_list()
+    for r in rows:
+        r["thread_id"] = r.pop("_id")
+    return rows
+
+
+async def ig_drive_done(thread_id: str, changed, file_id: str, link: str) -> None:
+    """Yuklandi. Yuklash paytida chat yana o'zgargan bo'lsa ("changed" boshqa) — belgi qoladi."""
+    db = _get_db()
+    await db.ig_chats.update_one({"_id": thread_id}, {"$set": {"drive_file_id": file_id, "drive_link": link,
+                                                               "drive_synced": time.time()}})
+    await db.ig_chats.update_one({"_id": thread_id, "changed": changed}, {"$set": {"drive_dirty": False}})
+
+
+async def ig_drive_mark_all(only_missing: bool = False) -> int:
+    query: dict = {"count": {"$gt": 0}}
+    if only_missing:
+        query["drive_file_id"] = {"$exists": False}
+    res = await _get_db().ig_chats.update_many(query, {"$set": {"drive_dirty": True}})
+    return res.modified_count
+
+
+async def ig_backfill_pending(limit: int = 50) -> list[dict]:
+    """Eski yozishmalari hali yuklanmagan chatlar (bir martalik tarix nusxasi uchun)."""
+    rows = await _get_db().ig_chats.find({"backfilled": {"$exists": False}}) \
+        .sort("last", DESCENDING).limit(limit).to_list()
+    for r in rows:
+        r["thread_id"] = r.pop("_id")
+    return rows
+
+
+async def ig_stats() -> dict:
+    db = _get_db()
+    return {"chats": await db.ig_chats.count_documents({}),
+            "messages": await db.ig_archive.count_documents({}),
+            "unsent": await db.ig_archive.count_documents({"deleted": True}),
+            "pending": await db.ig_chats.count_documents({"drive_dirty": True}),
+            "left": await db.ig_chats.count_documents({"backfilled": {"$exists": False}})}
 
 
 async def ig_chats(page: int, per_page: int) -> list[dict]:
