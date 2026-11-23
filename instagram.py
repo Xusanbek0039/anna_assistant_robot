@@ -1352,7 +1352,7 @@ def _probe(url: str, proxy: str | None) -> tuple[bool, str, float]:
     try:
         import requests  # instagrapi bilan birga o'rnatiladi
     except ImportError:
-        return False, "requests o'rnatilmagan — pip install -r requirements-instagram.txt", 0.0
+        return False, "requests o'rnatilmagan — pip install -r requirements.txt", 0.0
     started = time.monotonic()
     try:
         r = requests.get(url, timeout=15, headers={"User-Agent": _UA},
