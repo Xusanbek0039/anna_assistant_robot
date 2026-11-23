@@ -490,8 +490,14 @@ Muhim nuqtalar:
 - **MongoDB Atlas → Network Access** da `0.0.0.0/0` ruxsat etilgan bo'lsin (Render IP'si o'zgarib turadi).
 - Environment o'zgaruvchisini saqlaganingizda Render servisni **qayta ishga tushiradi** — logda ketma-ket
   `Instance restarted` ko'rinsa, odatda sababi shu (xato emas).
-- Logda ishga tushish bosqichlari ko'rinadi (`1/6` … `6/6`). Bot jim bo'lib qolsa, **oxirgi raqam** qayerda
-  to'xtaganini aytadi: `2/6` — MongoDB, `3/6` — boshqa nusxa ishlab turibdi, `4/6`–`5/6` — Telegram.
+- Logda ishga tushish bosqichlari va **xotira sarfi** ko'rinadi (`1/6` … `6/6`). Bot jim bo'lib qolsa,
+  **oxirgi raqam** qayerda to'xtaganini aytadi: `2/6` — MongoDB, `3/6` — boshqa nusxa ishlab turibdi,
+  `4/6` — shaxsiy akkaunt, `5/6` — nazorat boti (`BOT_TOKEN`).
+- Logda xato ko'rinmasdan `Instance restarted` takrorlansa va xotira 400 MB dan oshib borsa — server
+  xotira chegarasiga yetgan (bepul tarifda 512 MB). Yengillashtirish: `IG_SYNC_LIMIT` va
+  `ARCHIVE_SYNC_LIMIT` ni kamaytirish yoki to'lovli tarif.
+- Nazorat botiga ulanish 60 soniyada o'tmasa, bot sessiya faylini (`anna_bot.session`) o'zi tozalab bir
+  marta qayta urinadi — eskirgan sessiya sabab jim qotib qolmaydi.
 - Bepul tarifda servis uzoq jim turganda uxlab qolishi mumkin — o'sha vaqtda kelgan **bir martalik media
   saqlanmaydi**. Doimiy ishlashi uchun to'lovli tarif kerak.
 

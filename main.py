@@ -75,14 +75,15 @@ async def _archive_sync(user) -> None:
 async def main() -> None:
     # Ishga tushish bosqichlari logga yoziladi: dastur biror joyda kutib qolsa (MongoDB, boshqa nusxa,
     # Telegram), oxirgi qator qayerda to'xtaganini ko'rsatadi
-    log.info("1/6 Sozlamalar tekshirilyapti")
+    log.info("1/6 Sozlamalar tekshirilyapti (xotira %s)", health.memory_note())
     config.require("API_ID", "API_HASH", "BOT_TOKEN", "OPENAI_API_KEY", "MONGODB_URI")
     if config.BIO_ENABLED:
         validate_settings()
-    log.info("2/6 MongoDB'ga ulanyapti (Atlas'da Network Access -> 0.0.0.0/0 ruxsati borligini tekshiring)")
+    log.info("2/6 MongoDB'ga ulanyapti — Atlas'da Network Access -> 0.0.0.0/0 ruxsati kerak (xotira %s)",
+             health.memory_note())
     await storage.init()
     if config.SINGLE_INSTANCE:
-        log.info("3/6 Nusxa qulfi olinyapti")
+        log.info("3/6 Nusxa qulfi olinyapti (xotira %s)", health.memory_note())
         await instance.wait_until_only()  # boshqa nusxa ishlayotgan bo'lsa, Telegram'ga ulanmasdan kutadi
     await runtime.load()
 
@@ -95,14 +96,14 @@ async def main() -> None:
     if voicelab.audio_tools_problem():
         log.error(voicelab.audio_tools_problem())
 
-    log.info("4/6 Shaxsiy akkauntga (userbot) ulanyapti")
+    log.info("4/6 Shaxsiy akkauntga (userbot) ulanyapti (xotira %s)", health.memory_note())
     user = create_user_client()
     # Birinchi ishga tushishda telefon raqam, Telegram kodi (va 2FA parol) terminalda so'raladi
     await login(user)
     me = await user.get_me()
     log.info("Akkaunt: %s (id %s)", me.first_name, me.id)
 
-    log.info("5/6 Nazorat botiga ulanyapti (BOT_TOKEN)")
+    log.info("5/6 Nazorat botiga ulanyapti (BOT_TOKEN) (xotira %s)", health.memory_note())
     bot, bot_me = await start_bot()
     log.info("Nazorat boti: @%s — botga /start bosishni unutmang", bot_me.username)
 
