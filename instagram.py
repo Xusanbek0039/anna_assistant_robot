@@ -1044,10 +1044,6 @@ def link_caption(item: dict, link: Link, index: int = 0, total: int = 1) -> str:
     return "\n".join(lines)
 
 
-def _mb(n: int) -> str:
-    return f"{n / 1024 / 1024:.1f} MB"
-
-
 async def download_link(link: Link, bar=None, prefix: str = "") -> str:
     """Havoladagi mediani yuklab, egasiga yuboradi. bar — jonli ko'rsatkich (control_bot.Progress)."""
     cl = st.client
@@ -1078,10 +1074,10 @@ async def download_link(link: Link, bar=None, prefix: str = "") -> str:
         icon = icons.get(kind, "📥")
 
         def shown(done: int, total: int, _step=step, _icon=icon, _kind=kind) -> None:
-            if bar is None:
-                return
-            size = f"{_mb(done)} / {_mb(total)}" if total else _mb(done)
-            bar.set(f"{_step}{_icon} {_kind} yuklanmoqda — {size}", (done / total) if total else None)
+            # Hajm, tezlik va qolgan vaqtni ko'rsatkichning o'zi yozadi (progress bar ostida)
+            if bar is not None:
+                bar.set(f"{_step}{_icon} {_kind} yuklanmoqda", (done / total) if total else None,
+                        done=done, total=total)
 
         shown(0, 0)
         try:
@@ -1090,7 +1086,7 @@ async def download_link(link: Link, bar=None, prefix: str = "") -> str:
             log.warning("Instagram media yuklab olinmadi (%s)", type(e).__name__)
             continue
         if bar:
-            bar.set(f"{step}📤 Telegram'ga yuborilmoqda — {_mb(len(data))}", 1.0)
+            bar.set(f"{step}📤 Telegram'ga yuborilmoqda", 1.0, done=len(data), total=len(data))
             await bar.render()
         ext = _ext_for(kind, mime, url)
         video = {"duration": dur, "w": w, "h": h} if kind == "video" else None
