@@ -1684,6 +1684,20 @@ async def panel() -> tuple[str, list]:
             lines.append(f"⏳ Eski yozishmalar olinmoqda — yana {s['left']} ta chat")
     except Exception:
         pass
+    try:
+        counts = await storage.ig_media_counts()
+        total_mb = (await storage.ig_media_bytes()) / 1024 / 1024
+        done, left = counts.get("done", 0), counts.get("pending", 0) + counts.get("retry", 0)
+        gone = counts.get("gone", 0) + counts.get("too_big", 0)
+        if done or left or gone:
+            line = f"🖼 Fayllar: {done} ta saqlandi ({total_mb:.1f} MB)"
+            if left:
+                line += f", {left} ta yuklanmoqda"
+            if gone:
+                line += f", {gone} tasi olinmadi (havolasi eskirgan)"
+            lines.append(line)
+    except Exception:
+        pass
     lines.append(_drive_line())
     try:
         mode = await storage.get_mode()
@@ -1692,9 +1706,12 @@ async def panel() -> tuple[str, list]:
     mode_name = {"auto": "🤖 aqlli (/auto)", "on": "🟢 doim (/on)", "off": "⚪️ o'chiq (/off)"}.get(mode, mode)
     lines += [f"🤖 Avtojavob Telegram rejimiga bo'ysunadi — hozir: {mode_name}", "",
               "🔥 — bir martalik rasm/video saqlanadi\n🤖 — Anna Direct'ga javob beradi\n"
-              "🗂 — yozishmalar arxivi, qaytarib olingan xabar haqida xabar\n📥 — yangi xabarlar botga keladi"]
+              "🗂 — yozishmalar arxivi, qaytarib olingan xabar haqida xabar\n📥 — yangi xabarlar botga keladi\n"
+              "🖼 — rasm, video, ovozli xabarlar arxivga yuklab olinadi (o'chirilsa ham sizda qoladi)"]
     btn = [(f"{'✅' if runtime.get(k) else '▫️'} {label}", f"ig:set:{k}") for k, label in TOGGLES.items()]
     rows = [btn[0:2], btn[2:4], [("💬 Chatlar arxivi", "ig:chats:0"), ("🔄 Hozir tekshirish", "ig:check")]]
+    rows.append([(f"{'✅' if runtime.get('ig_media') else '▫️'} 🖼 Rasm/video/ovozni saqlash",
+                  "ig:set:ig_media")])
     import gdrive
     if gdrive.enabled():
         rows.append([(f"{'✅' if runtime.get('ig_drive') else '▫️'} ☁️ Drive'ga saqlash", "ig:set:ig_drive"),
@@ -1721,6 +1738,13 @@ def _drive_line() -> str:
 async def toggle(key: str) -> str:
     if key == "ig_proxy":
         return await _toggle_proxy()
+    if key == "ig_media":
+        value = not runtime.get("ig_media")
+        await runtime.update(ig_media=value)
+        if value:
+            media_wake()
+        return ("🖼 Rasm/video/ovoz arxivga yuklab olinadi — HTML arxivda ochiladi" if value
+                else "🖼 Fayllarni yuklab olish o'chirildi (faqat matn arxivlanadi)")
     if key == "ig_drive":
         value = not runtime.get("ig_drive")
         await runtime.update(ig_drive=value)
