@@ -458,6 +458,26 @@ Har bir o'zgarishdan keyin ishga tushiring — eski funksiyalar buzilmaganini ko
 > `main.py` va `bio_updater.py` ni **bir vaqtda** ishga tushirmang — ikkalasi bitta `anna.session` faylini
 > ishlatadi. `main.py` ishlayotgan bo'lsa, bio allaqachon uning ichida yangilanmoqda.
 
+## 9. Serverga qo'yish (Render)
+
+| Sozlama | Qiymat |
+|---|---|
+| Servis turi | **Background Worker** (Web Service emas — bot HTTP port ochmaydi) |
+| Build Command | `pip install -r requirements.txt` — Instagram ham kerak bo'lsa: `pip install -r requirements.txt && pip install -r requirements-instagram.txt` |
+| Start Command | `python main.py` |
+
+Muhim nuqtalar:
+
+- **`SESSION_STRING`** to'ldirilgan bo'lishi kerak: serverda terminal yo'q, Telegram kodini kiritib bo'lmaydi.
+  Kompyuterda `python export_session.py` ni ishga tushirib, chiqqan matnni Render → *Environment* ga qo'ying.
+- **MongoDB Atlas → Network Access** da `0.0.0.0/0` ruxsat etilgan bo'lsin (Render IP'si o'zgarib turadi).
+- Environment o'zgaruvchisini saqlaganingizda Render servisni **qayta ishga tushiradi** — logda ketma-ket
+  `Instance restarted` ko'rinsa, odatda sababi shu (xato emas).
+- Logda ishga tushish bosqichlari ko'rinadi (`1/6` … `6/6`). Bot jim bo'lib qolsa, **oxirgi raqam** qayerda
+  to'xtaganini aytadi: `2/6` — MongoDB, `3/6` — boshqa nusxa ishlab turibdi, `4/6`–`5/6` — Telegram.
+- Bepul tarifda servis uzoq jim turganda uxlab qolishi mumkin — o'sha vaqtda kelgan **bir martalik media
+  saqlanmaydi**. Doimiy ishlashi uchun to'lovli tarif kerak.
+
 ## ⚠️ Xavfsizlik
 
 - **`anna.session`** — bu fayl akkauntingizga parolsiz **to'liq kirish** beradi. Uni hech kimga bermang, chatga yoki
