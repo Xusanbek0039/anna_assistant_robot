@@ -1811,13 +1811,159 @@ async def chat_view(thread_id: str, page: int = 0) -> tuple[str, list]:
     return "\n".join(head) + "\n\n" + body, buttons
 
 
+_CSS = """
+*{box-sizing:border-box}body{margin:0;background:#0d0d14;color:#f2f2f7;
+font:15px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif}
+header{position:sticky;top:0;z-index:5;padding:14px 18px;
+background:linear-gradient(90deg,#833ab4 0%,#c13584 45%,#e1306c 70%,#fd1d1d 100%);
+box-shadow:0 2px 14px rgba(0,0,0,.45)}
+h1{margin:0;font-size:18px;display:flex;align-items:center;gap:8px}
+.sub{font-size:13px;margin-top:4px;opacity:.92}.sub a{color:#fff}
+.legend{font-size:12px;margin-top:6px;opacity:.9}.legend span{margin-right:12px}
+main{max-width:860px;margin:0 auto;padding:14px 12px 40px}
+.day{text-align:center;margin:18px 0 10px}
+.day span{background:#1c1c28;color:#b9b9c6;border-radius:14px;padding:4px 14px;font-size:12px}
+.row{display:flex;margin:6px 0}.row.out{justify-content:flex-end}
+.msg{max-width:82%;border-radius:18px;padding:9px 13px;word-wrap:break-word;white-space:pre-wrap;
+background:#23232e;position:relative}
+.out .msg{background:linear-gradient(135deg,#8a3ab9,#e1306c);color:#fff}
+.msg.del{outline:2px solid #ff4d4f;background:#3a1b22}.out .msg.del{background:#5a2330}
+.who{font-size:12px;font-weight:600;color:#ff8fc5;margin-bottom:3px}
+.meta{font-size:11px;opacity:.72;text-align:right;margin-top:5px;white-space:normal}
+.tag{display:inline-block;border-radius:7px;padding:0 6px;font-size:11px;margin-left:6px}
+.tdel{background:#ff4d4f;color:#fff}.tonce{background:#ff9f0a;color:#1a1a1a}.tai{background:#3a3a4a}
+img,video{max-width:100%;max-height:70vh;border-radius:12px;display:block;margin:4px 0;background:#000}
+audio{width:260px;max-width:100%;margin:4px 0}
+.media{font-style:italic;opacity:.85;font-size:13px}
+.media a{color:#ff8fc5}.file{font-size:13px}
+footer{text-align:center;font-size:12px;opacity:.6;padding:24px}
+.empty{text-align:center;opacity:.7;padding:40px}
+"""
+
+_ICONS = {"rasm": "🖼", "video": "🎬", "ovozli xabar": "🎤", "GIF": "🎞", "audio": "🎵",
+          "post": "📰", "reels": "🎬", "storis": "📖", "storisga javob": "📖", "havola": "🔗",
+          "like": "❤️", "kontakt": "👤", "lokatsiya": "📍"}
+
+
+def _fmt_dur(sec: float) -> str:
+    sec = int(sec or 0)
+    return f"{sec // 60}:{sec % 60:02d}" if sec else ""
+
+
+def _media_block(d: dict, blob: tuple[bytes, str] | None) -> str:
+    """Xabardagi media: fayl bo'lsa HTML ichida ochiladi, bo'lmasa sabab yoki Drive havolasi."""
+    kind = d.get("media") or ""
+    icon = _ICONS.get(kind, "📎")
+    out = []
+    if blob:
+        data, mime = blob
+        src = f"data:{mime};base64,{base64.b64encode(data).decode()}"
+        if mime.startswith("image/"):
+            out.append(f"<img src='{src}' alt='{_esc(kind)}' loading='lazy'>")
+        elif mime.startswith("audio/"):
+            dur = _fmt_dur(d.get("media_dur"))
+            out.append(f"<div class='media'>{icon} ovozli xabar{(' · ' + dur) if dur else ''}</div>"
+                       f"<audio controls preload='metadata' src='{src}'></audio>")
+        else:
+            out.append(f"<video controls preload='metadata' src='{src}'></video>")
+    else:
+        state = d.get("media_state")
+        note = {"gone": "havolasi eskirgan — Instagram endi bermaydi",
+                "too_big": "fayl juda katta (asli Drive'da)",
+                "pending": "yuklab olinmoqda…", "retry": "yuklab olinmoqda…",
+                "skipped": "yuklab olinmadi"}.get(state, "")
+        if d.get("media_drive"):
+            note = "asl fayl Google Drive'da"
+        label = f"{icon} {_esc(kind) or 'media'}"
+        if d.get("media_problem") and state in ("gone", "skipped"):
+            note = note or _esc(str(d["media_problem"]))
+        out.append(f"<div class='media'>[{label}]{(' — ' + note) if note else ''}</div>")
+    if d.get("media_drive"):
+        out.append(f"<div class='media'><a href='{_esc(d['media_drive'])}' target='_blank' "
+                   "rel='noopener'>☁️ Asl fayl — Google Drive</a></div>")
+    return "".join(out)
+
+
+def build_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]]) -> str:
+    """Instagram yozishmasining o'z ko'rinishidagi HTML sahifasi (rasm, video, ovoz ichida ochiladi)."""
+    tz = ZoneInfo(config.TIMEZONE)
+    title = info.get("title") or str(info.get("thread_id") or "")
+    users = [u for u in (info.get("usernames") or []) if u]
+    group = bool(info.get("group"))
+    n_del = sum(1 for d in docs if d.get("deleted"))
+    n_once = sum(1 for d in docs if d.get("view_once"))
+    # Hammasi sig'masa: avval o'chirilgan va bir martalik media (boshqa joyda qolmagan), keyin yangilari
+    budget, embed = config.IG_HTML_MEDIA_MB * 1024 * 1024, {}
+    for d in sorted(docs, key=lambda x: (not (x.get("deleted") or x.get("view_once")), -(x.get("date") or 0))):
+        blob = media.get(d["msg_id"])
+        if blob and len(blob[0]) <= budget:
+            budget -= len(blob[0])
+            embed[d["msg_id"]] = blob
+    who = f"@{users[0]}" if users else ""
+    sub = [_esc(who), f"{len(docs)} ta xabar"]
+    if n_del:
+        sub.append(f"🗑 {n_del} ta qaytarib olingan")
+    if n_once:
+        sub.append(f"🔥 {n_once} ta bir martalik")
+    if len(embed) < sum(1 for d in docs if d.get("media")):
+        sub.append(f"🖼 {len(embed)} ta fayl ichida")
+    out = [
+        "<!DOCTYPE html><html lang='uz'><head><meta charset='utf-8'>",
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>",
+        f"<title>Instagram — {_esc(title)}</title><style>{_CSS}</style></head><body>",
+        f"<header><h1>📸 {_esc(title)}{' · 👥 guruh' if group else ''}</h1>",
+        f"<div class='sub'>{' · '.join(s for s in sub if s)}</div>",
+        "<div class='legend'><span>🔥 bir marta ko‘riladigan</span>"
+        "<span>🗑 qaytarib olingan</span><span>🤖 Anna javobi</span></div></header><main>",
+    ]
+    if not docs:
+        out.append("<p class='empty'>Bu chatda hali arxivlangan xabar yo‘q.</p>")
+    day = None
+    for d in docs:
+        dkey = _fmt(d.get("date"), "%d.%m.%Y", tz)
+        if dkey != day:
+            day = dkey
+            out.append(f"<div class='day'><span>{dkey}</span></div>")
+        parts = []
+        if group and not d.get("out") and d.get("sender"):
+            parts.append(f"<div class='who'>{_esc(d['sender'])}</div>")
+        if d.get("media"):
+            parts.append(_media_block(d, embed.get(d["msg_id"])))
+        if d.get("text"):
+            parts.append(f"<div>{_esc(d['text'])}</div>")
+        tags = []
+        if d.get("view_once"):
+            tags.append("<span class='tag tonce'>🔥 bir martalik</span>")
+        if d.get("ai"):
+            tags.append("<span class='tag tai'>🤖 Anna</span>")
+        if d.get("deleted"):
+            tags.append(f"<span class='tag tdel'>🗑 qaytarib olindi "
+                        f"{_fmt(d.get('deleted_at'), '%d.%m %H:%M', tz)}</span>")
+        name = "Siz" if d.get("out") else ""
+        parts.append(f"<div class='meta'>{name + ' · ' if name else ''}"
+                     f"{_fmt(d.get('date'), '%H:%M', tz)}{''.join(tags)}</div>")
+        side = "out" if d.get("out") else "in"
+        cls = "msg del" if d.get("deleted") else "msg"
+        out.append(f"<div class='row {side}'><div class='{cls}'>{''.join(parts)}</div></div>")
+    made = datetime.now(tz).strftime("%d.%m.%Y %H:%M")
+    out.append(f"</main><footer>Anna · Instagram arxivi · {made} da tayyorlandi</footer></body></html>")
+    return "".join(out)
+
+
+def _fmt(ts: float | None, pattern: str, tz) -> str:
+    return datetime.fromtimestamp(ts, tz).strftime(pattern) if ts else ""
+
+
 async def export_html(thread_id: str) -> tuple[bytes, str, int]:
-    info = await storage.ig_chat_get(thread_id) or {}
+    info = await storage.ig_chat_get(thread_id) or {"thread_id": thread_id}
     docs = await storage.ig_archive_export(thread_id, config.ARCHIVE_EXPORT_LIMIT)
+    try:
+        media = await storage.ig_media_get(thread_id, [d["msg_id"] for d in docs if d.get("media_saved")])
+    except Exception:
+        log.exception("Instagram arxividagi media o'qilmadi")
+        media = {}
+    page = build_html(info, docs, media)
     title = info.get("title") or thread_id
-    meta = {"title": f"Instagram: {title}", "username": (info.get("usernames") or [""])[0],
-            "chat_id": thread_id, "kind": "group" if info.get("group") else "private"}
-    page = archive.build_html(meta, docs, {}, False)
     name = re.sub(r"[^\w\-]+", "_", title, flags=re.UNICODE).strip("_")[:40] or "chat"
     return page.encode("utf-8"), f"instagram_{name}.html", len(docs)
 

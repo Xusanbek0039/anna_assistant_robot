@@ -38,10 +38,15 @@ class FakeClient:
         self.users: dict[int, User] = {}
         self.calls: list = []
         self.handlers: list = []
+        self.flood = 0          # >0 bo'lsa raqam tekshiruvi FloodWait bilan rad etiladi
 
     async def __call__(self, req):
         self.calls.append(req)
         if isinstance(req, ResolvePhoneRequest):
+            if self.flood:
+                err = errors.FloodWaitError(request=req)
+                err.seconds = self.flood
+                raise err
             u = self.phones.get(req.phone)
             if u is None:
                 raise errors.PhoneNotOccupiedError(request=req)
@@ -332,3 +337,64 @@ def test_list_and_remove(alerts, fake_storage):
     assert 5 not in watchers._online
     text, _ = run(watchers.list_view())
     assert "Ali" not in text
+
+
+# ---------- Telegram raqam tekshiruvini cheklaganda («14 soat tekshirilmadi» chalkashligi) ----------
+def test_flood_pause_is_saved_and_restored(alerts, fake_storage, monkeypatch):
+    """Cheklov vaqti bazaga yoziladi: dastur qayta ishga tushganda darhol so'rov yuborib,
+    cheklovni yana uzaytirmasligi kerak."""
+    monkeypatch.setattr(watchers, "_phone_pause_until", 0.0)
+    client = FakeClient()
+    run(watchers.add_phone(client, "998954466886"))
+    rows = run(fake_storage.watch_list())
+    before = rows[0].get("last_check")
+    client.flood = 3600 * 5                                  # Telegram 5 soat kutishni so'radi
+    run(watchers.check_phone(client, rows[0]))
+    assert watchers.phone_pause_left() > 3600 * 4
+    assert fake_storage.d_runtime.get("watch_phone_pause", 0) > 0
+    saved = fake_storage.d_runtime["watch_phone_pause"]
+    row = run(fake_storage.watch_list())[0]
+    assert row.get("flood_until") and row.get("last_check") == before   # tekshirilmadi — vaqt o'zgarmaydi
+
+    monkeypatch.setattr(watchers, "_phone_pause_until", 0.0)  # «qayta ishga tushish»
+    run(watchers._load_pause())
+    assert watchers._phone_pause_until == saved
+
+
+def test_flood_state_is_explained_in_list(alerts, fake_storage, monkeypatch):
+    import time as _t
+    monkeypatch.setattr(watchers, "_phone_pause_until", _t.time() + 3600 * 5)
+    client = FakeClient()
+    run(watchers.add_phone(client, "998954466886"))
+    text, buttons = run(watchers.list_view())
+    assert "Telegram raqam tekshiruvini vaqtincha cheklab qo'ydi" in text
+    assert "5.0 soat" in text and "xato emas" in text
+    assert watchers.ADD_BUTTON in buttons[-1]                # «➕ Yangi eslatma» har doim bor
+
+
+def test_list_shows_last_check_when_not_flooded(alerts, fake_storage, monkeypatch):
+    import time as _t
+    monkeypatch.setattr(watchers, "_phone_pause_until", 0.0)
+    client = FakeClient()
+    run(watchers.add_phone(client, "998954466886"))
+    rows = run(fake_storage.watch_list())
+    run(fake_storage.watch_update(rows[0]["id"], last_check=_t.time() - 300))
+    text, _ = run(watchers.list_view())
+    assert "Oxirgi tekshiruv: 5 daqiqa oldin" in text and "cheklab" not in text
+
+
+def test_successful_check_clears_flood_mark(alerts, fake_storage, monkeypatch):
+    monkeypatch.setattr(watchers, "_phone_pause_until", 0.0)
+    client = FakeClient()
+    run(watchers.add_phone(client, "998954466886"))
+    rows = run(fake_storage.watch_list())
+    run(fake_storage.watch_update(rows[0]["id"], flood_until=1.0))
+    run(watchers.check_phone(client, run(fake_storage.watch_list())[0]))   # raqam topilmadi
+    row = run(fake_storage.watch_list())[0]
+    assert row["flood_until"] == 0 and row["last_check"] > 0
+
+
+def test_empty_list_offers_add_button(alerts, fake_storage):
+    text, buttons = run(watchers.list_view())
+    assert "Hozir eslatma yo'q" in text and buttons == [[watchers.ADD_BUTTON]]
+    assert "Yangi eslatma" in watchers.ADD_HELP
