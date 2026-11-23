@@ -14,6 +14,32 @@ import voicelab
 log = logging.getLogger("health")
 
 OPENAI_EVERY = 6  # OpenAI har 6-tekshiruvda (standart: 30 daqiqada) — keraksiz so'rov qilmaslik uchun
+MEMORY_WARN_MB = 400       # serverlarda (Render bepul tarifi — 512 MB) shundan oshsa ogohlantiriladi
+MEMORY_ALERT_EVERY = 3600  # bir xil ogohlantirish shuncha soniyada bir marta
+
+
+def memory_mb() -> float:
+    """Dastur ishlatayotgan xotira (MB). Linux'da /proc dan, aniqlanmasa 0.
+    Render'da dastur xotira chegarasidan oshsa, servis logga xato yozmasdan qayta ishga tushadi —
+    shuning uchun buni o'zimiz kuzatamiz."""
+    try:
+        with open("/proc/self/status", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    try:
+        import resource
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return peak / 1024          # Linux: kilobayt
+    except Exception:
+        return 0.0
+
+
+def memory_note() -> str:
+    mb = memory_mb()
+    return f"{mb:.0f} MB" if mb else "aniqlanmadi"
 
 
 class Monitor:
@@ -22,6 +48,8 @@ class Monitor:
         self.alert = alert          # async alert(text)
         self.state: dict[str, bool] = {}
         self.round = 0
+        self.memory = 0.0           # oxirgi o'lchangan xotira (MB)
+        self._mem_alert = 0.0
 
     async def _check_mongo(self) -> str | None:
         try:
@@ -45,8 +73,24 @@ class Monitor:
     async def _check_telegram(self) -> str | None:
         return None if self.user.is_connected() else "ulanish uzilgan"
 
+    async def _check_memory(self) -> None:
+        """Xotira chegaraga yaqinlashsa ogohlantiradi: server dasturni jim o'ldirib qayta ishga tushiradi."""
+        import time
+        self.memory = memory_mb()
+        if self.memory < MEMORY_WARN_MB or time.time() - self._mem_alert < MEMORY_ALERT_EVERY:
+            return
+        self._mem_alert = time.time()
+        log.warning("Xotira sarfi yuqori: %.0f MB", self.memory)
+        await self._safe_alert(
+            f"🧠 Xotira sarfi yuqori: {self.memory:.0f} MB.
+"
+            "Server chegarasi (masalan Render bepul tarifi — 512 MB) oshsa, dastur logga xato yozmasdan "
+            "qayta ishga tushadi. Yengillashtirish: .env da IG_SYNC_LIMIT ni kamaytiring (masalan 300), "
+            "ARCHIVE_SYNC_LIMIT ni kamaytiring yoki INSTAGRAM_ENABLED=false qiling.")
+
     async def check_once(self) -> dict[str, str | None]:
         self.round += 1
+        await self._check_memory()
         results = {"MongoDB": await self._check_mongo(), "Telegram": await self._check_telegram()}
         if self.round == 1 or self.round % OPENAI_EVERY == 0:
             results["OpenAI"] = await self._check_openai()
