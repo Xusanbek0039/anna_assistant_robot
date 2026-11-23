@@ -581,19 +581,40 @@ class Progress:
             await self.render()
             await asyncio.sleep(PROGRESS_EVERY)
 
-    async def render(self) -> None:
+    def build(self) -> tuple[str, list]:
+        """(matn, entity'lar). Bo'sh bar qismi spoiler bo'lib belgilanadi."""
         spin = SPIN[self._tick % len(SPIN)]
-        self._tick += 1
-        line = f"{spin} {self.text}"
-        if self.fraction is not None:
-            line += f"\n\n{progress_bar(self.fraction)}  {min(100, round(self.fraction * 100))}%"
-        if line == self._shown:
+        head = f"{spin}  {self.text}"
+        if self.fraction is None:
+            return head, []
+        full, empty = progress_parts(self.fraction)
+        text = f"{head}\n\n{full}{empty}   {min(100, round(self.fraction * 100))}%"
+        if status := self._status_line():
+            text += f"\n{status}"
+        if not empty or self._plain:
+            return text, []
+        # Telegram entity offsetlari UTF-16 birlikda hisoblanadi (emoji — 2 birlik)
+        offset = tg_len(f"{head}\n\n{full}")
+        return text, [types.MessageEntitySpoiler(offset=offset, length=tg_len(empty))]
+
+    async def render(self) -> None:
+        text, entities = self.build()
+        if text == self._shown:
+            self._tick += 1       # matn o'zgarmasa ham keyingi kadrda spinner aylanadi
             return
+        self._tick += 1
         try:
-            await self.msg.edit(line)
-            self._shown = line
+            await self.msg.edit(text, formatting_entities=entities or None)
+            self._shown = text
         except Exception:
-            pass  # matn o'zgarmagan yoki Telegram cheklovi — ko'rsatkich muhim emas
+            if not entities:
+                return  # matn o'zgarmagan yoki Telegram cheklovi — ko'rsatkich muhim emas
+            self._plain = True    # spoiler qabul qilinmadi — bundan keyin oddiy matn
+            try:
+                await self.msg.edit(text)
+                self._shown = text
+            except Exception:
+                pass
 
     async def finish(self, text: str, event=None) -> None:
         try:
