@@ -33,6 +33,7 @@ DEFAULTS = {
     "ig_forward": config.IG_FORWARD,  # yangi Direct xabarlari botga
     "ig_proxy": True,                 # IG_PROXY ishlatilsinmi (ishlamasa botdan o'chiriladi)
     "ig_drive": config.IG_DRIVE,      # Instagram arxivi Google Drive'ga
+    "ig_media": config.IG_MEDIA_ENABLED,   # rasm/video/ovozni yuklab olib arxivda saqlash
     # 👀 Kim qiziqdi (/korganlar)
     "story_viewers": True,
     "bot_visitors": True,

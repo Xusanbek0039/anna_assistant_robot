@@ -82,6 +82,8 @@ async def _create_indexes(db) -> None:
         ("ig_archive", [("thread_id", ASCENDING), ("msg_id", ASCENDING)], {"unique": True}),
         ("ig_archive", [("thread_id", ASCENDING), ("date", ASCENDING)], {}),
         ("ig_chats", [("last", DESCENDING)], {}),
+        ("ig_archive", [("media_state", ASCENDING), ("date", DESCENDING)], {"sparse": True}),
+        ("ig_media", [("thread_id", ASCENDING), ("msg_id", ASCENDING)], {}),
     ]
     failed = []
     for name, keys, opts in indexes:
@@ -955,13 +957,60 @@ async def ig_backfill_pending(limit: int = 50) -> list[dict]:
     return rows
 
 
+IG_MEDIA_PENDING = {"pending", "retry"}
+
+
+async def ig_media_pending(limit: int = 10) -> list[dict]:
+    """Yuklab olinishi kerak bo'lgan media: Instagram havolalari tez eskiradi — eng yangisidan boshlanadi."""
+    rows = await _get_db().ig_archive.find(
+        {"media_state": {"$in": list(IG_MEDIA_PENDING)}}, {"_id": 0}).sort("date", DESCENDING) \
+        .limit(limit).to_list()
+    return rows
+
+
+async def ig_media_save(thread_id: str, msg_id: str, data: bytes, mime: str) -> None:
+    """Media faylni bazaga saqlaydi (HTML ichida ochilishi uchun)."""
+    from bson import Binary
+    await _get_db().ig_media.update_one(
+        {"_id": f"{thread_id}:{msg_id}"},
+        {"$set": {"thread_id": thread_id, "msg_id": msg_id, "data": Binary(data),
+                  "mime": mime, "size": len(data), "ts": time.time()}},
+        upsert=True)
+
+
+async def ig_media_get(thread_id: str, msg_ids: list[str]) -> dict[str, tuple[bytes, str]]:
+    """{msg_id: (fayl, mime)} — HTML yasashda ishlatiladi."""
+    rows = await _get_db().ig_media.find({"thread_id": thread_id, "msg_id": {"$in": msg_ids}}).to_list()
+    return {r["msg_id"]: (bytes(r["data"]), r.get("mime") or "application/octet-stream") for r in rows}
+
+
+async def ig_media_set(thread_id: str, msg_id: str, **fields) -> None:
+    await _get_db().ig_archive.update_one({"thread_id": thread_id, "msg_id": msg_id}, {"$set": fields})
+
+
+async def ig_media_counts() -> dict:
+    cursor = await _get_db().ig_archive.aggregate([
+        {"$match": {"media_state": {"$exists": True}}},
+        {"$group": {"_id": "$media_state", "n": {"$sum": 1}}}])
+    rows = await cursor.to_list()
+    return {r["_id"]: r["n"] for r in rows}
+
+
+async def ig_media_bytes() -> int:
+    cursor = await _get_db().ig_media.aggregate([{"$group": {"_id": None, "n": {"$sum": "$size"}}}])
+    rows = await cursor.to_list()
+    return rows[0]["n"] if rows else 0
+
+
 async def ig_stats() -> dict:
     db = _get_db()
     return {"chats": await db.ig_chats.count_documents({}),
             "messages": await db.ig_archive.count_documents({}),
             "unsent": await db.ig_archive.count_documents({"deleted": True}),
             "pending": await db.ig_chats.count_documents({"drive_dirty": True}),
-            "left": await db.ig_chats.count_documents({"backfilled": {"$exists": False}})}
+            "left": await db.ig_chats.count_documents({"backfilled": {"$exists": False}}),
+            "media": await db.ig_media.count_documents({}),
+            "media_left": await db.ig_archive.count_documents({"media_state": {"$in": list(IG_MEDIA_PENDING)}})}
 
 
 async def ig_chats(page: int, per_page: int) -> list[dict]:

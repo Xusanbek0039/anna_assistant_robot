@@ -181,6 +181,12 @@ IG_PROXY = _str("IG_PROXY")                              # ixtiyoriy: http://use
 # oxirgi xabar (0 = olmaslik). Bir martalik ish — keyin faqat yangilari qo'shiladi
 IG_SYNC_LIMIT = _int("IG_SYNC_LIMIT", 1000)
 IG_DRIVE = _bool("IG_DRIVE", True)       # Instagram arxivi Google Drive'ga HTML bo'lib yuklanadi
+# Yozishmalardagi rasm, video, ovozli xabarlar arxivga YUKLAB OLINADI (o'chirilsa ham sizda qoladi).
+# Shu hajmgacha (KB) bazaga saqlanadi va HTML ichida ochiladi; kattalari Drive'ga yuklanadi
+IG_MEDIA_ENABLED = _bool("IG_MEDIA_ENABLED", True)
+IG_MEDIA_MAX_KB = _int("IG_MEDIA_MAX_KB", 3072)        # bazadagi nusxa (MongoDB hujjati 16 MB gacha)
+IG_MEDIA_DRIVE_MAX_MB = _int("IG_MEDIA_DRIVE_MAX_MB", 100)   # Drive'ga shu hajmgacha
+IG_HTML_MEDIA_MB = _int("IG_HTML_MEDIA_MB", 40)        # bitta HTML faylga joylanadigan media hajmi
 
 # --- 👀 Kim qiziqdi (viewers.py, botda /korganlar): storis ko'ruvchilari va profildagi havola ---
 VIEWERS_ENABLED = _bool("VIEWERS_ENABLED", True)

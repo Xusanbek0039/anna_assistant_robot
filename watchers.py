@@ -243,7 +243,32 @@ _alert = None                                  # async (text, buttons) -> None  
 _online: dict[int, list[dict]] = {}            # user_id -> shu odam uchun faol online eslatmalar
 _lock = asyncio.Lock()
 _wake = asyncio.Event()
-_phone_pause_until = 0.0                       # FloodWait bo'lsa raqam tekshiruvi shu vaqtgacha to'xtaydi
+_phone_pause_until = 0.0   # FloodWait bo'lsa raqam tekshiruvi shu vaqtgacha to'xtaydi (bazada ham saqlanadi)
+
+
+async def _load_pause() -> None:
+    """Telegram cheklovi dastur qayta ishga tushganda ham esda qoladi: aks holda har safar darhol
+    so'rov yuborib, cheklov muddatini yana uzaytirardik."""
+    global _phone_pause_until
+    try:
+        saved = float((await storage.get_runtime()).get("watch_phone_pause") or 0)
+    except Exception:
+        return
+    _phone_pause_until = max(_phone_pause_until, saved)
+
+
+async def _set_pause(until: float) -> None:
+    global _phone_pause_until
+    _phone_pause_until = until
+    try:
+        await storage.set_runtime(watch_phone_pause=until)
+    except Exception as e:
+        log.warning("Cheklov vaqti saqlanmadi (%s)", type(e).__name__)
+
+
+def phone_pause_left() -> float:
+    """Raqam tekshiruvi Telegram cheklovi sabab necha soniya to'xtab turgani."""
+    return max(0.0, _phone_pause_until - time.time())
 _pending: dict[str, tuple[bool, list]] = {}    # ism bo'yicha bir nechta odam topilsa — tanlov kutilmoqda
 _seq = itertools.count(1)
 
@@ -412,18 +437,41 @@ def _ago(ts: float) -> str:
 _STATUS_NAMES = {"online": "🟢 online", "offline": "⚪️ offline", "hidden": "🙈 yashirgan"}
 
 
+ADD_BUTTON = ("➕ Yangi eslatma", "wch:add")
+ADD_HELP = ("➕ <b>Yangi eslatma</b>\n\nKimni yoki nimani kuzatay? Shu yerga yozing (ovozli ham bo'ladi):\n"
+            "• <code>+998 90 123 45 67</code> — raqam Telegram'da paydo bo'lsa\n"
+            "• <code>@username</code> — o'sha odam online bo'lsa\n"
+            "• <code>@username har safar</code> — har gal online bo'lganda\n"
+            "• <code>id 123456789</code> — ID bo'yicha\n\n"
+            "To'liq gap bilan ham bo'ladi: «95 446 68 86 raqami tg ga qo'shilsa xabar ber».\n"
+            "Bekor qilish: «bekor»")
+
+
+def _phone_state(r: dict) -> str:
+    """Raqam eslatmasi holati: oxirgi tekshiruv yoki Telegram cheklovi (foydalanuvchi sababni bilsin)."""
+    left = max(phone_pause_left(), (r.get("flood_until") or 0) - time.time())
+    if left > 60:
+        when = f"{left / 60:.0f} daqiqa" if left < 3600 else f"{left / 3600:.1f} soat"
+        return (f"\n   ⏳ Telegram raqam tekshiruvini vaqtincha cheklab qo'ydi — {when}dan keyin davom "
+                "etadi (bu Telegram cheklovi, dasturda xato emas)")
+    if r.get("last_check"):
+        return f"\n   🕒 Oxirgi tekshiruv: {_ago(r['last_check'])} (har {config.WATCH_PHONE_MINUTES} daqiqada)"
+    return "\n   🕒 Hali tekshirilmadi — tez orada tekshiriladi"
+
+
 async def list_view() -> tuple[str, list]:
     rows = await storage.watch_list()
     if not rows:
-        return ("🔔 <b>Eslatmalar</b>\n\nHozir eslatma yo'q. Qo'yish uchun botga yozing yoki ayting:\n"
+        return ("🔔 <b>Eslatmalar</b>\n\nHozir eslatma yo'q.\n\n"
+                "«➕ Yangi eslatma» tugmasini bosing yoki shunchaki yozing:\n"
                 "• «+998 90 123 45 67 raqami Telegram'ga qo'shilsa xabar ber»\n"
                 "• «@username online bo'lsa xabar ber»\n"
-                "• «Ali har safar online bo'lganda xabar ber»", [])
+                "• «Ali har safar online bo'lganda xabar ber»", [[ADD_BUTTON]])
     lines, buttons = ["🔔 <b>Eslatmalar</b>\n"], []
     for i, r in enumerate(rows, 1):
         if r["kind"] == "phone":
-            seen = f", tekshirildi: {_ago(r['last_check'])}" if r.get("last_check") else ""
-            lines.append(f"{i}. 📱 <code>{html.escape(r['label'])}</code> — Telegram'da paydo bo'lsa{seen}")
+            lines.append(f"{i}. 📱 <code>{html.escape(r['label'])}</code> — Telegram'da paydo bo'lsa"
+                         + _phone_state(r))
         else:
             who = html.escape(r.get("label") or str(r["user_id"]))
             if r.get("username"):
@@ -433,7 +481,8 @@ async def list_view() -> tuple[str, list]:
             lines.append(f"{i}. 🟢 <b>{who}</b> — online bo'lsa ({how})" + (f", hozir: {st}" if st else ""))
         buttons.append((f"🗑 {i}", f"wch:del:{r['id']}"))
     lines.append("\n🗑 — eslatmani o'chirish")
-    return "\n".join(lines), [buttons[i:i + 4] for i in range(0, len(buttons), 4)]
+    rows_out = [buttons[i:i + 4] for i in range(0, len(buttons), 4)]
+    return "\n".join(lines), rows_out + [[ADD_BUTTON]]
 
 
 async def remove(watch_id: str) -> bool:
@@ -476,13 +525,14 @@ async def on_status(user_id: int, status, user: User | None = None) -> None:
 
 
 async def check_phone(client, r: dict) -> None:
-    global _phone_pause_until
     pretty = fmt_phone(r["phone"])
     try:
         user = await resolve_phone(client, r["phone"])
     except errors.FloodWaitError as e:
-        _phone_pause_until = time.time() + e.seconds + 5
-        log.info("Raqam tekshiruvi: Telegram %d soniya kutishni so'radi", e.seconds)
+        await _set_pause(time.time() + e.seconds + 5)
+        log.info("Raqam tekshiruvi: Telegram %d soniya (%.1f soat) kutishni so'radi",
+                 e.seconds, e.seconds / 3600)
+        await storage.watch_update(r["id"], flood_until=_phone_pause_until)
         return
     except errors.PhoneNumberInvalidError:
         await storage.watch_update(r["id"], active=False, error="invalid")
@@ -493,7 +543,7 @@ async def check_phone(client, r: dict) -> None:
         await storage.watch_update(r["id"], last_check=time.time())
         return
     if user is None:
-        await storage.watch_update(r["id"], last_check=time.time())
+        await storage.watch_update(r["id"], last_check=time.time(), flood_until=0)
         return
     await storage.watch_update(r["id"], last_check=time.time(), active=False, found_user_id=user.id,
                                found_at=time.time())

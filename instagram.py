@@ -352,6 +352,79 @@ def _describe(it: dict) -> tuple[str, str]:
     return itype or "xabar", it.get("text") or ""
 
 
+def _num(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _from_media(media: dict) -> tuple[str, str, int, int, float]:
+    """Instagram «media» obyektidan eng sifatli fayl: (url, tur, eni, bo'yi, davomiyligi)."""
+    if not isinstance(media, dict):
+        return "", "", 0, 0, 0.0
+    audio = ((media.get("audio") or {}) if isinstance(media.get("audio"), dict) else {}).get("audio_src")
+    if audio:
+        return str(audio), "ovozli xabar", 0, 0, _num(
+            (media.get("audio") or {}).get("duration") or media.get("duration")) / 1000 or 0.0
+    video = _best(media.get("video_versions"))
+    image = _best((media.get("image_versions2") or {}).get("candidates"))
+    best = video or image
+    if not best:
+        return "", "", 0, 0, 0.0
+    kind = "video" if video else "rasm"
+    w = int(best.get("width") or media.get("original_width") or 0)
+    h = int(best.get("height") or media.get("original_height") or 0)
+    dur = _num(media.get("video_duration")) if video else 0.0
+    return str(best["url"]), kind, w, h, dur
+
+
+def _gif_url(it: dict) -> str:
+    """GIF (animated_media): mp4 bo'lsa o'sha, bo'lmasa webp/gif."""
+    images = (it.get("animated_media") or {}).get("images") if isinstance(it.get("animated_media"), dict) else {}
+    for key in ("fixed_height", "original", "fixed_height_downsampled"):
+        block = (images or {}).get(key)
+        if isinstance(block, dict):
+            for field in ("mp4", "url", "webp"):
+                if block.get(field):
+                    return str(block[field])
+    return ""
+
+
+def _attach_media(item: Item, it: dict) -> None:
+    """Xabardagi yuklab olinadigan faylni topadi (bir martalik, oddiy rasm/video, ovoz, GIF, ulashilgan post)."""
+    vm = it.get("visual_media")
+    if isinstance(vm, dict) and str(vm.get("view_mode") or "").lower() != "permanent":
+        item.ephemeral = True
+        item.view_mode = str(vm.get("view_mode") or "once").lower()
+        media = vm.get("media") if isinstance(vm.get("media"), dict) else {}
+        url, kind, w, h, dur = _from_media(media)
+        item.kind = kind or ("video" if media.get("media_type") == 2 else "rasm")
+        if url:   # ochilgan yoki muddati o'tgan bo'lsa Instagram manzil bermaydi
+            item.url, item.width, item.height = url, w, h
+            item.duration = dur or _num(vm.get("playback_duration_secs"))
+        return
+    if isinstance(it.get("voice_media"), dict):
+        inner = (it["voice_media"].get("media") or {}) if isinstance(it["voice_media"].get("media"), dict) else {}
+        url, _, _, _, dur = _from_media(inner)
+        if url:
+            item.url, item.kind, item.duration = url, "ovozli xabar", dur
+        return
+    if item.kind == "GIF":
+        item.url = _gif_url(it)
+        return
+    for key in ("media", "clip", "media_share", "felix_share"):
+        block = it.get(key)
+        if isinstance(block, dict):
+            inner = block.get(key) if isinstance(block.get(key), dict) else block
+            url, kind, w, h, dur = _from_media(inner)
+            if url:
+                item.url, item.width, item.height, item.duration = url, w, h, dur
+                if key == "media":
+                    item.kind = kind or item.kind
+                return
+
+
 def parse_item(it: dict, viewer_id: str = "") -> Item | None:
     item_id = str(it.get("item_id") or "")
     if not item_id:
@@ -360,26 +433,7 @@ def parse_item(it: dict, viewer_id: str = "") -> Item | None:
     out = bool(it.get("is_sent_by_viewer")) or (bool(viewer_id) and sender == str(viewer_id))
     kind, text = _describe(it)
     item = Item(item_id, sender, out, _ts(it.get("timestamp")), kind, text)
-    vm = it.get("visual_media")
-    if isinstance(vm, dict) and str(vm.get("view_mode") or "").lower() != "permanent":
-        item.ephemeral = True
-        item.view_mode = str(vm.get("view_mode") or "once").lower()
-        media = vm.get("media") if isinstance(vm.get("media"), dict) else {}
-        video = _best(media.get("video_versions"))
-        image = _best((media.get("image_versions2") or {}).get("candidates"))
-        item.kind = "video" if video or media.get("media_type") == 2 else "rasm"
-        best = video or image
-        if best:   # ochilgan yoki muddati o'tgan bo'lsa Instagram manzil bermaydi
-            if not video:
-                item.kind = "rasm"
-            item.url = best["url"]
-            item.width = int(best.get("width") or media.get("original_width") or 0)
-            item.height = int(best.get("height") or media.get("original_height") or 0)
-            if video:
-                try:
-                    item.duration = float(media.get("video_duration") or vm.get("playback_duration_secs") or 0)
-                except (TypeError, ValueError):
-                    item.duration = 0.0
+    _attach_media(item, it)
     return item
 
 
@@ -427,12 +481,17 @@ def media_caption(th: Thread, it: Item) -> str:
 
 
 def doc_of(th: Thread, it: Item, ai_text: bool = False) -> dict:
-    """Arxiv hujjati (archive.build_html bilan bir xil ko'rinishda)."""
+    """Arxiv hujjati. Media havolasi ham yoziladi: fayl keyin yuklab olinadi va arxivda qoladi
+    (suhbatdosh o'chirsa ham). Instagram havolalari tez eskiradi — shuning uchun tez yuklanadi."""
     uname, full = th.person(it.sender_id)
-    return {"thread_id": th.thread_id, "msg_id": it.item_id, "date": it.ts, "out": it.out,
-            "sender": "Siz" if it.out else (full or uname or it.sender_id), "sender_id": it.sender_id,
-            "username": "" if it.out else uname, "kind": it.kind, "text": it.text,
-            "media": None if it.kind in _TEXT_KINDS else it.kind, "view_once": it.ephemeral, "ai": ai_text}
+    doc = {"thread_id": th.thread_id, "msg_id": it.item_id, "date": it.ts, "out": it.out,
+           "sender": "Siz" if it.out else (full or uname or it.sender_id), "sender_id": it.sender_id,
+           "username": "" if it.out else uname, "kind": it.kind, "text": it.text,
+           "media": None if it.kind in _TEXT_KINDS else it.kind, "view_once": it.ephemeral, "ai": ai_text}
+    if it.url:
+        doc.update(media_url=it.url, media_state="pending", media_w=it.width, media_h=it.height,
+                   media_dur=round(it.duration, 1))
+    return doc
 
 
 # ---------- holat ----------
@@ -835,6 +894,8 @@ async def backfill_thread(thread_id: str, limit: int, title: str = "") -> int:
         seen += len(th.items)
         docs = [doc_of(th, it) for it in th.items]
         added += await storage.ig_archive_add_many(docs)
+        if any(d.get("media_url") for d in docs):
+            media_wake()
         usernames = [u for u, _ in th.users.values() if u]
         await storage.ig_chat_touch(thread_id, th.title, usernames, th.group, th.items[-1].ts, len(docs))
         if runtime.get("ig_save"):      # orada ochilmagan bir martalik media bo'lsa — saqlab qolamiz
@@ -902,6 +963,137 @@ async def backfill_loop(alert) -> None:
             log.exception("Instagram tarixi arxivlanmadi")
         # Keyin ham davom etadi: yangi chat paydo bo'lsa, uning tarixi ham olinadi
         await asyncio.sleep(BACKFILL_IDLE)
+
+
+# ---------- 🖼 media (rasm, video, ovozli xabar) arxivga yuklab olinadi ----------
+MEDIA_BATCH = 6              # bitta aylanishda nechta fayl
+MEDIA_LOOP_SECONDS = 20      # Instagram havolalari tez eskiradi — tez-tez tekshiriladi
+MEDIA_ATTEMPTS = 3
+_media_wake = asyncio.Event()
+media_state = {"saved": 0, "failed": 0, "bytes": 0, "problem": ""}
+
+
+def media_wake() -> None:
+    _media_wake.set()
+
+
+def _ext_for(kind: str, mime: str, url: str = "") -> str:
+    mime = (mime or "").split(";")[0].strip().lower()
+    known = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/heic": ".heic",
+             "image/gif": ".gif", "video/mp4": ".mp4", "video/quicktime": ".mov", "audio/mp4": ".m4a",
+             "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "audio/aac": ".aac", "audio/webm": ".webm"}
+    if mime in known:
+        return known[mime]
+    for ext in (".mp4", ".jpg", ".png", ".webp", ".gif", ".m4a", ".mp3", ".ogg"):
+        if ext in url.lower():
+            return ext
+    return {"video": ".mp4", "ovozli xabar": ".m4a", "audio": ".mp3", "GIF": ".mp4"}.get(kind, ".jpg")
+
+
+def _guess_mime(kind: str, ext: str) -> str:
+    by_ext = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif",
+              ".mp4": "video/mp4", ".mov": "video/quicktime", ".m4a": "audio/mp4", ".mp3": "audio/mpeg",
+              ".ogg": "audio/ogg", ".aac": "audio/aac", ".webm": "audio/webm", ".heic": "image/heic"}
+    if ext in by_ext:
+        return by_ext[ext]
+    return {"video": "video/mp4", "ovozli xabar": "audio/mp4", "audio": "audio/mpeg"}.get(kind, "image/jpeg")
+
+
+def media_file_name(doc: dict, ext: str) -> str:
+    kind = (doc.get("kind") or "media").replace(" ", "-")
+    when = _when(doc.get("date")).replace(".", "-").replace(":", "-").replace(" ", "_") or "0"
+    who = "men" if doc.get("out") else re.sub(r"[^\w.-]+", "", (doc.get("username") or doc.get("sender") or ""))[:20]
+    once = "_bir-martalik" if doc.get("view_once") else ""
+    return f"{when}_{kind}{once}_{who or 'nomalum'}_{str(doc.get('msg_id'))[-8:]}{ext}"
+
+
+async def _media_to_drive(doc: dict, data: bytes, name: str, mime: str) -> str:
+    """Asl faylni Drive'ga: <asosiy papka>/Instagram/<chat>/ ichiga. Havolani qaytaradi (yoki '')."""
+    import gdrive
+    if not drive_on() or len(data) > config.IG_MEDIA_DRIVE_MAX_MB * 1024 * 1024:
+        return ""
+    info = await storage.ig_chat_get(doc["thread_id"]) or {"thread_id": doc["thread_id"]}
+    folder_name = re.sub(r"[\\/:*?\"<>|]+", "-", info.get("title") or doc["thread_id"])[:80]
+    try:
+        parent = await gdrive.ensure_folder(folder_name, parent=await _drive_dir())
+        res = await gdrive.upload(name, data, mime, None, parent=parent)
+    except Exception as e:
+        log.warning("Instagram media Drive'ga yuklanmadi (%s)", type(e).__name__)
+        return ""
+    return res.get("webViewLink") or f"https://drive.google.com/file/d/{res['id']}/view"
+
+
+async def _fetch_media(doc: dict) -> bool:
+    """Bitta xabarning faylini yuklab oladi va arxivga saqlaydi. Muvaffaqiyatli bo'lsa True."""
+    tid, mid, url = doc["thread_id"], doc["msg_id"], doc.get("media_url") or ""
+    if not url:
+        await storage.ig_media_set(tid, mid, media_state="skipped", media_problem="havola yo'q")
+        return False
+    limit = max(config.IG_MEDIA_MAX_KB * 1024, config.IG_MEDIA_DRIVE_MAX_MB * 1024 * 1024)
+    try:
+        data, mime = await _download(url, limit)
+    except Exception as e:
+        tries = int(doc.get("media_tries") or 0) + 1
+        gone = tries >= MEDIA_ATTEMPTS or "403" in str(e) or "410" in str(e)
+        reason = _scrub(" ".join(str(e).split()))[:120] or type(e).__name__
+        await storage.ig_media_set(tid, mid, media_state="gone" if gone else "retry",
+                                   media_tries=tries, media_problem=reason)
+        if gone:
+            media_state["failed"] += 1
+            log.info("Instagram media olinmadi (havola eskirgan): %s", reason)
+        return False
+    ext = _ext_for(doc.get("kind") or "", mime, url)
+    mime = mime if "/" in mime else _guess_mime(doc.get("kind") or "", ext)
+    name = media_file_name(doc, ext)
+    link = await _media_to_drive(doc, data, name, mime)
+    fields = {"media_state": "done", "media_size": len(data), "media_mime": mime, "media_name": name,
+              "media_problem": "", "media_url": ""}       # havola endi kerak emas (u baribir eskiradi)
+    if link:
+        fields["media_drive"] = link
+    if len(data) <= config.IG_MEDIA_MAX_KB * 1024:
+        await storage.ig_media_save(tid, mid, data, mime)
+        fields["media_saved"] = True
+    elif not link:
+        fields.update(media_state="too_big", media_problem=f"{len(data) / 1024 / 1024:.1f} MB — bazaga sig'maydi")
+    await storage.ig_media_set(tid, mid, **fields)
+    await storage.ig_chat_set(tid, changed=time.time(), drive_dirty=True)   # HTML yangilansin
+    media_state["saved"] += 1
+    media_state["bytes"] += len(data)
+    return True
+
+
+async def media_sync_pending() -> int:
+    """Kutayotgan fayllarni yuklab oladi. Yuklanganlar soni."""
+    rows = await storage.ig_media_pending(MEDIA_BATCH)
+    done = 0
+    for doc in rows:
+        try:
+            done += await _fetch_media(doc)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Instagram media saqlanmadi")
+    return done
+
+
+async def media_loop() -> None:
+    """Fon vazifasi: yozishmalardagi rasm, video va ovozli xabarlarni arxivga yuklab oladi."""
+    await asyncio.sleep(45)
+    while True:
+        _media_wake.clear()
+        if st.client is not None and runtime.get("ig_media") and runtime.get("ig_archive"):
+            try:
+                if await media_sync_pending():
+                    continue      # yana bor — darhol davom etamiz
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                media_state["problem"] = type(e).__name__
+                log.exception("Instagram media yuklab olinmadi")
+        try:
+            await asyncio.wait_for(_media_wake.wait(), timeout=MEDIA_LOOP_SECONDS)
+        except asyncio.TimeoutError:
+            pass
 
 
 # ---------- ☁️ Google Drive: Instagram arxivi HTML bo'lib yuklanadi ----------
@@ -1035,7 +1227,8 @@ async def drive_loop(alert) -> None:
             pass
 
 
-async def _download(url: str) -> tuple[bytes, str]:
+async def _download(url: str, limit: int = 0) -> tuple[bytes, str]:
+    limit = limit or MAX_MEDIA_BYTES
     async with httpx.AsyncClient(timeout=60, follow_redirects=True, headers={"User-Agent": _UA}) as http:
         async with http.stream("GET", url) as r:
             r.raise_for_status()
@@ -1043,8 +1236,8 @@ async def _download(url: str) -> tuple[bytes, str]:
             buf = bytearray()
             async for chunk in r.aiter_bytes():
                 buf += chunk
-                if len(buf) > MAX_MEDIA_BYTES:
-                    raise ValueError(f"fayl juda katta (>{config.MAX_MEDIA_MB} MB, .env: MAX_MEDIA_MB)")
+                if len(buf) > limit:
+                    raise ValueError(f"fayl juda katta (>{limit / 1024 / 1024:.0f} MB)")
             return bytes(buf), mime
 
 
@@ -1111,6 +1304,8 @@ async def _archive_thread(th: Thread) -> None:
     added = await storage.ig_archive_add_many(docs)
     usernames = [u for u, _ in th.users.values() if u]
     await storage.ig_chat_touch(th.thread_id, th.title, usernames, th.group, th.items[-1].ts, added)
+    if added and any(d.get("media_url") for d in docs):
+        media_wake()      # Instagram havolalari tez eskiradi — fayllarni darhol yuklab olamiz
     # Qaytarib olingan xabarlar: shu oynadagi vaqt oralig'ida arxivda bor, lekin Instagram'da yo'q
     present = {it.item_id for it in th.items}
     gone = []
