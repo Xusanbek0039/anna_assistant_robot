@@ -672,13 +672,13 @@ def _fake_probe(results):
 
 
 def test_net_check_broken_proxy(monkeypatch):
-    monkeypatch.setattr(config, "IG_PROXY", "1.2.3.4:8000:user1:Secr3tPass")
+    monkeypatch.setattr(config, "IG_PROXY", "5.6.7.8:8000:user1:Secr3tPass")
     monkeypatch.setattr(instagram, "PROXY", instagram.normalize_proxy(config.IG_PROXY))
     monkeypatch.setattr(instagram, "_probe", _fake_probe({
         (True, False): (True, "35.1.1.1", 0.2), (False, False): (True, "HTTP 200", 0.3),
         (True, True): (False, "ProxyError: refused", 0.0), (False, True): (False, "ProxyError: refused", 0.0)}))
     text = run(instagram.net_check())
-    assert "35.1.1.1" in text and "Secr3tPass" not in text and "http://***@1.2.3.4:8000" in text
+    assert "35.1.1.1" in text and "Secr3tPass" not in text and "http://***@5.6.7.8:8000" in text
     assert "avtomatik to'g'rilandi" in text and "Proksi ishlamayapti" in text
 
 
@@ -699,3 +699,33 @@ def test_net_check_no_proxy(monkeypatch):
         (True, False): (True, "35.1.1.1", 0.2), (False, False): (False, "ConnectTimeout: x", 0.0)}))
     text = run(instagram.net_check())
     assert "IG_PROXY: bo'sh" in text and "residential proksi kerak" in text
+
+
+@pytest.mark.parametrize("raw,bad", [
+    ("http://login:parol@host:port", "misol matni"),           # yo'riqnomadagi misolning o'zi
+    ("http://ali:Parol123@1.2.3.4:8000", "misol matni"),
+    ("http://u:p@gate.pr.io", "noto'g'ri formatda"),           # port yo'q
+    ("ftp://u:p@gate.pr.io:21", "noto'g'ri formatda"),
+    ("http://u1:Xy7@gate.pr.io:7000", None),
+    ("socks5://u1:Xy7@9.9.9.9:1080", None),
+    ("", None),
+])
+def test_proxy_problem(monkeypatch, raw, bad):
+    monkeypatch.setattr(instagram, "PROXY", instagram.normalize_proxy(raw))
+    problem = instagram.proxy_problem()
+    assert (problem is None) if bad is None else (bad in problem)
+
+
+def test_placeholder_proxy_blocks_login_and_test(ig, monkeypatch):
+    monkeypatch.setattr(config, "IG_PROXY", "http://login:parol@host:port")
+    monkeypatch.setattr(instagram, "PROXY", "http://login:parol@host:port")
+    monkeypatch.setattr(instagram, "lib_problem", lambda: None)
+    called = []
+    monkeypatch.setattr(instagram, "_new_client", lambda settings=None: called.append(1))
+    assert "Instagram login/paroli EMAS" in run(instagram.login("husan", "x", None))
+    assert "misol matni" in run(instagram.login_session("123%3Aabcdefghijkl"))
+    assert called == []                                        # Instagram'ga umuman urinilmadi
+    monkeypatch.setattr(instagram, "_probe", lambda url, proxy: (True, "35.1.1.1", 0.1))
+    text = run(instagram.net_check())
+    assert "misol matni" in text and "Proksi IP" not in text
+    assert "misol matni" in run(instagram.panel())[0]
