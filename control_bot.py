@@ -6,7 +6,7 @@ import logging
 import re
 import time
 
-from telethon import Button, TelegramClient, events, utils
+from telethon import Button, TelegramClient, errors, events, utils
 from telethon.tl import types
 
 import ai
@@ -169,9 +169,103 @@ class Ctx:
 ctx = Ctx()
 
 
+TG_LIMIT = 4096        # Telegram bitta xabar cheklovi (UTF-16 birlikda: emoji = 2)
+CHUNK_LIMIT = 3900     # zaxira bilan (HTML teglar ham hisoblanadi)
+_TAG_RE = re.compile(r"<(/?)(\w+)[^>]*>")
+
+
+def tg_len(text: str) -> int:
+    """Telegram belgilarni UTF-16 birlikda hisoblaydi (emoji va ba'zi harflar — 2 birlik)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _tags_balanced(text: str) -> bool:
+    """Bo'lakdagi HTML teglar ochilib-yopilganmi (bo'lak chegarasida teg ikkiga bo'linmasligi uchun)."""
+    opened: list[str] = []
+    for m in _TAG_RE.finditer(text):
+        if m.group(1):
+            if not opened or opened.pop() != m.group(2):
+                return False
+        else:
+            opened.append(m.group(2))
+    return not opened
+
+
+def _hard_split(text: str, limit: int) -> list[str]:
+    """Bitta bo'lim ham sig'masa — qatorlab, kerak bo'lsa so'zlab bo'ladi."""
+    out, cur = [], ""
+    for piece in text.splitlines(keepends=True) or [text]:
+        while tg_len(piece) > limit:                       # juda uzun bitta qator
+            cut = limit // 2                               # emoji 2 birlik — xavfsiz boshlang'ich
+            while cut < len(piece) and tg_len(piece[:cut + 1]) <= limit:
+                cut += 1
+            space = piece.rfind(" ", 1, cut)
+            cut = space if space > cut // 2 else cut
+            out.append((cur + piece[:cut]).strip("\n"))
+            cur, piece = "", piece[cut:]
+        if tg_len(cur + piece) > limit:
+            out.append(cur.strip("\n"))
+            cur = ""
+        cur += piece
+    if cur.strip():
+        out.append(cur.strip("\n"))
+    return out
+
+
+def split_message(text: str, limit: int = CHUNK_LIMIT) -> list[str]:
+    """Uzun matnni Telegram limitiga mos bo'laklarga bo'ladi (MessageTooLongError bo'lmasligi uchun).
+    Avval bo'limlar (bo'sh qator), keyin qatorlar bo'yicha; HTML teglar bo'lak ichida yopiq qoladi."""
+    if tg_len(text) <= limit:
+        return [text]
+    parts: list[str] = []
+    cur = ""
+    for block in text.split("\n\n"):
+        merged = f"{cur}\n\n{block}" if cur else block
+        if tg_len(merged) <= limit:
+            cur = merged
+            continue
+        if cur:
+            parts.append(cur)
+        cur = ""
+        if tg_len(block) <= limit:
+            cur = block
+        else:
+            chunks = _hard_split(block, limit)
+            parts += chunks[:-1]
+            cur = chunks[-1] if chunks else ""
+    if cur:
+        parts.append(cur)
+    # Teg bo'lak chegarasida ochiq qolgan bo'lsa — keyingisi bilan qo'shib yuboramiz (sig'sa)
+    fixed: list[str] = []
+    for part in parts:
+        if fixed and not _tags_balanced(fixed[-1]) and tg_len(f"{fixed[-1]}\n\n{part}") <= TG_LIMIT:
+            fixed[-1] = f"{fixed[-1]}\n\n{part}"
+        else:
+            fixed.append(part)
+    return fixed
+
+
+async def send_long(send, text: str, *, buttons=None, **kwargs) -> None:
+    """Uzun matnni bo'laklab yuboradi (tugmalar — oxirgi bo'lakka). send: event.respond yoki bot.send_message
+    kabi chaqiriladigan funksiya. HTML xato bersa — oddiy matn sifatida qayta yuboriladi."""
+    parts = split_message(text)
+    for i, part in enumerate(parts):
+        extra = {"buttons": buttons} if buttons is not None and i == len(parts) - 1 else {}
+        try:
+            await send(part, **kwargs, **extra)
+        except errors.MessageTooLongError:
+            log.warning("Xabar bo'lagi baribir uzun (%d birlik) — qisqartirib yuboriladi", tg_len(part))
+            await send(part[:2000] + "\n…", **kwargs, **extra)
+        except errors.RPCError as e:
+            if "ENTITIES" not in type(e).__name__.upper() and "entit" not in str(e).lower():
+                raise
+            log.warning("HTML teglar buzilgan (%s) — oddiy matn sifatida yuboriladi", type(e).__name__)
+            await send(re.sub(r"<[^>]+>", "", part), **{**kwargs, "parse_mode": None}, **extra)
+
+
 async def send_html(text: str) -> None:
-    """Egasiga HTML xabar (kunlik hisobot uchun)."""
-    await ctx.bot.send_message(ctx.owner_id, text, parse_mode="html")
+    """Egasiga HTML xabar (kunlik hisobot uchun). Uzun bo'lsa bo'laklab yuboriladi."""
+    await send_long(lambda t, **kw: ctx.bot.send_message(ctx.owner_id, t, **kw), text, parse_mode="html")
 
 
 def _who(name: str, username: str | None, chat_id: int) -> str:
@@ -1383,7 +1477,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     async def _help(event):
         if event.raw_text.startswith("/start"):
             await set_commands(bot, owner_id)  # birinchi /start dan keyin menyu faqat egasiga o'rnatiladi
-        await event.respond(HELP, parse_mode="html", buttons=main_keyboard())
+        # HELP Telegram limitidan (4096) uzun — bo'laklab yuboriladi
+        await send_long(event.respond, HELP, parse_mode="html", buttons=main_keyboard())
 
     @bot.on(events.NewMessage(pattern=r"^/menu$", func=is_owner))
     async def _menu(event):
@@ -1419,7 +1514,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         elif choice == MENU_VIEWERS:
             await _send_viewers_panel(event)
         elif choice == MENU_HELP:
-            await event.respond(HELP, parse_mode="html", buttons=main_keyboard())
+            await send_long(event.respond, HELP, parse_mode="html", buttons=main_keyboard())
 
     @bot.on(events.NewMessage(pattern=r"^/arxiv(?:\s+([\s\S]+))?$", func=is_owner))
     async def _arxiv(event):
