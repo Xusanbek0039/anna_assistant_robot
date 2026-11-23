@@ -101,6 +101,75 @@ def test_health_alerts_only_on_change(fake_storage, monkeypatch):
     assert len(alerts) == 4 and alerts[-1].startswith("✅")
 
 
+# ---------- xotira kuzatuvi (server dasturni jim qayta ishga tushirmasligi uchun) ----------
+def test_memory_mb_reads_proc_status(monkeypatch, tmp_path):
+    status = tmp_path / "status"
+    status.write_text("Name:\tpython\nVmRSS:\t   262144 kB\nThreads:\t5\n", encoding="utf-8")
+    real_open = open
+    monkeypatch.setattr("builtins.open",
+                        lambda f, *a, **kw: real_open(status, *a, **kw) if f == "/proc/self/status"
+                        else real_open(f, *a, **kw))
+    assert health.memory_mb() == 256.0
+    assert health.memory_note() == "256 MB"
+
+
+def test_memory_mb_zero_when_unavailable(monkeypatch):
+    import builtins
+    real_open, real_import = open, builtins.__import__
+
+    def no_proc(f, *a, **kw):
+        if f == "/proc/self/status":
+            raise OSError("bu tizimda yo'q")
+        return real_open(f, *a, **kw)
+
+    def no_resource(name, *a, **kw):
+        if name == "resource":
+            raise ImportError("Windows")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", no_proc)
+    monkeypatch.setattr(builtins, "__import__", no_resource)
+    assert health.memory_mb() == 0.0
+    assert health.memory_note() == "aniqlanmadi"
+
+
+def test_memory_alert_once_per_hour(fake_storage, monkeypatch):
+    async def key_ok():
+        return None
+
+    monkeypatch.setattr(ai, "check_key", key_ok)
+    monkeypatch.setattr(health, "memory_mb", lambda: 450.0)
+    alerts = []
+
+    async def alert(text):
+        alerts.append(text)
+
+    m = health.Monitor(FakeUser(), alert)
+    run(m.check_once())
+    run(m.check_once())                                  # bir soat ichida takrorlanmaydi
+    assert len(alerts) == 1 and "450 MB" in alerts[0] and "IG_SYNC_LIMIT" in alerts[0]
+    assert m.memory == 450.0
+    m._mem_alert = 0.0                                   # bir soat o'tdi
+    run(m.check_once())
+    assert len(alerts) == 2
+
+
+def test_memory_below_limit_is_quiet(fake_storage, monkeypatch):
+    async def key_ok():
+        return None
+
+    monkeypatch.setattr(ai, "check_key", key_ok)
+    monkeypatch.setattr(health, "memory_mb", lambda: 120.0)
+    alerts = []
+
+    async def alert(text):
+        alerts.append(text)
+
+    m = health.Monitor(FakeUser(), alert)
+    run(m.check_once())
+    assert alerts == [] and m.memory == 120.0
+
+
 # ---------- runtime sozlamalar ----------
 def test_runtime_update_wakes_listeners(fake_storage, monkeypatch):
     monkeypatch.setattr(runtime, "_listeners", [])

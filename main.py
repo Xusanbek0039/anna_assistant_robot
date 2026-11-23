@@ -35,6 +35,7 @@ log = logging.getLogger("main")
 async def supervise(name: str, coro) -> None:
     """Fon vazifasi: kutilmagan xato bilan to'xtasa — logga yozadi va egasini ogohlantiradi,
     lekin qolgan qismlarni (kotiba, bot) to'xtatmaydi."""
+    log.info("▶️ %s", name)   # bot jim qolsa, logdan qaysi qismlar ishga tushganini ko'rish uchun
     try:
         await coro
         log.warning("%s vazifasi tugadi", name)
