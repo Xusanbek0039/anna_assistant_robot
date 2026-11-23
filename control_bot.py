@@ -2085,6 +2085,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         results = await ctx.monitor.check_once()
         await event.respond("\n".join(f"{'✅' if p is None else '❌'} {name}" + (f": {p}" if p else "")
                                       for name, p in results.items())
+                            + f"\n🧠 Xotira: {health.memory_note()}"
                             + f"\n\n🎤 {voicelab.describe()}"
                             + f"\n☁️ Google Drive: {await gdrive.check() or 'ishlayapti'}"
                             + f"\n📸 Instagram: {instagram.describe()}")
