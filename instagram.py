@@ -1044,13 +1044,19 @@ def link_caption(item: dict, link: Link, index: int = 0, total: int = 1) -> str:
     return "\n".join(lines)
 
 
-async def download_link(link: Link, status=None) -> str:
-    """Havoladagi mediani yuklab, egasiga yuboradi. Natija matnini qaytaradi."""
+def _mb(n: int) -> str:
+    return f"{n / 1024 / 1024:.1f} MB"
+
+
+async def download_link(link: Link, bar=None, prefix: str = "") -> str:
+    """Havoladagi mediani yuklab, egasiga yuboradi. bar — jonli ko'rsatkich (control_bot.Progress)."""
     cl = st.client
     if cl is None:
         return "❌ Instagram ulanmagan — /ig"
     if _send_media is None:
         return "❌ Yuborish sozlanmagan"
+    if bar:
+        bar.set(f"{prefix}Instagram'dan ma'lumot olinmoqda...")
     try:
         async with _api_lock:
             pk = await asyncio.to_thread(_pk_sync, cl, link)
@@ -1066,14 +1072,26 @@ async def download_link(link: Link, status=None) -> str:
                 "akkauntingiz unga obuna bo'lsa ishlaydi)")
     sent = 0
     limit = max(config.IG_MEDIA_MAX_KB * 1024, config.IG_MEDIA_DRIVE_MAX_MB * 1024 * 1024)
+    icons = {"video": "🎬", "rasm": "🖼", "ovozli xabar": "🎤"}
     for i, (url, kind, w, h, dur) in enumerate(parts):
-        if status and len(parts) > 1:
-            await status(f"⏳ Yuklanmoqda: {i + 1}/{len(parts)}")
+        step = f"{prefix}{i + 1}/{len(parts)} " if len(parts) > 1 else prefix
+        icon = icons.get(kind, "📥")
+
+        def shown(done: int, total: int, _step=step, _icon=icon, _kind=kind) -> None:
+            if bar is None:
+                return
+            size = f"{_mb(done)} / {_mb(total)}" if total else _mb(done)
+            bar.set(f"{_step}{_icon} {_kind} yuklanmoqda — {size}", (done / total) if total else None)
+
+        shown(0, 0)
         try:
-            data, mime = await _download(url, limit)
+            data, mime = await _download(url, limit, shown)
         except Exception as e:
             log.warning("Instagram media yuklab olinmadi (%s)", type(e).__name__)
             continue
+        if bar:
+            bar.set(f"{step}📤 Telegram'ga yuborilmoqda — {_mb(len(data))}", 1.0)
+            await bar.render()
         ext = _ext_for(kind, mime, url)
         video = {"duration": dur, "w": w, "h": h} if kind == "video" else None
         ok = await _send_media(data, f"instagram_{pk}_{i + 1}{ext}",
@@ -1085,14 +1103,12 @@ async def download_link(link: Link, status=None) -> str:
     return f"✅ Yuborildi ({sent} ta fayl)" if sent > 1 else "✅ Yuborildi"
 
 
-async def download_links(links: list[Link], status=None) -> str:
+async def download_links(links: list[Link], bar=None) -> str:
     """Bir nechta havola: natijalar ro'yxati."""
     out = []
     for i, link in enumerate(links, 1):
         prefix = f"{i}/{len(links)} " if len(links) > 1 else ""
-        if status:
-            await status(f"⏳ {prefix}Instagram'dan olinmoqda...")
-        out.append(prefix + await download_link(link, status))
+        out.append(prefix + await download_link(link, bar, prefix))
     return "\n".join(out)
 
 
@@ -1358,17 +1374,24 @@ async def drive_loop(alert) -> None:
             pass
 
 
-async def _download(url: str, limit: int = 0) -> tuple[bytes, str]:
+async def _download(url: str, limit: int = 0, on_progress=None) -> tuple[bytes, str]:
+    """on_progress(olingan_bayt, jami_bayt) — jonli ko'rsatkich uchun (jami noma'lum bo'lsa 0)."""
     limit = limit or MAX_MEDIA_BYTES
     async with httpx.AsyncClient(timeout=60, follow_redirects=True, headers={"User-Agent": _UA}) as http:
         async with http.stream("GET", url) as r:
             r.raise_for_status()
             mime = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
+            try:
+                total = int(r.headers.get("content-length") or 0)
+            except ValueError:
+                total = 0
             buf = bytearray()
             async for chunk in r.aiter_bytes():
                 buf += chunk
                 if len(buf) > limit:
                     raise ValueError(f"fayl juda katta (>{limit / 1024 / 1024:.0f} MB)")
+                if on_progress:
+                    on_progress(len(buf), total)
             return bytes(buf), mime
 
 

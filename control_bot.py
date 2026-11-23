@@ -462,21 +462,87 @@ async def ig_notify(thread_id: str, text: str) -> None:
         log.exception("Instagram bildirishnomasi botga yuborilmadi")
 
 
-async def _download_ig_links(event, links: list) -> None:
-    """Instagram havolalaridagi mediani yuklab egasiga yuboradi (jarayon bitta xabarda ko'rsatiladi)."""
-    status = await event.respond("⏳ Instagram'dan olinmoqda...")
+SPIN = ("⏳", "⌛")        # almashganda qum soati aylanayotgandek ko'rinadi
+BAR_LEN = 12
+PROGRESS_EVERY = 1.6      # xabar shuncha soniyada bir yangilanadi (Telegram cheklovidan past)
 
-    async def show(text: str) -> None:
+
+def progress_bar(done: float) -> str:
+    n = max(0, min(BAR_LEN, round(done * BAR_LEN)))
+    return "▰" * n + "▱" * (BAR_LEN - n)
+
+
+class Progress:
+    """Jonli «yuklanmoqda» ko'rsatkichi: xabardagi qum soati aylanadi, progress bar to'ladi va chat
+    tepasida Telegram'ning o'z «fayl yuborilmoqda...» yozuvi ko'rinadi."""
+
+    def __init__(self, msg, client=None, chat=None, action: str = "document") -> None:
+        self.msg, self.client, self.chat, self.action = msg, client, chat, action
+        self.text, self.fraction = "Yuklanmoqda...", None
+        self._tick, self._shown, self._task, self._act = 0, "", None, None
+
+    def set(self, text: str | None = None, fraction: float | None = None) -> None:
+        """Holatni o'zgartiradi (keyingi yangilanishda ko'rinadi). fraction: 0..1 yoki None."""
+        if text is not None:
+            self.text = text
+        self.fraction = fraction
+
+    async def __aenter__(self) -> "Progress":
+        if self.client is not None and self.chat is not None:
+            self._act = self.client.action(self.chat, self.action)
+            try:
+                await self._act.__aenter__()
+            except Exception:
+                self._act = None
+        self._task = asyncio.create_task(self._loop())
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._act is not None:
+            try:
+                await self._act.__aexit__(*exc)
+            except Exception:
+                pass
+
+    async def _loop(self) -> None:
+        while True:
+            await asyncio.sleep(PROGRESS_EVERY)
+            await self.render()
+
+    async def render(self) -> None:
+        spin = SPIN[self._tick % len(SPIN)]
+        self._tick += 1
+        line = f"{spin} {self.text}"
+        if self.fraction is not None:
+            line += f"\n\n{progress_bar(self.fraction)}  {min(100, round(self.fraction * 100))}%"
+        if line == self._shown:
+            return
         try:
-            await status.edit(text)
+            await self.msg.edit(line)
+            self._shown = line
         except Exception:
             pass  # matn o'zgarmagan yoki Telegram cheklovi — ko'rsatkich muhim emas
 
-    result = await instagram.download_links(links, show)
-    try:
-        await status.edit(result, parse_mode="html", link_preview=False)
-    except Exception:
-        await event.respond(result, parse_mode="html", link_preview=False)
+    async def finish(self, text: str, event=None) -> None:
+        try:
+            await self.msg.edit(text, parse_mode="html", link_preview=False)
+        except Exception:
+            if event is not None:
+                await send_long(event.respond, text, parse_mode="html", link_preview=False)
+
+
+async def _download_ig_links(event, links: list) -> None:
+    """Instagram havolalaridagi mediani yuklab egasiga yuboradi (jonli ko'rsatkich bilan)."""
+    status = await event.respond("⏳ Instagram'dan olinmoqda...")
+    async with Progress(status, ctx.bot, ctx.owner_id, "document") as bar:
+        result = await instagram.download_links(links, bar)
+        await bar.finish(result, event)
 
 
 async def _edit_or_send(event, text: str, rows: list) -> None:
