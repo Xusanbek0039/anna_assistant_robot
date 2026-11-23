@@ -23,7 +23,8 @@ import storage
 log = logging.getLogger("backup")
 
 FOLDER = "Anna zaxira"
-SKIP = {"locks"}          # vaqtinchalik qulf — tiklashda kerak emas
+# locks — vaqtinchalik qulf; instagram — Instagram sessiyasi (akkauntga to'liq kirish beradi, Drive'ga chiqmasin)
+SKIP = {"locks", "instagram"}
 JSON_OPTS = json_util.CANONICAL_JSON_OPTIONS  # ObjectId, Binary, sana turlari aynan tiklanadi
 
 

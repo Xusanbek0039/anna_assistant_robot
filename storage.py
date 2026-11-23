@@ -58,6 +58,9 @@ async def init(retry_forever: bool = True) -> bool:
             await db.promises.create_index([("done", ASCENDING), ("due", ASCENDING)])
             await db.promises.create_index([("chat_id", ASCENDING), ("key", ASCENDING)])
             await db.watches.create_index([("active", ASCENDING), ("created", ASCENDING)])
+            await db.ig_archive.create_index([("thread_id", ASCENDING), ("msg_id", ASCENDING)], unique=True)
+            await db.ig_archive.create_index([("thread_id", ASCENDING), ("date", ASCENDING)])
+            await db.ig_chats.create_index([("last", DESCENDING)])
             log.info("MongoDB'ga ulandi (baza: %s)", MONGODB_DB)
             return True
         except OperationFailure as e:
@@ -809,6 +812,132 @@ async def watch_delete(watch_id: str) -> bool:
     except InvalidId:
         return False
     return res.deleted_count > 0
+
+
+# ---------- 📸 Instagram (instagram.py) ----------
+async def ig_get_session() -> dict | None:
+    return await _get_db().instagram.find_one({"_id": "session"})
+
+
+async def ig_set_session(**fields) -> None:
+    await _get_db().instagram.update_one({"_id": "session"}, {"$set": {**fields, "ts": time.time()}}, upsert=True)
+
+
+async def ig_delete_session() -> None:
+    await _get_db().instagram.delete_one({"_id": "session"})
+
+
+async def ig_saved_has(item_id: str) -> bool:
+    """Bir martalik media allaqachon saqlanganmi (yoki «ochilgan ekan» deb aytilganmi)."""
+    return await _get_db().ig_saved.find_one({"_id": item_id}, {"_id": 1}) is not None
+
+
+async def ig_saved_add(item_id: str, doc: dict) -> bool:
+    try:
+        await _get_db().ig_saved.insert_one({"_id": item_id, **doc, "ts": time.time()})
+        return True
+    except DuplicateKeyError:
+        return False
+
+
+async def ig_saved_count() -> int:
+    return await _get_db().ig_saved.count_documents({"status": "saved"})
+
+
+async def ig_archive_add_many(docs: list[dict]) -> int:
+    """Instagram xabarlarini arxivga qo'shadi (bor bo'lganlari o'zgarmaydi). Yangi qo'shilganlar soni."""
+    from pymongo import UpdateOne
+    if not docs:
+        return 0
+    ops = [UpdateOne({"thread_id": d["thread_id"], "msg_id": d["msg_id"]}, {"$setOnInsert": d}, upsert=True)
+           for d in docs]
+    res = await _get_db().ig_archive.bulk_write(ops, ordered=False)
+    return res.upserted_count
+
+
+async def ig_archive_window(thread_id: str, since: float) -> list[dict]:
+    """Shu vaqtdan keyingi, hali o'chirilmagan xabarlar (qaytarib olinganlarni aniqlash uchun)."""
+    return await _get_db().ig_archive.find(
+        {"thread_id": thread_id, "date": {"$gte": since}, "deleted": {"$ne": True}}, {"_id": 0}).to_list()
+
+
+async def ig_archive_mark_deleted(thread_id: str, msg_ids: list[str], ts: float) -> None:
+    await _get_db().ig_archive.update_many({"thread_id": thread_id, "msg_id": {"$in": msg_ids}},
+                                           {"$set": {"deleted": True, "deleted_at": ts}})
+
+
+async def ig_ai_ids(thread_id: str) -> set[str]:
+    """Kotiba (AI) yozgan xabarlar — tarixda egasi yozganidan farqlash uchun."""
+    rows = await _get_db().ig_archive.find({"thread_id": thread_id, "ai": True}, {"msg_id": 1}) \
+        .sort("date", DESCENDING).limit(100).to_list()
+    return {r["msg_id"] for r in rows}
+
+
+async def ig_archive_export(thread_id: str, limit: int) -> list[dict]:
+    rows = await _get_db().ig_archive.find({"thread_id": thread_id}, {"_id": 0}) \
+        .sort("date", DESCENDING).limit(limit).to_list()
+    return rows[::-1]
+
+
+async def ig_chat_touch(thread_id: str, title: str, usernames: list[str], group: bool, last: float,
+                        added: int) -> None:
+    await _get_db().ig_chats.update_one(
+        {"_id": thread_id},
+        {"$set": {"title": title, "usernames": usernames, "group": group}, "$max": {"last": last},
+         "$inc": {"count": added}},
+        upsert=True)
+
+
+async def ig_chats(page: int, per_page: int) -> list[dict]:
+    """Oxirgi yozishma bo'yicha; bitta ortiqcha qaytaradi (keyingi sahifa bormi — bilish uchun)."""
+    rows = await _get_db().ig_chats.find({}).sort("last", DESCENDING).skip(page * per_page) \
+        .limit(per_page + 1).to_list()
+    for r in rows:
+        r["thread_id"] = r.pop("_id")
+    return rows
+
+
+async def ig_chat_get(thread_id: str) -> dict | None:
+    doc = await _get_db().ig_chats.find_one({"_id": thread_id})
+    if doc:
+        doc["thread_id"] = doc.pop("_id")
+    return doc
+
+
+# ---------- 👀 Kim qiziqdi (viewers.py): storis ko'ruvchilari, istisnolar ----------
+async def story_views_new(story_id: int, rows: list[dict]) -> list[dict]:
+    """Ko'ruvchilarni yozadi va faqat YANGILARINI qaytaradi (oldin ko'rilganlar qayta xabar qilinmaydi)."""
+    from pymongo import UpdateOne
+    if not rows:
+        return []
+    ops = [UpdateOne({"_id": f"{story_id}:{r['user_id']}"},
+                     {"$setOnInsert": {**r, "story_id": story_id, "ts": time.time()}}, upsert=True)
+           for r in rows]
+    res = await _get_db().story_views.bulk_write(ops, ordered=True)
+    return [rows[i] for i in sorted(res.upserted_ids)]
+
+
+async def story_views_known(story_id: int) -> int:
+    return await _get_db().story_views.count_documents({"story_id": story_id})
+
+
+async def viewer_ignored(user_id: int) -> bool:
+    return await _get_db().viewer_ignore.find_one({"_id": user_id}, {"_id": 1}) is not None
+
+
+async def viewer_ignore_add(user_id: int, label: str) -> None:
+    await _get_db().viewer_ignore.update_one({"_id": user_id}, {"$set": {"label": label, "ts": time.time()}},
+                                             upsert=True)
+
+
+async def viewer_ignore_remove(user_id: int) -> bool:
+    res = await _get_db().viewer_ignore.delete_one({"_id": user_id})
+    return res.deleted_count > 0
+
+
+async def viewer_ignore_list() -> list[dict]:
+    rows = await _get_db().viewer_ignore.find({}).sort("ts", DESCENDING).limit(100).to_list()
+    return [{"user_id": r["_id"], "label": r.get("label") or str(r["_id"])} for r in rows]
 
 
 # ---------- zaxira ----------
