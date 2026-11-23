@@ -235,7 +235,8 @@ def test_clean_sessionid():
 
 # ---------- 🔥 bir martalik media ----------
 def test_view_once_saved_once_and_not_marked_seen(ig):
-    cl = FakeCl([thread("t1", [raven("a"), raven("v", video=True), raven("mine", uid="1")])])
+    cl = FakeCl([thread("t1", [raven("a"), raven("v", ts=NEW + 1_000_000, video=True),
+                                raven("mine", uid="1", ts=NEW + 2_000_000)])])
     connect(cl)
     res = run(instagram.check_once())
     assert res["saved"] == 2
@@ -570,7 +571,7 @@ def test_ig_button_data_fits_telegram_limit():
     import control_bot
     for row in control_bot._ig_buttons(tid):
         for b in row:
-            assert len(b.data) <= 64
+            assert len(getattr(b, "data", None) or b.type.data) <= 64
 
 
 def test_send_ig_media_video_attributes(monkeypatch):
