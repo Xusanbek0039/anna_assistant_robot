@@ -177,6 +177,10 @@ IG_POLL_SECONDS = max(15, _int("IG_POLL_SECONDS", 30))   # Direct shuncha soniya
 IG_AUTOREPLY = _bool("IG_AUTOREPLY", False)              # standart holat (botdan yoqib-o'chiriladi)
 IG_FORWARD = _bool("IG_FORWARD", False)                  # yangi Direct xabarlarini botga yuborish
 IG_PROXY = _str("IG_PROXY")                              # ixtiyoriy: http://user:pass@host:port (server IP bloklansa)
+# Ulangandan keyin mavjud chatlardagi eski yozishmalar ham arxivga olinadi: har chatdan shuncha
+# oxirgi xabar (0 = olmaslik). Bir martalik ish — keyin faqat yangilari qo'shiladi
+IG_SYNC_LIMIT = _int("IG_SYNC_LIMIT", 1000)
+IG_DRIVE = _bool("IG_DRIVE", True)       # Instagram arxivi Google Drive'ga HTML bo'lib yuklanadi
 
 # --- 👀 Kim qiziqdi (viewers.py, botda /korganlar): storis ko'ruvchilari va profildagi havola ---
 VIEWERS_ENABLED = _bool("VIEWERS_ENABLED", True)
