@@ -48,7 +48,13 @@ for _name in ("instagrapi", "private_request", "public_request"):
     logging.getLogger(_name).setLevel(logging.WARNING)   # har 30 soniyadagi so'rovlar logni to'ldirmasin
 
 THREAD_LIMIT = 20            # Direct'dan nechta chat olinadi
-MESSAGE_LIMIT = 20           # har chatdan oxirgi nechta xabar
+MESSAGE_LIMIT = 20           # har chatdan oxirgi nechta xabar (muntazam tekshiruvda)
+THREAD_PAGE = 50             # tarix olinganda bitta so'rovda nechta xabar
+BACKFILL_PAGES = 60          # bitta chatdan ko'pi bilan shuncha sahifa (60 x 50 = 3000 xabar)
+BACKFILL_PAUSE = 2.5         # so'rovlar orasida (soniya) — Instagram cheklov qo'ymasligi uchun
+BACKFILL_CHATS = 20          # bir yo'la nechta chat
+BACKFILL_START_DELAY = 60    # ishga tushgandan keyin shuncha kutib boshlanadi
+BACKFILL_IDLE = 3600         # keyin har soatda yangi chat bor-yo'qligi tekshiriladi
 PENDING_EVERY = 4            # «So'rovlar» (message requests) papkasi har nechta tekshiruvda bir marta
 CODE_TIMEOUT = 5 * 60        # Instagram tasdiqlash kodini kutish (soniya)
 THROTTLE_PAUSE = 15 * 60     # Instagram «biroz kuting» desa — shuncha tekshirilmaydi
@@ -744,6 +750,230 @@ def _fetch_sync(cl, pending: bool) -> list[dict]:
         res = cl.private_request("direct_v2/pending_inbox/", params=dict(_PARAMS))
         threads += [dict(t, _pending=True) for t in ((res or {}).get("inbox") or {}).get("threads") or []]
     return threads
+
+
+def _thread_page_sync(cl, thread_id: str, cursor: str = "") -> dict:
+    """Chatning bitta sahifasi (eskiga qarab). Bu so'rov xabarlarni «o'qildi» qilmaydi va bir martalik
+    mediani ochmaydi (visual_message_return_type=unseen)."""
+    params = {"visual_message_return_type": "unseen", "direction": "older", "seq_id": "40065",
+              "limit": str(THREAD_PAGE)}
+    if cursor:
+        params["cursor"] = cursor
+    res = cl.private_request(f"direct_v2/threads/{thread_id}/", params=params)
+    return ((res or {}).get("thread") or {}) if isinstance(res, dict) else {}
+
+
+async def backfill_thread(thread_id: str, limit: int, title: str = "") -> int:
+    """Chatning eski yozishmalarini arxivga oladi (sahifalab). Yangi qo'shilgan xabarlar soni."""
+    cl = st.client
+    if cl is None:
+        raise LoginError("Instagram ulanmagan (/ig)")
+    added, cursor, seen = 0, "", 0
+    for _ in range(BACKFILL_PAGES):
+        async with _api_lock:
+            raw = await asyncio.to_thread(_thread_page_sync, cl, thread_id, cursor)
+        th = parse_thread({**raw, "thread_id": thread_id, "thread_title": raw.get("thread_title") or title},
+                          st.user_id)
+        if not th.items:
+            break
+        seen += len(th.items)
+        docs = [doc_of(th, it) for it in th.items]
+        added += await storage.ig_archive_add_many(docs)
+        usernames = [u for u, _ in th.users.values() if u]
+        await storage.ig_chat_touch(thread_id, th.title, usernames, th.group, th.items[-1].ts, len(docs))
+        if runtime.get("ig_save"):      # orada ochilmagan bir martalik media bo'lsa — saqlab qolamiz
+            try:
+                await _save_ephemeral([th])
+            except Exception:
+                log.exception("Tarixdagi bir martalik media saqlanmadi")
+        cursor = str(raw.get("oldest_cursor") or "")
+        if not cursor or seen >= limit:
+            break
+        await asyncio.sleep(BACKFILL_PAUSE)   # Instagram cheklov qo'ymasligi uchun
+    await storage.ig_chat_set(thread_id, backfilled=time.time())
+    return added
+
+
+async def backfill_all(alert=None) -> tuple[int, int]:
+    """Barcha chatlarning eski yozishmalarini arxivga oladi (bir martalik ish). (chatlar, xabarlar)."""
+    chats = msgs = 0
+    while True:
+        rows = await storage.ig_backfill_pending(BACKFILL_CHATS)
+        if not rows or st.client is None:
+            break
+        for info in rows:
+            if st.client is None:
+                break
+            try:
+                msgs += await backfill_thread(info["thread_id"], config.IG_SYNC_LIMIT, info.get("title") or "")
+                chats += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                kind = error_kind(e)
+                log.warning("Instagram chat tarixi olinmadi (%s): %s", info.get("title"), explain(e)[:120])
+                if kind in ("auth", "throttle"):
+                    await _on_error(e)
+                    return chats, msgs
+                await storage.ig_chat_set(info["thread_id"], backfilled=time.time())  # qayta urinmaymiz
+            await asyncio.sleep(BACKFILL_PAUSE)
+        if len(rows) < BACKFILL_CHATS:
+            break
+    if chats and alert:
+        await alert(f"🗂 Instagram arxivi: {chats} ta chatdan {msgs} ta xabar olindi. "
+                    "Endi ular qaytarib olinsa ham sizda qoladi — /ig → 💬 Chatlar arxivi")
+    return chats, msgs
+
+
+async def backfill_loop(alert) -> None:
+    """Fon vazifasi: Instagram ulangach eski yozishmalarni bir marta arxivga nusxalaydi."""
+    if config.IG_SYNC_LIMIT <= 0:
+        log.info("Instagram tarix nusxasi o'chirilgan (IG_SYNC_LIMIT=0)")
+        return
+    while True:
+        await asyncio.sleep(BACKFILL_START_DELAY)
+        if st.client is not None and runtime.get("ig_archive"):
+            try:
+                if await storage.ig_backfill_pending(1):
+                    log.info("Instagram: eski yozishmalar arxivga olinmoqda")
+                    await backfill_all(alert)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Instagram tarixi arxivlanmadi")
+        # Keyin ham davom etadi: yangi chat paydo bo'lsa yoki keyinroq ulansa, uning tarixi ham olinadi
+        await asyncio.sleep(BACKFILL_IDLE)
+
+
+# ---------- ☁️ Google Drive: Instagram arxivi HTML bo'lib yuklanadi ----------
+DRIVE_FOLDER = "Instagram"
+DRIVE_BATCH = 50
+_drive_lock = asyncio.Lock()
+_drive_wake = asyncio.Event()
+_drive_folder_id = ""
+drive_state = {"ok": None, "problem": "", "last": 0.0, "files": 0}
+
+
+def drive_on() -> bool:
+    import gdrive
+    return gdrive.enabled() and runtime.get("ig_drive") and runtime.get("ig_archive")
+
+
+async def _drive_dir(fresh: bool = False) -> str:
+    """<asosiy papka>/Instagram/ — har chatga bitta HTML fayl."""
+    import gdrive
+    global _drive_folder_id
+    if _drive_folder_id and not fresh:
+        return _drive_folder_id
+    _drive_folder_id = await gdrive.ensure_folder(DRIVE_FOLDER)
+    return _drive_folder_id
+
+
+def drive_file_name(info: dict) -> str:
+    title = info.get("title") or str(info.get("thread_id") or "")
+    users = [u for u in (info.get("usernames") or []) if u][:2]
+    tag = f" (@{', @'.join(users)})" if users else ""
+    name = re.sub(r"[\\/:*?\"<>|]+", "-", f"{title}{tag}").strip() or "chat"
+    return f"{name[:90]}.html"
+
+
+async def drive_sync_thread(thread_id: str, info: dict | None = None) -> str:
+    """Bitta Instagram chatini Drive'ga yuklaydi (bor fayl yangilanadi). Havolani qaytaradi."""
+    import gdrive
+    info = info or await storage.ig_chat_get(thread_id) or {"thread_id": thread_id}
+    changed = info.get("changed")
+    async with _drive_lock:
+        data, _, _ = await export_html(thread_id)
+        name = drive_file_name(info)
+        try:
+            res = await gdrive.upload(name, data, "text/html", info.get("drive_file_id"),
+                                      parent=await _drive_dir())
+        except gdrive.DriveError as e:
+            if e.status != 404:
+                raise
+            log.info("Instagram papkasi yoki fayli Drive'da topilmadi — qaytadan yaratiladi")
+            res = await gdrive.upload(name, data, "text/html", None, parent=await _drive_dir(fresh=True))
+    link = res.get("webViewLink") or f"https://drive.google.com/file/d/{res['id']}/view"
+    await storage.ig_drive_done(thread_id, changed, res["id"], link)
+    return link
+
+
+async def drive_sync_pending() -> int:
+    """O'zgargan barcha Instagram chatlarini Drive'ga yuklaydi. Yuklanganlar soni."""
+    import gdrive
+    done = 0
+    while True:
+        rows = await storage.ig_drive_pending(DRIVE_BATCH)
+        if not rows:
+            break
+        progressed = 0
+        for info in rows:
+            try:
+                await drive_sync_thread(info["thread_id"], info)
+                done += 1
+                progressed += 1
+            except gdrive.DriveError as e:
+                if e.status in (401, 403) or "invalid_grant" in e.reason or "invalid_client" in e.reason:
+                    raise   # sozlamada xato — qolganlari ham yuklanmaydi
+                log.warning("Instagram chati Drive'ga yuklanmadi: %s", gdrive.explain(e))
+            except Exception as e:
+                log.warning("Instagram chati Drive'ga yuklanmadi (%s)", type(e).__name__)
+        if progressed == 0 or len(rows) < DRIVE_BATCH:
+            break
+    return done
+
+
+def drive_wake() -> None:
+    _drive_wake.set()
+
+
+async def drive_now() -> str:
+    """Botdagi «☁️ Drive'ga hozir yuklash»."""
+    import gdrive
+    if not gdrive.enabled():
+        return "☁️ Google Drive sozlanmagan: .env da yo'q — " + ", ".join(gdrive.missing())
+    if not runtime.get("ig_drive"):
+        return "☁️ Instagram arxivi Drive'ga yuklash o'chirilgan (paneldagi «☁️ Drive» tugmasi)"
+    await storage.ig_drive_mark_all()
+    try:
+        n = await drive_sync_pending()
+    except Exception as e:
+        return f"☁️❌ {gdrive.explain(e)}"[:190]
+    drive_state.update(ok=True, problem="", last=time.time())
+    return f"☁️ {n} ta chat Drive'ga yuklandi" if n else "☁️ Yuklanadigan chat yo'q"
+
+
+async def drive_loop(alert) -> None:
+    """Fon vazifasi: har DRIVE_SYNC_MINUTES da o'zgargan Instagram chatlari Drive'ga yuklanadi."""
+    import gdrive
+    await asyncio.sleep(90)
+    alerted = ""
+    while True:
+        _drive_wake.clear()
+        if drive_on():
+            try:
+                await storage.ig_drive_mark_all(only_missing=True)
+                n = await drive_sync_pending()
+                drive_state.update(ok=True, problem="", last=time.time())
+                drive_state["files"] += n
+                if n:
+                    log.info("Instagram arxivi: %d ta chat Drive'ga yuklandi", n)
+                if alerted:
+                    alerted = ""
+                    await alert("☁️ Instagram arxivi yana Drive'ga yuklanmoqda.")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                reason = gdrive.explain(e)
+                drive_state.update(ok=False, problem=reason)
+                log.warning("Instagram arxivi Drive'ga yuklanmadi: %s", reason)
+                if reason != alerted:
+                    alerted = reason
+                    await alert(f"☁️❌ Instagram arxivi Drive'ga yuklanmadi: {reason}")
+        try:
+            await asyncio.wait_for(_drive_wake.wait(), timeout=config.DRIVE_SYNC_MINUTES * 60)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def _download(url: str) -> tuple[bytes, str]:
