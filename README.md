@@ -26,6 +26,8 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `gdrive.py`, `drive_auth.py` | Chat arxivini Google Drive papkasiga HTML qilib yuklash (har chatga bitta fayl, o'zgarganda yangilanadi). Bir martalik sozlash: `python drive_auth.py` — `.env.example` dagi Google bo'limiga qarang |
 | `profiles.py` | Profil kuzatuvi: yozishgan odamlar ism, username, bio, rasmini o'zgartirsa yoki akkauntini o'chirsa — xabar; profil rasmlari tarixi Drive'ga |
 | `watchers.py` | 🔔 Eslatmalar: «95 446 68 86 raqami tg ga qo'shilsa xabar ber», «@ali online bo'lsa xabar ber» — hodisa ro'y berganda bot xabar beradi |
+| `instagram.py` | 📸 Instagram (`/ig`): bir marta ko'riladigan rasm/videolarni ochmasdan saqlash, Direct'ga avtojavob, chat arxivi va qaytarib olingan (unsend) xabarlar, Direct xabarlari botga |
+| `viewers.py` | 👀 Kim qiziqdi (`/korganlar`): storis'ingizni kim ko'rgani va profildagi havola orqali botni kim ochgani — ism, familiya, ID, username, istisnolar bilan |
 | `promises.py` | AI chat xulosasi (/xulosa) va va'dalar kuzatuvi (/vadalar): kechqurun yangi va'dalarni topadi, ertalab muddati kelganlarini eslatadi |
 | `weekly.py` | Haftalik chat hisoboti: faol suhbatlar, kim o'chirdi/tahrirladi, kim javob kutyapti |
 | `backup.py`, `restore_backup.py` | Bazani har kuni Drive'ga zaxiralash (`Anna zaxira/<sana>/`) va undan tiklash: `python restore_backup.py <papka> --yes` |
@@ -357,6 +359,69 @@ Nazorat botiga oddiy yozing yoki **ovozli** ayting — hodisa haqiqatan ro'y ber
 | `WATCH_ONLINE_COOLDOWN_MINUTES` | `10` | «Har safar» rejimida xabarlar orasidagi eng kam vaqt |
 | `WATCH_COUNTRY_CODE` | `998` | 9 xonali raqamga qo'shiladigan kod |
 
+## 6.3. 📸 Instagram (bir martalik media, avtojavob, chat arxivi)
+
+Instagram akkauntingiz nazorat botiga ulanadi va botdan boshqariladi: **📸 Instagram** tugmasi yoki `/ig`.
+
+**Ulash** (bir marta):
+
+1. `pip install -r requirements.txt` (`instagrapi` kutubxonasi o'rnatiladi).
+2. Botga yozing: `/iglogin username parol` — xabaringiz **darhol o'chiriladi**, parol hech qayerga yozilmaydi.
+   Instagram SMS/email kod yoki ikki bosqichli himoya kodini so'rasa — bot so'raydi, kodni botga yozasiz
+   (bekor qilish: `bekor`).
+3. Bu usul ishlamasa (Instagram «shubhali kirish» desa): kompyuterda instagram.com ga kiring →
+   F12 → *Application* → *Cookies* → `sessionid` qiymatini nusxalang → botga `/igsession QIYMAT`.
+
+Faqat sessiya MongoDB'da saqlanadi — dastur qayta ishga tushganda login so'ralmaydi. Chiqish: `/iglogout`.
+
+| Paneldagi tugma | Nima qiladi |
+|---|---|
+| 🔥 Bir martalik media | Kimdir Direct'da bir marta ko'riladigan (yoki «qayta ko'rish mumkin») rasm/video yuborsa — dastur uni **ochmasdan** yuklab oladi va botga oddiy, saqlasa bo'ladigan holda yuboradi. Instagram'da media «ochilmagan» bo'lib qoladi, yuboruvchiga hech narsa bildirilmaydi |
+| 🤖 Avtojavob | Anna Direct'dagi shaxsiy yozishmalarga ham javob beradi. Telegram rejimiga (`/auto`, `/on`, `/off`) bo'ysunadi; Instagram'da o'zingiz yozsangiz — o'sha chatda 120 daqiqa jim turadi. Guruhlar va «So'rovlar» papkasiga javob bermaydi |
+| 🗂 Arxiv | Yozishmalar MongoDB'ga yoziladi. Kimdir xabarini **qaytarib olsa** (unsend) — botga matni bilan xabar keladi. «💬 Chatlar arxivi» — yozishmani HTML fayl qilib olish |
+| 📥 Xabarlar botga | Direct'ga kelgan har bir yangi xabar botga keladi |
+
+Instagram bildirishnomasiga **reply** qilib yozsangiz (yoki «✍️ Javob berish») — javob Instagram'ga sizning nomingizdan ketadi.
+
+Bilish kerak:
+
+- Bir martalik media faqat siz uni Instagram'da **ochguningizcha** olinadi — ochilgach Instagram uni hech kimga
+  bermaydi. Bildirishnoma kelsa avval botni tekshiring; dastur ishlab turgan bo'lishi kerak. Ochib qo'yilganini
+  bot «saqlab bo'lmadi» deb aytadi.
+- Uchidan-uchiga shifrlangan (end-to-end) Instagram chatlarini Instagram serveri ham o'qiy olmaydi — ular ko'rinmaydi.
+- Bu Instagram'ning **norasmiy** yo'li (rasmiy API shaxsiy Direct'ni bermaydi). Juda tez tekshirish akkauntga
+  vaqtinchalik cheklov olib kelishi mumkin — Instagram «biroz kuting» desa, dastur 15 daqiqa o'zi to'xtab turadi.
+- Arxiv Instagram ulangan paytdan boshlab yig'iladi (har chatdan oxirgi 20 xabar bilan boshlanadi).
+
+| Sozlama | Standart | Izoh |
+|---|---|---|
+| `INSTAGRAM_ENABLED` | `true` | Instagram qismini butunlay o'chirish: `false` |
+| `IG_POLL_SECONDS` | `30` | Direct shuncha soniyada bir tekshiriladi (min. 15) |
+| `IG_AUTOREPLY` | `false` | Avtojavobning boshlang'ich holati (keyin botdan) |
+| `IG_FORWARD` | `false` | «Xabarlar botga»ning boshlang'ich holati |
+| `IG_PROXY` | — | Server IP'si Instagram'da bloklansa: `http://user:pass@host:port` |
+
+## 6.4. 👀 Kim qiziqdi (storis ko'ruvchilari, profildagi havola)
+
+> ❗️ Telegram profilingizni yoki profil rasmingizni **kim ochganini hech kimga bermaydi** — na botga, na
+> userbotga, na Premium'ga. Bu ma'lumot Telegram serveridan umuman chiqmaydi; «profilingizni kim ko'rdi»
+> deydigan botlar aldaydi. Shunga eng yaqin, haqiqatan ishlaydigan ikki yo'l bor:
+
+- **📖 Storis ko'ruvchilari** — storis qo'ysangiz, uni kim ko'rganini bot yuboradi: **ism, familiya, ID,
+  username** va reaksiyasi. Har 3 daqiqada tekshiriladi, faqat yangi ko'ruvchilar haqida xabar keladi
+  (bir yo'la 5 tadan ko'p bo'lsa — bitta ro'yxat). Ko'ruvchiga hech narsa bildirilmaydi.
+- **🔗 Profildagi havola** — bio'ga `https://t.me/<bot>?start=profil` yoki `@<bot>` qo'ying (bio avtomatik
+  yangilansa — `.env` dagi `BIO_TEMPLATE` ga, masalan `{prefix} | 🕒 {time} | @AnnaBot`). Kim bosib botni
+  ochsa yoki botga yozsa — kim ekani keladi. Buni odamning o'zi bosadi, shuning uchun faqat qiziqqanlar tushadi.
+
+Har bir xabarda **«🚫 Xabar kelmasin»** tugmasi bor — o'sha odam haqida boshqa xabar kelmaydi.
+Ro'yxat va qaytarish: **👀 Kim qiziqdi** → «🚫 Istisnolar» (yoki `/korganlar`).
+
+| Sozlama | Standart | Izoh |
+|---|---|---|
+| `VIEWERS_ENABLED` | `true` | O'chirish: `false` |
+| `VIEWERS_CHECK_MINUTES` | `3` | Storislar tekshiruvi oralig'i |
+
 ## 7. Ishga tushirish va to'xtatish
 
 | Nima | Buyruq |
@@ -390,6 +455,9 @@ Har bir o'zgarishdan keyin ishga tushiring — eski funksiyalar buzilmaganini ko
 - **`.env`** — API_HASH, MongoDB paroli, bot token va OpenAI kalitini saqlaydi. U `.gitignore` da. Parollar tasodifan
   chatga yoki git'ga tushib qolsa, ularni darhol almashtiring (MongoDB Atlas → *Database Access* → *Edit password*).
 - Loglarda API_HASH, telefon raqami, token, MongoDB URI va tasdiqlash kodi yashiriladi (`***`).
+- **Instagram sessiyasi** MongoDB'dagi `instagram` kolleksiyasida — u ham akkauntga parolsiz kirish beradi. Shuning
+  uchun u Drive zaxirasiga qo'shilmaydi. Shubha bo'lsa: `/iglogout` va Instagram → *Sozlamalar → Hisoblar
+  markazi → Parol va xavfsizlik → Qayerdan kirilgan* dan sessiyani tugating.
 - Papka OneDrive'da bo'lsa, session fayl ham bulutga sinxronlanadi — loyihani sinxronlanmaydigan papkaga
   ko'chirish yoki serverga qo'yish tavsiya etiladi.
 - Kompyuter o'chsa dastur ham to'xtaydi. Doimiy ishlashi uchun VPS/serverga qo'ying.

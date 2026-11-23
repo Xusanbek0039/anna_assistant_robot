@@ -43,6 +43,8 @@ import storage
 import usage
 
 log = logging.getLogger("instagram")
+for _name in ("instagrapi", "private_request", "public_request"):
+    logging.getLogger(_name).setLevel(logging.WARNING)   # har 30 soniyadagi so'rovlar logni to'ldirmasin
 
 THREAD_LIMIT = 20            # Direct'dan nechta chat olinadi
 MESSAGE_LIMIT = 20           # har chatdan oxirgi nechta xabar
