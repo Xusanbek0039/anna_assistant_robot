@@ -463,33 +463,94 @@ async def ig_notify(thread_id: str, text: str) -> None:
         log.exception("Instagram bildirishnomasi botga yuborilmadi")
 
 
-SPIN = ("⏳", "⌛")        # almashganda qum soati aylanayotgandek ko'rinadi
+SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"        # Braille spinner: 10 kadr, silliq aylanadi
+BAR_FULL, BAR_EMPTY = "▰", "░"   # bo'sh qism Telegram spoileri ostiga olinadi — u o'zi qaynab turadi
 BAR_LEN = 12
 PROGRESS_EVERY = 1.1      # xabar shuncha soniyada bir yangilanadi (Telegram cheklovidan past)
+SPEED_SMOOTH = 0.6        # tezlik o'rtachasi (sakramasligi uchun)
+ETA_MAX = 3600            # bundan uzoq bo'lsa qolgan vaqt ko'rsatilmaydi
 
 
-def progress_bar(done: float) -> str:
+def progress_parts(done: float) -> tuple[str, str]:
+    """(to'lgan qism, bo'sh qism). Bo'sh qism spoiler ostiga olinadi."""
     n = max(0, min(BAR_LEN, round(done * BAR_LEN)))
-    return "▰" * n + "▱" * (BAR_LEN - n)
+    return BAR_FULL * n, BAR_EMPTY * (BAR_LEN - n)
+
+
+def human_size(n: float) -> str:
+    return f"{n / 1024 / 1024:.1f} MB" if n >= 1024 * 1024 else f"{max(0, n) / 1024:.0f} KB"
+
+
+def human_left(seconds: float) -> str:
+    s = int(seconds)
+    if s >= 60:
+        return f"~{s // 60} daq {s % 60} s" if s % 60 else f"~{s // 60} daq"
+    return f"~{max(1, s)} s"
 
 
 class Progress:
-    """Jonli «yuklanmoqda» ko'rsatkichi: xabardagi qum soati aylanadi, progress bar to'ladi va chat
-    tepasida Telegram'ning o'z «fayl yuborilmoqda...» yozuvi ko'rinadi."""
+    """Jonli «yuklanmoqda» ko'rsatkichi:
+
+    - Braille spinner har yangilanishda aylanadi;
+    - progress bar ning BO'SH qismi Telegram spoileri ostida — Telegram uni o'zi to'xtovsiz
+      animatsiya qiladi, shuning uchun xabar yangilanmagan paytda ham harakat ko'rinadi;
+    - tezlik va taxminiy qolgan vaqt hisoblanadi;
+    - chat tepasida Telegram'ning «fayl yuborilmoqda...» yozuvi turadi.
+    """
 
     def __init__(self, msg, client=None, chat=None, action: str = "document",
                  text: str = "Yuklanmoqda...") -> None:
         self.msg, self.client, self.chat, self.action = msg, client, chat, action
         self.text, self.fraction = text, None
+        self.done = self.total = 0
+        self.speed = 0.0
         self._tick, self._task, self._act = 0, None, None
+        self._last: tuple[float, int] | None = None   # (vaqt, baytlar) — tezlik uchun
+        self._plain = False                           # spoiler ishlamasa, oddiy matnga o'tamiz
         # Xabar allaqachon shu matn bilan yuborilgan — birinchi yangilanish behuda bo'lmasin
-        self._shown = f"{SPIN[0]} {text}"
+        self._shown = f"{SPIN[0]}  {text}"
 
-    def set(self, text: str | None = None, fraction: float | None = None) -> None:
-        """Holatni o'zgartiradi (keyingi yangilanishda ko'rinadi). fraction: 0..1 yoki None."""
+    def set(self, text: str | None = None, fraction: float | None = None,
+            done: int = 0, total: int = 0) -> None:
+        """Holatni o'zgartiradi (keyingi yangilanishda ko'rinadi).
+
+        fraction — 0..1 yoki None (hajm noma'lum); done/total — baytlar (tezlik va hajm uchun).
+        """
         if text is not None:
             self.text = text
         self.fraction = fraction
+        self.total = total
+        if done:
+            self._measure(done)
+        self.done = done
+
+    def _measure(self, done: int) -> None:
+        """Tezlikni oxirgi ikki o'lchov orasidagi farqdan hisoblaydi (eksponensial o'rtacha)."""
+        now = time.monotonic()
+        if self._last is not None:
+            elapsed, grown = now - self._last[0], done - self._last[1]
+            if elapsed >= 0.25 and grown > 0:
+                fresh = grown / elapsed
+                self.speed = fresh if not self.speed else (SPEED_SMOOTH * self.speed
+                                                           + (1 - SPEED_SMOOTH) * fresh)
+                self._last = (now, done)
+        else:
+            self._last = (now, done)
+
+    def _status_line(self) -> str:
+        """«4.2 / 12.0 MB · 2.4 MB/s · ~3 s» — faqat ma'lum bo'lgan qismlar."""
+        bits = []
+        if self.total:
+            bits.append(f"{human_size(self.done)} / {human_size(self.total)}")
+        elif self.done:
+            bits.append(human_size(self.done))
+        if self.speed:
+            bits.append(f"{human_size(self.speed)}/s")
+            if self.total and self.done < self.total:
+                left = (self.total - self.done) / self.speed
+                if left <= ETA_MAX:
+                    bits.append(human_left(left))
+        return " · ".join(bits)
 
     async def __aenter__(self) -> "Progress":
         if self.client is not None and self.chat is not None:
