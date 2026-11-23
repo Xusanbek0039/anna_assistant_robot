@@ -1471,13 +1471,54 @@ async def chats_view(page: int = 0) -> tuple[str, list]:
     if not rows and page == 0:
         return ("🗂 Instagram arxivi hozircha bo'sh. «🗂 Arxiv» yoqilgan bo'lsa, yozishmalar har tekshiruvda "
                 "yig'ilib boradi."), [[back]]
-    buttons = [[(f"{'👥 ' if r.get('group') else ''}{(r.get('title') or r['thread_id'])[:32]} · {r.get('count', 0)}",
-                 f"ig:html:{r['thread_id']}")] for r in rows]
+    buttons = [[(f"{'👥 ' if r.get('group') else ''}{(r.get('title') or r['thread_id'])[:30]} · {r.get('count', 0)}",
+                 f"ig:view:{r['thread_id']}:0")] for r in rows]
     nav = ([("◀️", f"ig:chats:{page - 1}")] if page > 0 else []) + [back] \
         + ([("▶️", f"ig:chats:{page + 1}")] if more else [])
-    text = ("🗂 <b>Instagram chatlari</b>\nChatni tanlang — yozishma HTML fayl bo'lib keladi "
-            "(qaytarib olingan xabarlar qizil bilan belgilanadi).")
+    stats = await storage.ig_stats()
+    text = (f"🗂 <b>Instagram chatlari</b> — {stats['chats']} ta chat, {stats['messages']} ta xabar"
+            + (f", 🗑 {stats['unsent']} ta qaytarib olingan" if stats["unsent"] else "") + "\n"
+            "Chatni bosing — yozishmani shu yerda o'qiysiz (HTML fayl ham olasiz).")
+    if stats["left"]:
+        text += f"\n⏳ Yana {stats['left']} ta chatning eski yozishmalari olinmoqda..."
     return text, buttons + [nav]
+
+
+MSGS_PER_PAGE = 15
+
+
+async def chat_view(thread_id: str, page: int = 0) -> tuple[str, list]:
+    """Yozishmani botda o'qish: eng yangi xabarlardan bir sahifa."""
+    info = await storage.ig_chat_get(thread_id) or {"thread_id": thread_id}
+    rows = await storage.ig_archive_page(thread_id, page * MSGS_PER_PAGE, MSGS_PER_PAGE)
+    more, rows = len(rows) > MSGS_PER_PAGE, rows[:MSGS_PER_PAGE]
+    total = info.get("count") or await storage.ig_chat_count(thread_id)
+    users = [u for u in (info.get("usernames") or []) if u][:2]
+    head = [f"💬 <b>{_esc(info.get('title') or thread_id)}</b>"
+            + (f" (@{_esc(users[0])})" if users else ""),
+            f"{total} ta xabar · {page * MSGS_PER_PAGE + 1}–{page * MSGS_PER_PAGE + len(rows)} "
+            "(yangidan eskiga)"]
+    if info.get("drive_link"):
+        head.append(f"☁️ <a href=\"{_esc(info['drive_link'])}\">Google Drive'dagi nusxasi</a>")
+    lines = []
+    for d in rows:
+        who = "🫵 <b>Siz</b>" if d.get("out") else f"<b>{_esc(d.get('sender') or '')}</b>"
+        body = d.get("text") or ""
+        if d.get("media"):
+            icon = "🔥" if d.get("view_once") else "📎"
+            body = f"{icon} [{_esc(d['media'])}]" + (f" {_esc(body[:300])}" if body else "")
+        else:
+            body = _esc(body[:600]) or "<i>(bo'sh)</i>"
+        tag = " 🗑 <i>qaytarib olingan</i>" if d.get("deleted") else ""
+        if d.get("ai"):
+            tag += " 🤖"
+        lines.append(f"<i>{_when(d.get('date'))}</i> · {who}: {body}{tag}")
+    body = "\n\n".join(lines) if lines else "<i>Bu chatda hali arxivlangan xabar yo'q.</i>"
+    nav = ([("◀️ Yangiroq", f"ig:view:{thread_id}:{page - 1}")] if page > 0 else []) \
+        + ([("▶️ Eskiroq", f"ig:view:{thread_id}:{page + 1}")] if more else [])
+    buttons = [nav] if nav else []
+    buttons.append([("📄 HTML fayl", f"ig:html:{thread_id}"), ("💬 Chatlar", "ig:chats:0")])
+    return "\n".join(head) + "\n\n" + body, buttons
 
 
 async def export_html(thread_id: str) -> tuple[bytes, str, int]:
