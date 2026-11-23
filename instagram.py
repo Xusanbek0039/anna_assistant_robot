@@ -286,6 +286,8 @@ class Item:
     width: int = 0
     height: int = 0
     duration: float = 0.0
+    share_url: str = ""       # ulashilgan post/reels/storis havolasi (bosib ko'rish uchun)
+    author: str = ""          # ulashilgan postning muallifi (@username)
 
 
 @dataclass
@@ -393,6 +395,45 @@ def _gif_url(it: dict) -> str:
     return ""
 
 
+_SHARE_KEYS = ("clip", "media_share", "story_share", "felix_share", "xma_clip", "xma_media_share",
+               "xma_story_share", "generic_xma", "xma", "reel_share")
+_LINK_BY_KIND = {"reels": "reel", "post": "p", "storis": "p"}
+
+
+def _find(block, *names: str):
+    """Ichma-ich joylashgan lug'atlardan berilgan kalitni topadi (Instagram tuzilishi har xil bo'ladi)."""
+    stack, seen = [block], 0
+    while stack and seen < 60:
+        cur = stack.pop()
+        seen += 1
+        if isinstance(cur, dict):
+            for name in names:
+                if cur.get(name):
+                    return cur[name]
+            stack.extend(v for v in cur.values() if isinstance(v, (dict, list)))
+        elif isinstance(cur, list):
+            stack.extend(v for v in cur[:5] if isinstance(v, (dict, list)))
+    return None
+
+
+def share_link(it: dict, kind: str) -> tuple[str, str]:
+    """Ulashilgan post/reels/storis uchun (havola, muallif). Topilmasa ("", "")."""
+    for key in _SHARE_KEYS:
+        block = it.get(key)
+        if not isinstance(block, (dict, list)) or not block:
+            continue
+        author = str(_find(block, "username") or "")
+        target = _find(block, "target_url", "url")
+        if isinstance(target, str) and "instagram.com/" in target:
+            return target.split("?")[0], author
+        code = _find(block, "code", "shortcode")
+        if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_-]{5,40}", code):
+            return f"https://www.instagram.com/{_LINK_BY_KIND.get(kind, 'p')}/{code}/", author
+        if author:   # havola yo'q, lekin muallif ma'lum (masalan storis)
+            return "", author
+    return "", ""
+
+
 def _attach_media(item: Item, it: dict) -> None:
     """Xabardagi yuklab olinadigan faylni topadi (bir martalik, oddiy rasm/video, ovoz, GIF, ulashilgan post)."""
     vm = it.get("visual_media")
@@ -435,6 +476,8 @@ def parse_item(it: dict, viewer_id: str = "") -> Item | None:
     out = bool(it.get("is_sent_by_viewer")) or (bool(viewer_id) and sender == str(viewer_id))
     kind, text = _describe(it)
     item = Item(item_id, sender, out, _ts(it.get("timestamp")), kind, text)
+    if kind in ("reels", "post", "storis", "storisga javob"):
+        item.share_url, item.author = share_link(it, kind)
     _attach_media(item, it)
     return item
 
@@ -461,7 +504,14 @@ def content_of(it: Item) -> str:
         return "❤️"
     if it.kind in ("", "havola"):
         return it.text
-    return f"[{it.kind}]" + (f" {it.text}" if it.text else "")
+    out = f"[{it.kind}]"
+    if it.author:
+        out += f" @{it.author}"
+    # Ulashilgan post/reels/storis — havolasi ham ko'rinadi: bosib ko'rish va yuklab olish uchun
+    for part in (it.share_url, it.text):
+        if part:
+            out += f" {part}"
+    return out
 
 
 def who_html(full: str, username: str) -> str:
@@ -493,6 +543,10 @@ def doc_of(th: Thread, it: Item, ai_text: bool = False) -> dict:
     if it.url:
         doc.update(media_url=it.url, media_state="pending", media_w=it.width, media_h=it.height,
                    media_dur=round(it.duration, 1))
+    if it.share_url:
+        doc["share_url"] = it.share_url     # ulashilgan post/reels havolasi (arxivda bosiladi)
+    if it.author:
+        doc["author"] = it.author
     return doc
 
 
@@ -1529,6 +1583,11 @@ def mute(thread_id: str, minutes: int | None = None) -> None:
     _muted_until[thread_id] = time.time() + (minutes or config.OWNER_TAKEOVER_MINUTES) * 60
 
 
+def share_of(items: list[Item]) -> str:
+    """Xabarlardagi oxirgi ulashilgan post/reels havolasi (botda «yuklab olish» tugmasi uchun)."""
+    return next((i.share_url for i in reversed(items) if i.share_url), "")
+
+
 def notify_text(th: Thread, items: list[Item], result: dict | None) -> str:
     uname, full = th.person(items[-1].sender_id)
     urgent = bool(result and (result.get("urgent") or result.get("call_owner")))
@@ -1591,7 +1650,7 @@ async def _on_incoming(th: Thread, items: list[Item]) -> bool:
     want = (result is not None or runtime.get("ig_forward")
             or (auto and status.notify and not th.group))
     if want and _notify:
-        await _notify(th.thread_id, notify_text(th, items, result))
+        await _notify(th.thread_id, notify_text(th, items, result), share_of(items))
     return bool(result and result.get("reply"))
 
 
@@ -2103,6 +2162,10 @@ def build_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]]
             parts.append(f"<div class='who'>{_esc(d['sender'])}</div>")
         if d.get("media"):
             parts.append(_media_block(d, embed.get(d["msg_id"])))
+        if d.get("share_url"):   # ulashilgan post/reels/storis — bosib ochiladi
+            who = f" @{_esc(d['author'])}" if d.get("author") else ""
+            parts.append(f"<div class='media'><a href='{_esc(d['share_url'])}' target='_blank' "
+                         f"rel='noopener'>🔗 {_esc(d.get('kind') or 'post')}{who}</a></div>")
         if d.get("text"):
             parts.append(f"<div>{_esc(d['text'])}</div>")
         tags = []

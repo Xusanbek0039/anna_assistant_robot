@@ -11,7 +11,7 @@ import runtime
 import storage
 import watchers
 from conftest import run
-from test_instagram import FakeCl, FakeIgStorage, STARTED, connect
+from test_instagram import NEW, FakeCl, FakeIgStorage, STARTED, connect
 
 
 def photo_block(url="https://cdn/ig/one.jpg"):
@@ -308,3 +308,89 @@ def test_help_and_commands_mention_link_download():
 ])
 def test_only_ref_regex(text, is_ref):
     assert bool(control_bot.ONLY_REF_RE.match(text)) is is_ref
+
+
+# ---------- ulashilgan reels/post havolasi (oldin «[reels]» deb kelib, havola ko'rinmasdi) ----------
+def clip_item(code="DCxYz12AbCd", user="ali.v", text="qara"):
+    return {"item_id": "c1", "user_id": "2", "timestamp": NEW, "item_type": "clip",
+            "clip": {"clip": {"code": code, "user": {"username": user}, "caption": {"text": text},
+                              "video_versions": [{"url": "https://cdn/ig/c.mp4",
+                                                  "width": 720, "height": 1280}]}}}
+
+
+def share_item(code="CxPost12345", user="blog.uz"):
+    return {"item_id": "s1", "user_id": "2", "timestamp": NEW, "item_type": "media_share",
+            "media_share": {"code": code, "user": {"username": user},
+                            "image_versions2": {"candidates": [{"url": "https://cdn/ig/p.jpg",
+                                                                "width": 1080, "height": 1080}]}}}
+
+
+def test_reels_share_exposes_link_and_author():
+    it = instagram.parse_item(clip_item())
+    assert it.kind == "reels"
+    assert it.share_url == "https://www.instagram.com/reel/DCxYz12AbCd/" and it.author == "ali.v"
+    assert instagram.content_of(it) == "[reels] @ali.v https://www.instagram.com/reel/DCxYz12AbCd/"
+
+
+def test_post_share_uses_p_path():
+    it = instagram.parse_item(share_item())
+    assert it.share_url == "https://www.instagram.com/p/CxPost12345/" and it.author == "blog.uz"
+
+
+def test_xma_clip_uses_target_url_as_is():
+    it = instagram.parse_item({"item_id": "x", "user_id": "2", "timestamp": NEW, "item_type": "xma_clip",
+                               "xma_clip": [{"target_url": "https://www.instagram.com/reel/AbCdEf12345/?igsh=zz"}]})
+    assert it.share_url == "https://www.instagram.com/reel/AbCdEf12345/"   # ?igsh= kesiladi
+
+
+def test_story_share_link():
+    it = instagram.parse_item({"item_id": "y", "user_id": "2", "timestamp": NEW, "item_type": "story_share",
+                               "story_share": {"media": {"code": "StoryCode1", "user": {"username": "kim.dir"}}}})
+    assert it.kind == "storis" and "StoryCode1" in it.share_url and it.author == "kim.dir"
+
+
+def test_share_without_code_keeps_author():
+    it = instagram.parse_item({"item_id": "z", "user_id": "2", "timestamp": NEW, "item_type": "media_share",
+                               "media_share": {"user": {"username": "faqat.ism"}}})
+    assert it.share_url == "" and it.author == "faqat.ism"
+    assert instagram.content_of(it) == "[post] @faqat.ism"
+
+
+def test_plain_media_has_no_share_link():
+    it = instagram.parse_item(photo_block_item())
+    assert it.share_url == "" and it.author == ""
+
+
+def photo_block_item():
+    return {"item_id": "p", "user_id": "2", "timestamp": NEW, "item_type": "media",
+            "media": {"media_type": 1, "image_versions2": {"candidates": [
+                {"url": "https://cdn/ig/one.jpg", "width": 1080, "height": 1080}]}}}
+
+
+def test_share_link_saved_to_archive_and_html():
+    th = instagram.parse_thread({"thread_id": "t1", "thread_title": "Ali", "items": [clip_item()],
+                                 "users": [{"pk": 2, "username": "ali.v", "full_name": "Ali"}]}, "1")
+    doc = instagram.doc_of(th, th.items[0])
+    assert doc["share_url"].endswith("/reel/DCxYz12AbCd/") and doc["author"] == "ali.v"
+    page = instagram.build_html({"thread_id": "t1", "title": "Ali"}, [doc], {})
+    assert "instagram.com/reel/DCxYz12AbCd/" in page and "🔗 reels @ali.v" in page
+
+
+def test_share_of_picks_last_link():
+    items = [instagram.parse_item(photo_block_item()), instagram.parse_item(clip_item()),
+             instagram.parse_item(share_item())]
+    assert instagram.share_of(items).endswith("/p/CxPost12345/")
+    assert instagram.share_of([instagram.parse_item(photo_block_item())]) == ""
+
+
+def test_notification_shows_download_button():
+    import control_bot
+    rows = control_bot._ig_buttons("t1", "https://www.instagram.com/reel/DCxYz12AbCd/")
+    labels = [b.text for row in rows for b in row]
+    assert "📥 Yuklab olish" in labels and "🔗 Ochish" in labels
+    datas = [getattr(b, "data", None) or getattr(b.type, "data", None) for row in rows for b in row]
+    assert any(d and d.startswith(b"ig:dl:") for d in datas)
+    assert all(len(d) <= 64 for d in datas if d)
+    # havolasiz xabarda qo'shimcha tugmalar yo'q
+    plain = [b.text for row in control_bot._ig_buttons("t1") for b in row]
+    assert "📥 Yuklab olish" not in plain

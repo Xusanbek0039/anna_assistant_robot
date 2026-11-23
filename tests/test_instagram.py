@@ -231,13 +231,15 @@ def ig(monkeypatch):
     async def alert(text):
         out.alerts.append(text)
 
-    async def notify(tid, text):
+    async def notify(tid, text, share=""):
         out.notes.append((tid, text))
+        out.shares.append(share)
 
     async def download(url, limit=0, on_progress=None):
         out.downloads.append(url)
         return b"DATA:" + url.encode(), "video/mp4" if url.endswith(".mp4") else "image/jpeg"
 
+    out.shares = []
     instagram.setup(alert, send_media, notify)
     monkeypatch.setattr(instagram, "_download", download)
 

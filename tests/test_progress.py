@@ -1,10 +1,10 @@
-"""⏳ Jonli «yuklanmoqda» ko'rsatkichi: Braille spinner, spoiler ostida qaynaydigan bar, tezlik."""
+"""📝 Matnli ko'rsatkich: Braille spinner, spoiler ostida qaynaydigan bar, tezlik va ETA."""
 import asyncio
 
 import pytest
 from telethon.tl.types import MessageEntitySpoiler
 
-import control_bot
+import progress
 from conftest import run
 
 
@@ -65,9 +65,9 @@ class FakeClient:
     (-0.2, 0, 12),
 ])
 def test_progress_parts(done, full, empty):
-    f, e = control_bot.progress_parts(done)
-    assert f == control_bot.BAR_FULL * full and e == control_bot.BAR_EMPTY * empty
-    assert len(f) + len(e) == control_bot.BAR_LEN
+    f, e = progress.progress_parts(done)
+    assert f == progress.BAR_FULL * full and e == progress.BAR_EMPTY * empty
+    assert len(f) + len(e) == progress.BAR_LEN
 
 
 @pytest.mark.parametrize("size,text", [
@@ -75,62 +75,62 @@ def test_progress_parts(done, full, empty):
     (1024 * 1024 * 4.25, "4.2 MB"), (0, "0 B"),
 ])
 def test_human_size(size, text):
-    assert control_bot.human_size(size) == text
+    assert progress.human_size(size) == text
 
 
 @pytest.mark.parametrize("left,text", [
     (0.2, "~1 s"), (3, "~3 s"), (59, "~59 s"), (60, "~1 daq"), (95, "~1 daq 35 s"),
 ])
 def test_human_left(left, text):
-    assert control_bot.human_left(left) == text
+    assert progress.human_left(left) == text
 
 
 # ---------- spoiler: asosiy yangilik ----------
 def test_empty_part_is_marked_as_spoiler():
     """Bar ning bo'sh qismi spoiler ostida bo'ladi — Telegram uni o'zi qaynatib turadi."""
     msg = FakeMsg()
-    bar = control_bot.Progress(msg)
+    bar = progress.Progress(msg)
     bar.set("🎬 video yuklanmoqda", 0.5, done=4 * 1024 * 1024, total=8 * 1024 * 1024)
     run(bar.render())
     text, kw = msg.edits[0]
     entities = kw["formatting_entities"]
     assert len(entities) == 1 and isinstance(entities[0], MessageEntitySpoiler)
     # Offset UTF-16 da hisoblanadi: matnda emoji (2 birlik) bor, shuning uchun bu muhim
-    assert msg.spoiler_of() == control_bot.BAR_EMPTY * 6
-    assert control_bot.BAR_FULL * 6 in text and "50%" in text
+    assert msg.spoiler_of() == progress.BAR_EMPTY * 6
+    assert progress.BAR_FULL * 6 in text and "50%" in text
 
 
 def test_spoiler_offset_correct_with_many_emoji():
     """Matnda ko'p emoji bo'lsa ham spoiler aynan bo'sh qismga tushadi (UTF-16 regressiyasi)."""
     msg = FakeMsg()
-    bar = control_bot.Progress(msg)
+    bar = progress.Progress(msg)
     bar.set("🎬🖼🎤📤 1/3 video — 🔥 bir martalik", 0.25, done=1000, total=4000)
     run(bar.render())
-    assert msg.spoiler_of() == control_bot.BAR_EMPTY * 9
+    assert msg.spoiler_of() == progress.BAR_EMPTY * 9
 
 
 def test_no_spoiler_when_bar_is_full():
     """100% da bo'sh qism yo'q — length=0 entity'ni Telegram rad etadi."""
     msg = FakeMsg()
-    bar = control_bot.Progress(msg)
+    bar = progress.Progress(msg)
     bar.set("tugadi", 1.0, done=100, total=100)
     run(bar.render())
     assert msg.edits[0][1]["formatting_entities"] is None
-    assert control_bot.BAR_EMPTY not in msg.edits[0][0]
+    assert progress.BAR_EMPTY not in msg.edits[0][0]
 
 
 def test_whole_bar_is_spoiler_at_zero():
     msg = FakeMsg()
-    bar = control_bot.Progress(msg)
+    bar = progress.Progress(msg)
     bar.set("boshlandi", 0.0)
     run(bar.render())
-    assert msg.spoiler_of() == control_bot.BAR_EMPTY * control_bot.BAR_LEN
+    assert msg.spoiler_of() == progress.BAR_EMPTY * progress.BAR_LEN
 
 
 def test_falls_back_to_plain_text_if_spoiler_rejected():
     """Telegram spoilerni qabul qilmasa — ko'rsatkich oddiy matn bo'lib davom etadi."""
     msg = FakeMsg(fail_entities=True)
-    bar = control_bot.Progress(msg)
+    bar = progress.Progress(msg)
     bar.set("video", 0.5)
     run(bar.render())
     assert len(msg.edits) == 1 and not msg.edits[0][1].get("formatting_entities")
@@ -143,32 +143,32 @@ def test_falls_back_to_plain_text_if_spoiler_rejected():
 # ---------- spinner ----------
 def test_spinner_cycles_through_all_frames():
     msg = FakeMsg()
-    bar = control_bot.Progress(msg)
+    bar = progress.Progress(msg)
     seen = []
-    for i in range(len(control_bot.SPIN) + 2):
+    for i in range(len(progress.SPIN) + 2):
         bar.set(f"qadam {i}")                        # matn o'zgaradi, demak har kadr yuboriladi
         run(bar.render())
         seen.append(msg.edits[-1][0][0])
-    assert seen[:len(control_bot.SPIN)] == list(control_bot.SPIN)
-    assert seen[len(control_bot.SPIN)] == control_bot.SPIN[0]      # aylanib qaytadi
+    assert seen[:len(progress.SPIN)] == list(progress.SPIN)
+    assert seen[len(progress.SPIN)] == progress.SPIN[0]      # aylanib qaytadi
 
 
 def test_spinner_advances_even_when_text_unchanged():
     """Matn o'zgarmasa xabar yangilanmaydi, lekin keyingi kadrda spinner boshqa bo'ladi."""
     msg = FakeMsg()
-    bar = control_bot.Progress(msg, text="kutilmoqda")
+    bar = progress.Progress(msg, text="kutilmoqda")
     run(bar.render())                                 # boshlang'ich matn — yuborilmaydi
     assert msg.edits == []
     run(bar.render())
-    assert msg.edits and msg.edits[0][0].startswith(control_bot.SPIN[1])
+    assert msg.edits and msg.edits[0][0].startswith(progress.SPIN[1])
 
 
 # ---------- tezlik va qolgan vaqt ----------
 def test_speed_and_eta_shown(monkeypatch):
     clock = [100.0]
-    monkeypatch.setattr(control_bot.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(progress.time, "monotonic", lambda: clock[0])
     msg = FakeMsg()
-    bar = control_bot.Progress(msg)
+    bar = progress.Progress(msg)
     mb = 1024 * 1024
     bar.set("video", 0.1, done=1 * mb, total=10 * mb)
     clock[0] += 1.0
@@ -181,21 +181,21 @@ def test_speed_and_eta_shown(monkeypatch):
 
 def test_no_eta_when_total_unknown(monkeypatch):
     clock = [100.0]
-    monkeypatch.setattr(control_bot.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(progress.time, "monotonic", lambda: clock[0])
     msg = FakeMsg()
-    bar = control_bot.Progress(msg)
+    bar = progress.Progress(msg)
     bar.set("fayl", None, done=1024 * 1024)
     clock[0] += 1.0
     bar.set("fayl", None, done=3 * 1024 * 1024)
     run(bar.render())
     text = msg.edits[0][0]
-    assert "%" not in text and control_bot.BAR_FULL not in text   # hajm noma'lum — bar yo'q
+    assert "%" not in text and progress.BAR_FULL not in text   # hajm noma'lum — bar yo'q
 
 
 def test_speed_is_smoothed(monkeypatch):
     clock = [0.0]
-    monkeypatch.setattr(control_bot.time, "monotonic", lambda: clock[0])
-    bar = control_bot.Progress(FakeMsg())
+    monkeypatch.setattr(progress.time, "monotonic", lambda: clock[0])
+    bar = progress.Progress(FakeMsg())
     bar.set("x", 0.1, done=1_000_000, total=10_000_000)
     clock[0] += 1.0
     bar.set("x", 0.2, done=2_000_000, total=10_000_000)
@@ -207,9 +207,9 @@ def test_speed_is_smoothed(monkeypatch):
 
 def test_huge_eta_hidden(monkeypatch):
     clock = [0.0]
-    monkeypatch.setattr(control_bot.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(progress.time, "monotonic", lambda: clock[0])
     msg = FakeMsg()
-    bar = control_bot.Progress(msg)
+    bar = progress.Progress(msg)
     bar.set("x", 0.0, done=1024, total=10 * 1024 * 1024 * 1024)
     clock[0] += 1.0
     bar.set("x", 0.0, done=2048, total=10 * 1024 * 1024 * 1024)
@@ -220,15 +220,15 @@ def test_huge_eta_hidden(monkeypatch):
 # ---------- umumiy xatti-harakat ----------
 def test_no_bar_when_size_unknown():
     msg = FakeMsg()
-    bar = control_bot.Progress(msg)
+    bar = progress.Progress(msg)
     bar.set("Ma'lumot olinmoqda...")
     run(bar.render())
     text = msg.edits[0][0]
-    assert "%" not in text and control_bot.BAR_FULL not in text and "Ma'lumot" in text
+    assert "%" not in text and progress.BAR_FULL not in text and "Ma'lumot" in text
 
 
 def test_edit_failure_is_ignored():
-    bar = control_bot.Progress(FakeMsg(fail=True))
+    bar = progress.Progress(FakeMsg(fail=True))
     bar.set("matn", 0.3)
     run(bar.render())        # xato chiqmasligi kerak
 
@@ -238,7 +238,7 @@ def test_context_manager_sets_and_clears_telegram_action():
     msg = FakeMsg()
 
     async def scenario():
-        async with control_bot.Progress(msg, client, 42, "document") as bar:
+        async with progress.Progress(msg, client, 42, "document") as bar:
             bar.set("ishlayapti", 0.1)
             await bar.render()
         return True
@@ -252,7 +252,7 @@ def test_works_without_client():
     msg = FakeMsg()
 
     async def scenario():
-        async with control_bot.Progress(msg) as bar:
+        async with progress.Progress(msg) as bar:
             bar.set("faqat xabar")
             await bar.render()
 
@@ -265,7 +265,7 @@ def test_failing_action_does_not_break_progress():
     msg = FakeMsg()
 
     async def scenario():
-        async with control_bot.Progress(msg, client, 1) as bar:
+        async with progress.Progress(msg, client, 1) as bar:
             bar.set("davom etadi")
             await bar.render()
 
@@ -275,11 +275,11 @@ def test_failing_action_does_not_break_progress():
 
 def test_background_loop_updates_without_calls(monkeypatch):
     """Hech kim render chaqirmasa ham ko'rsatkich o'zi jonlanib turadi."""
-    monkeypatch.setattr(control_bot, "PROGRESS_EVERY", 0.01)
+    monkeypatch.setattr(progress, "PROGRESS_EVERY", 0.01)
     msg = FakeMsg()
 
     async def scenario():
-        async with control_bot.Progress(msg) as bar:
+        async with progress.Progress(msg) as bar:
             bar.set("kutilmoqda")
             await asyncio.sleep(0.05)
 
@@ -290,27 +290,27 @@ def test_background_loop_updates_without_calls(monkeypatch):
 
 def test_first_update_is_immediate(monkeypatch):
     """Tez tugagan ishda ham ko'rsatkich ko'rinadi (oldin birinchi yangilanish kechikardi)."""
-    monkeypatch.setattr(control_bot, "PROGRESS_EVERY", 5)      # keyingisi yetib kelmaydi
+    monkeypatch.setattr(progress, "PROGRESS_EVERY", 5)      # keyingisi yetib kelmaydi
     msg = FakeMsg()
 
     async def scenario():
-        async with control_bot.Progress(msg, text="boshlandi") as bar:
+        async with progress.Progress(msg, text="boshlandi") as bar:
             bar.set("🎬 video yuklanmoqda", 0.25, done=2 * 1024 * 1024, total=8 * 1024 * 1024)
             await asyncio.sleep(0.02)                          # ish 20 ms da tugadi
 
     run(scenario())
     assert msg.edits, "ko'rsatkich umuman yangilanmadi"
     assert "25%" in msg.edits[0][0] and "video yuklanmoqda" in msg.edits[0][0]
-    assert msg.spoiler_of() == control_bot.BAR_EMPTY * 9
+    assert msg.spoiler_of() == progress.BAR_EMPTY * 9
 
 
 def test_initial_text_not_re_sent(monkeypatch):
     """Xabar allaqachon shu matn bilan yuborilgan — behuda tahrirlanmaydi."""
-    monkeypatch.setattr(control_bot, "PROGRESS_EVERY", 5)
+    monkeypatch.setattr(progress, "PROGRESS_EVERY", 5)
     msg = FakeMsg()
 
     async def scenario():
-        async with control_bot.Progress(msg, text="Saqlanmoqda...") as bar:
+        async with progress.Progress(msg, text="Saqlanmoqda...") as bar:
             await asyncio.sleep(0.02)
             assert bar.text == "Saqlanmoqda..."
 
@@ -320,7 +320,7 @@ def test_initial_text_not_re_sent(monkeypatch):
 
 def test_finish_replaces_message_with_result():
     msg = FakeMsg()
-    bar = control_bot.Progress(msg)
+    bar = progress.Progress(msg)
     run(bar.finish("✅ Yuborildi (3 ta fayl)"))
     text, kw = msg.edits[-1]
     assert text.startswith("✅") and kw["parse_mode"] == "html" and kw["link_preview"] is False
@@ -333,6 +333,6 @@ def test_finish_falls_back_to_new_message():
         async def respond(self, text, **kw):
             sent.append(text)
 
-    bar = control_bot.Progress(FakeMsg(fail=True))
+    bar = progress.Progress(FakeMsg(fail=True))
     run(bar.finish("✅ Natija", Ev()))
     assert sent == ["✅ Natija"]

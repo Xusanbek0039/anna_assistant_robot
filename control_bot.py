@@ -22,6 +22,7 @@ import finder
 import gdrive
 import health
 import instagram
+import progress
 import promises
 import report
 import runtime
@@ -162,6 +163,8 @@ _find_seq = itertools.count(1)
 _watch_pending: dict[str, str] = {}
 # Instagram bildirishnomasi id -> Instagram chat (thread) id — reply qilib yozilsa javob Instagram'ga ketadi
 _ig_notif_map: dict[int, str] = {}
+# «📥 Yuklab olish» tugmasi: kalit -> ulashilgan post/reels havolasi (callback data 64 bayt bilan cheklangan)
+_ig_shares: dict[str, str] = {}
 
 
 class Ctx:
@@ -180,9 +183,7 @@ CHUNK_LIMIT = 3900     # zaxira bilan (HTML teglar ham hisoblanadi)
 _TAG_RE = re.compile(r"<(/?)(\w+)[^>]*>")
 
 
-def tg_len(text: str) -> int:
-    """Telegram belgilarni UTF-16 birlikda hisoblaydi (emoji va ba'zi harflar — 2 birlik)."""
-    return len(text.encode("utf-16-le")) // 2
+tg_len = progress.tg_len   # UTF-16 birlikda uzunlik (Telegram belgilarni shunday hisoblaydi)
 
 
 def _tags_balanced(text: str) -> bool:
@@ -443,197 +444,39 @@ async def send_ig_media(data: bytes, filename: str, caption: str, video: dict | 
         return False
 
 
-def _ig_buttons(thread_id: str) -> list:
-    return [[Button.inline("✍️ Javob berish", f"ig:reply:{thread_id}".encode()),
-             Button.inline("🔇 Bu chatda AI jim", f"ig:mute:{thread_id}".encode())],
-            [Button.inline("💬 Yozishmani ko'rish", f"ig:view:{thread_id}:0".encode()),
-             Button.inline("📄 HTML", f"ig:html:{thread_id}".encode())]]
+def _ig_buttons(thread_id: str, share: str = "") -> list:
+    rows = [[Button.inline("✍️ Javob berish", f"ig:reply:{thread_id}".encode()),
+             Button.inline("🔇 Bu chatda AI jim", f"ig:mute:{thread_id}".encode())]]
+    if share:
+        # Ulashilgan post/reels: bir bosishda yuklab olish yoki Instagram'da ochish
+        key = _remember(_ig_shares, share)
+        rows.append([Button.inline("📥 Yuklab olish", f"ig:dl:{key}".encode()),
+                     Button.url("🔗 Ochish", share)])
+    rows.append([Button.inline("💬 Yozishmani ko'rish", f"ig:view:{thread_id}:0".encode()),
+                 Button.inline("📄 HTML", f"ig:html:{thread_id}".encode())])
+    return rows
 
 
-async def ig_notify(thread_id: str, text: str) -> None:
-    """Instagram xabari / qaytarib olingan xabar — egasiga. Reply qilib yozilsa javob Instagram'ga ketadi."""
+async def ig_notify(thread_id: str, text: str, share: str = "") -> None:
+    """Instagram xabari / qaytarib olingan xabar — egasiga. Reply qilib yozilsa javob Instagram'ga ketadi.
+    share — ulashilgan post/reels havolasi bo'lsa, «📥 Yuklab olish» tugmasi qo'shiladi."""
     parts = split_message(text)
     try:
         for part in parts[:-1]:
             await ctx.bot.send_message(ctx.owner_id, part, parse_mode="html", link_preview=False)
         msg = await ctx.bot.send_message(ctx.owner_id, parts[-1], parse_mode="html",
-                                         buttons=_ig_buttons(thread_id), link_preview=False)
+                                         buttons=_ig_buttons(thread_id, share), link_preview=False)
         _ig_notif_map[msg.id] = thread_id
     except Exception:
         log.exception("Instagram bildirishnomasi botga yuborilmadi")
 
 
-SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"        # Braille spinner: 10 kadr, silliq aylanadi
-BAR_FULL, BAR_EMPTY = "▰", "░"   # bo'sh qism Telegram spoileri ostiga olinadi — u o'zi qaynab turadi
-BAR_LEN = 12
-PROGRESS_EVERY = 1.1      # xabar shuncha soniyada bir yangilanadi (Telegram cheklovidan past)
-SPEED_SMOOTH = 0.6        # tezlik o'rtachasi (sakramasligi uchun)
-ETA_MAX = 3600            # bundan uzoq bo'lsa qolgan vaqt ko'rsatilmaydi
-
-
-def progress_parts(done: float) -> tuple[str, str]:
-    """(to'lgan qism, bo'sh qism). Bo'sh qism spoiler ostiga olinadi."""
-    n = max(0, min(BAR_LEN, round(done * BAR_LEN)))
-    return BAR_FULL * n, BAR_EMPTY * (BAR_LEN - n)
-
-
-def human_size(n: float) -> str:
-    n = max(0, n)
-    if n >= 1024 * 1024:
-        return f"{n / 1024 / 1024:.1f} MB"
-    return f"{n / 1024:.0f} KB" if n >= 1024 else f"{n:.0f} B"
-
-
-def human_left(seconds: float) -> str:
-    s = int(seconds)
-    if s >= 60:
-        return f"~{s // 60} daq {s % 60} s" if s % 60 else f"~{s // 60} daq"
-    return f"~{max(1, s)} s"
-
-
-class Progress:
-    """Jonli «yuklanmoqda» ko'rsatkichi:
-
-    - Braille spinner har yangilanishda aylanadi;
-    - progress bar ning BO'SH qismi Telegram spoileri ostida — Telegram uni o'zi to'xtovsiz
-      animatsiya qiladi, shuning uchun xabar yangilanmagan paytda ham harakat ko'rinadi;
-    - tezlik va taxminiy qolgan vaqt hisoblanadi;
-    - chat tepasida Telegram'ning «fayl yuborilmoqda...» yozuvi turadi.
-    """
-
-    def __init__(self, msg, client=None, chat=None, action: str = "document",
-                 text: str = "Yuklanmoqda...") -> None:
-        self.msg, self.client, self.chat, self.action = msg, client, chat, action
-        self.text, self.fraction = text, None
-        self.done = self.total = 0
-        self.speed = 0.0
-        self._tick, self._task, self._act = 0, None, None
-        self._last: tuple[float, int] | None = None   # (vaqt, baytlar) — tezlik uchun
-        self._plain = False                           # spoiler ishlamasa, oddiy matnga o'tamiz
-        # Xabar allaqachon shu matn bilan yuborilgan — birinchi yangilanish behuda bo'lmasin
-        self._shown = f"{SPIN[0]}  {text}"
-
-    def set(self, text: str | None = None, fraction: float | None = None,
-            done: int = 0, total: int = 0) -> None:
-        """Holatni o'zgartiradi (keyingi yangilanishda ko'rinadi).
-
-        fraction — 0..1 yoki None (hajm noma'lum); done/total — baytlar (tezlik va hajm uchun).
-        """
-        if text is not None:
-            self.text = text
-        self.fraction = fraction
-        self.total = total
-        if done:
-            self._measure(done)
-        self.done = done
-
-    def _measure(self, done: int) -> None:
-        """Tezlikni oxirgi ikki o'lchov orasidagi farqdan hisoblaydi (eksponensial o'rtacha)."""
-        now = time.monotonic()
-        if self._last is not None:
-            elapsed, grown = now - self._last[0], done - self._last[1]
-            if elapsed >= 0.25 and grown > 0:
-                fresh = grown / elapsed
-                self.speed = fresh if not self.speed else (SPEED_SMOOTH * self.speed
-                                                           + (1 - SPEED_SMOOTH) * fresh)
-                self._last = (now, done)
-        else:
-            self._last = (now, done)
-
-    def _status_line(self) -> str:
-        """«4.2 / 12.0 MB · 2.4 MB/s · ~3 s» — faqat ma'lum bo'lgan qismlar."""
-        bits = []
-        if self.total:
-            bits.append(f"{human_size(self.done)} / {human_size(self.total)}")
-        elif self.done:
-            bits.append(human_size(self.done))
-        if self.speed:
-            bits.append(f"{human_size(self.speed)}/s")
-            if self.total and self.done < self.total:
-                left = (self.total - self.done) / self.speed
-                if left <= ETA_MAX:
-                    bits.append(human_left(left))
-        return " · ".join(bits)
-
-    async def __aenter__(self) -> "Progress":
-        if self.client is not None and self.chat is not None:
-            self._act = self.client.action(self.chat, self.action)
-            try:
-                await self._act.__aenter__()
-            except Exception:
-                self._act = None
-        self._task = asyncio.create_task(self._loop())
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
-        if self._act is not None:
-            try:
-                await self._act.__aexit__(*exc)
-            except Exception:
-                pass
-
-    async def _loop(self) -> None:
-        # Birinchi yangilanish DARHOL: aks holda tez tugagan ishda ko'rsatkich umuman ko'rinmay qolardi
-        while True:
-            await self.render()
-            await asyncio.sleep(PROGRESS_EVERY)
-
-    def build(self) -> tuple[str, list]:
-        """(matn, entity'lar). Bo'sh bar qismi spoiler bo'lib belgilanadi."""
-        spin = SPIN[self._tick % len(SPIN)]
-        head = f"{spin}  {self.text}"
-        if self.fraction is None:
-            return head, []
-        full, empty = progress_parts(self.fraction)
-        text = f"{head}\n\n{full}{empty}   {min(100, round(self.fraction * 100))}%"
-        if status := self._status_line():
-            text += f"\n{status}"
-        if not empty or self._plain:
-            return text, []
-        # Telegram entity offsetlari UTF-16 birlikda hisoblanadi (emoji — 2 birlik)
-        offset = tg_len(f"{head}\n\n{full}")
-        return text, [types.MessageEntitySpoiler(offset=offset, length=tg_len(empty))]
-
-    async def render(self) -> None:
-        text, entities = self.build()
-        if text == self._shown:
-            self._tick += 1       # matn o'zgarmasa ham keyingi kadrda spinner aylanadi
-            return
-        self._tick += 1
-        try:
-            await self.msg.edit(text, formatting_entities=entities or None)
-            self._shown = text
-        except Exception:
-            if not entities:
-                return  # matn o'zgarmagan yoki Telegram cheklovi — ko'rsatkich muhim emas
-            self._plain = True    # spoiler qabul qilinmadi — bundan keyin oddiy matn
-            try:
-                await self.msg.edit(text)
-                self._shown = text
-            except Exception:
-                pass
-
-    async def finish(self, text: str, event=None) -> None:
-        try:
-            await self.msg.edit(text, parse_mode="html", link_preview=False)
-        except Exception:
-            if event is not None:
-                await send_long(event.respond, text, parse_mode="html", link_preview=False)
-
-
 async def _download_ig_links(event, links: list) -> None:
     """Instagram havolalaridagi mediani yuklab egasiga yuboradi (jonli ko'rsatkich bilan)."""
-    start = "Instagram'dan olinmoqda..."
-    status = await event.respond(f"{SPIN[0]}  {start}")
-    async with Progress(status, ctx.bot, ctx.owner_id, "document", start) as bar:
+    bar = await progress.open_progress(ctx.bot, ctx.owner_id, event, "Instagram'dan olinmoqda...")
+    async with bar:
         result = await instagram.download_links(links, bar)
-        await bar.finish(result, event)
+        await bar.finish(result, event, send_long)
 
 
 async def _edit_or_send(event, text: str, rows: list) -> None:
@@ -713,10 +556,9 @@ async def _send_as_owner(chat_id: int, text: str, event) -> None:
 async def _save_links(event, links: list) -> None:
     """Havolalardagi mediani egasining Saqlangan xabarlariga joylaydi (jonli ko'rsatkich bilan)."""
     many = len(links) > 1
-    start = "Saqlanmoqda..."
-    status = await event.respond(f"{SPIN[0]}  {start}")
     done: list[str] = []
-    async with Progress(status, ctx.bot, ctx.owner_id, "document", start) as bar:
+    bar = await progress.open_progress(ctx.bot, ctx.owner_id, event, "Saqlanmoqda...")
+    async with bar:
         for i, link in enumerate(links, 1):
             prefix = f"{i}/{len(links)} " if many else ""
 
@@ -727,7 +569,7 @@ async def _save_links(event, links: list) -> None:
             await show("Saqlanmoqda...")
             result = await saver.save_link(ctx.user, link, show)
             done.append(f"{prefix}{result}" + (f" — {link.url}" if many else ""))
-        await bar.finish("\n".join(done), event)
+        await bar.finish("\n".join(done), event, send_long)
 
 
 async def _resolve_user_id(arg: str) -> int | None:
@@ -1887,6 +1729,14 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
             text, rows = await instagram.chat_view(arg, page)
             await _edit_or_send(event, text, rows)
+        elif action == "dl":
+            share = _ig_shares.get(arg)
+            links = instagram.parse_media_links(share) if share else []
+            if not links:
+                await event.answer("Havola eskirgan — uni botga qaytadan tashlang", alert=True)
+                return
+            await event.answer("📥 Yuklanmoqda...")
+            await _download_ig_links(event, links)
         elif action == "drive":
             await event.answer("☁️ Yuklanmoqda...")
             await _send_ig_panel(event, extra=await instagram.drive_now(), edit=True)
