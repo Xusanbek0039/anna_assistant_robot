@@ -22,8 +22,9 @@ Login: /iglogin <username> <parol> (parolli xabar darhol o'chiriladi, parol hech
 """
 import asyncio
 import concurrent.futures
+import functools
 import html
-import importlib.util
+import importlib.metadata
 import json
 import logging
 import random
@@ -99,10 +100,25 @@ def error_kind(e: BaseException) -> str:
     return "other"
 
 
+NEEDS_UPGRADE_HELP = (
+    "Instagram «ilova versiyasi eski» dedi. Bu instagrapi kutubxonasining hozirgi ma'lum xatosi (GitHub #2971): "
+    "Instagram aslida boshqa narsani so'ragan — odatda yangi joydan (server IP'sidan) kirishni tasdiqlash, "
+    "email kod yoki parol noto'g'ri.\n"
+    "Nima qilish kerak:\n"
+    "1) Telefoningizda Instagram ilovasini oching. «Bu siz edingizmi?» chiqsa — «Ha, men edim» ni bosing va "
+    "/iglogin ni qaytadan yuboring.\n"
+    "2) Bo'lmasa /igsession usuli bilan ulang — u login bosqichini umuman chetlab o'tadi "
+    "(yo'riqnoma: /ig → 🔑 Ulash)."
+)
+
+
 def explain(e: BaseException) -> str:
     names = _names(e)
     if isinstance(e, LoginError):
         return str(e)
+    low = str(e).lower()
+    if "ClientNeedsUpgradeError" in names or "needs_upgrade" in low or "out of date" in low:
+        return NEEDS_UPGRADE_HELP
     if names & {"BadPassword", "BadCredentials"}:
         return "login yoki parol noto'g'ri"
     if "TwoFactorRequired" in names:
@@ -124,9 +140,28 @@ def explain(e: BaseException) -> str:
     return type(e).__name__ + (f": {msg}" if msg else "")
 
 
+MIN_LIB = (3, 2, 19)   # eskiroq versiyalarda login buzilgan (Instagram «ilova eski» deydi)
+
+
+@functools.lru_cache(maxsize=1)
+def lib_version() -> str | None:
+    try:
+        return importlib.metadata.version("instagrapi")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _vtuple(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+
+
 def lib_problem() -> str | None:
-    if importlib.util.find_spec("instagrapi") is None:
+    v = lib_version()
+    if v is None:
         return "instagrapi kutubxonasi o'rnatilmagan — terminalda: pip install -r requirements.txt"
+    if _vtuple(v) < MIN_LIB:
+        return (f"instagrapi eski ({v}) — bu versiyada login ishlamaydi. Yangilang: "
+                "pip install -U -r requirements.txt")
     return None
 
 
