@@ -270,3 +270,4 @@ def test_open_dm_profile_rejected_falls_back_to_url(monkeypatch):
     assert len(ev.sent) == 1
     assert ev.sent[0][1]["buttons"][0][0].type.url == "tg://user?id=123456789"
     assert ev.sent[0][1]["buttons"][1][0].type.data == b"dmsave:123456789"
+

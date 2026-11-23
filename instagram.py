@@ -806,11 +806,11 @@ def unsent_text(th: Thread, docs: list[dict]) -> str:
     if th.group:
         lines.append(f"👥 {_esc(th.title)}")
     lines.append("")
-    for d in docs[:15]:
+    for d in docs[:12]:
         body = d.get("text") or (f"[{d['media']}]" if d.get("media") else "xabar")
-        lines.append(f"• <i>{_when(d.get('date'))}</i> — {_esc(body[:400])}")
-    if len(docs) > 15:
-        lines.append(f"… yana {len(docs) - 15} ta")
+        lines.append(f"• <i>{_when(d.get('date'))}</i> — {_esc(body[:250])}")
+    if len(docs) > 12:
+        lines.append(f"… yana {len(docs) - 12} ta (hammasi «📄 Yozishma (HTML)» da)")
     return "\n".join(lines)
 
 

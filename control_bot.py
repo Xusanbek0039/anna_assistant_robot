@@ -329,8 +329,12 @@ def _inline(rows: list | None) -> list | None:
 
 async def watch_alert(text: str, buttons: list | None = None) -> None:
     """🔔 Eslatma bajarildi (watchers.py) — egasiga tugmalar bilan xabar."""
+    parts = split_message(text)
     try:
-        msg = await ctx.bot.send_message(ctx.owner_id, text, parse_mode="html", buttons=_inline(buttons))
+        for part in parts[:-1]:   # uzun ro'yxat (masalan storis ko'ruvchilari) bo'laklab yuboriladi
+            await ctx.bot.send_message(ctx.owner_id, part, parse_mode="html")
+        msg = await ctx.bot.send_message(ctx.owner_id, parts[-1], parse_mode="html",
+                                         buttons=_inline(buttons))
     except Exception:
         log.exception("Eslatma xabari botga yuborilmadi")
         return
@@ -354,7 +358,7 @@ async def _watch_request(event, req: "watchers.Request", note: str = "") -> None
 async def alert(text: str) -> None:
     """Egasiga tizim ogohlantirishi (masalan, AI kaliti ishlamayapti)."""
     try:
-        await ctx.bot.send_message(ctx.owner_id, text)
+        await send_long(lambda t, **kw: ctx.bot.send_message(ctx.owner_id, t, **kw), text)
     except Exception:
         log.warning("Ogohlantirish botga yuborilmadi")
 
@@ -441,9 +445,12 @@ def _ig_buttons(thread_id: str) -> list:
 
 async def ig_notify(thread_id: str, text: str) -> None:
     """Instagram xabari / qaytarib olingan xabar — egasiga. Reply qilib yozilsa javob Instagram'ga ketadi."""
+    parts = split_message(text)
     try:
-        msg = await ctx.bot.send_message(ctx.owner_id, text, parse_mode="html", buttons=_ig_buttons(thread_id),
-                                         link_preview=False)
+        for part in parts[:-1]:
+            await ctx.bot.send_message(ctx.owner_id, part, parse_mode="html", link_preview=False)
+        msg = await ctx.bot.send_message(ctx.owner_id, parts[-1], parse_mode="html",
+                                         buttons=_ig_buttons(thread_id), link_preview=False)
         _ig_notif_map[msg.id] = thread_id
     except Exception:
         log.exception("Instagram bildirishnomasi botga yuborilmadi")
@@ -457,9 +464,11 @@ async def _send_ig_panel(event, extra: str = "", edit: bool = False) -> None:
         try:
             await event.edit(text, parse_mode="html", buttons=_inline(rows), link_preview=False)
             return
+        except errors.MessageTooLongError:
+            pass  # panel uzun — pastda yangi xabar(lar) bo'lib yuboriladi
         except Exception:
             pass  # o'zgarmagan bo'lsa Telegram xato qaytaradi
-    await event.respond(text, parse_mode="html", buttons=_inline(rows), link_preview=False)
+    await send_long(event.respond, text, parse_mode="html", buttons=_inline(rows), link_preview=False)
 
 
 async def _send_viewers_panel(event, edit: bool = False) -> None:
@@ -468,9 +477,11 @@ async def _send_viewers_panel(event, edit: bool = False) -> None:
         try:
             await event.edit(text, parse_mode="html", buttons=_inline(rows), link_preview=False)
             return
+        except errors.MessageTooLongError:
+            pass
         except Exception:
             pass
-    await event.respond(text, parse_mode="html", buttons=_inline(rows), link_preview=False)
+    await send_long(event.respond, text, parse_mode="html", buttons=_inline(rows), link_preview=False)
 
 
 async def _send_as_owner(chat_id: int, text: str, event) -> None:
