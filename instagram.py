@@ -967,6 +967,135 @@ async def backfill_loop(alert) -> None:
         await asyncio.sleep(BACKFILL_IDLE)
 
 
+# ---------- 🔗 havola orqali yuklash: post, reels, storis, rasm, video ----------
+# instagram.com/p/<kod>/ · /reel/<kod>/ · /reels/<kod>/ · /tv/<kod>/ · share/<kod> (yangi qisqa havola)
+LINK_RE = re.compile(r"(?:https?://)?(?:www\.)?instagram\.com/(?:[^/\s?]+/)?(p|reel|reels|tv|share)/"
+                     r"([A-Za-z0-9_-]{5,40})", re.IGNORECASE)
+# instagram.com/stories/<username>/<id>/
+STORY_RE = re.compile(r"(?:https?://)?(?:www\.)?instagram\.com/stories/([A-Za-z0-9._]+)/(\d{5,25})",
+                      re.IGNORECASE)
+MAX_LINKS = 5                # bitta xabarda ko'pi bilan shuncha havola
+ALBUM_MAX = 10               # albomdan ko'pi bilan shuncha fayl
+
+
+@dataclass
+class Link:
+    url: str
+    kind: str                # "media" (post/reels/tv) yoki "story"
+    code: str = ""           # post kodi
+    pk: str = ""             # storis id si
+    user: str = ""           # storis egasi
+
+
+def parse_media_links(text: str) -> list[Link]:
+    """Matndagi Instagram havolalari (takrorlanmaydi)."""
+    out, seen = [], set()
+    for m in STORY_RE.finditer(text or ""):
+        key = ("story", m.group(2))
+        if key not in seen:
+            seen.add(key)
+            out.append(Link(m.group(0), "story", pk=m.group(2), user=m.group(1)))
+    for m in LINK_RE.finditer(text or ""):
+        key = ("media", m.group(2))
+        if key not in seen:
+            seen.add(key)
+            out.append(Link(m.group(0), "media", code=m.group(2)))
+    return out[:MAX_LINKS]
+
+
+def has_media_link(text: str) -> bool:
+    return bool(parse_media_links(text))
+
+
+def _info_sync(cl, pk: str) -> dict:
+    """media/<pk>/info/ — xom JSON (instagrapi modellari Instagram o'zgarganda buziladi)."""
+    res = cl.private_request(f"media/{pk}/info/")
+    items = (res or {}).get("items") if isinstance(res, dict) else None
+    return items[0] if items else {}
+
+
+def _pk_sync(cl, link: Link) -> str:
+    if link.pk:
+        return link.pk
+    return str(cl.media_pk_from_code(link.code))
+
+
+def media_parts(item: dict) -> list[tuple[str, str, int, int, float]]:
+    """Posttdagi fayllar: albom bo'lsa hammasi, aks holda bittasi."""
+    carousel = item.get("carousel_media")
+    blocks = carousel[:ALBUM_MAX] if isinstance(carousel, list) and carousel else [item]
+    out = []
+    for block in blocks:
+        url, kind, w, h, dur = _from_media(block if isinstance(block, dict) else {})
+        if url:
+            out.append((url, kind, w, h, dur))
+    return out
+
+
+def link_caption(item: dict, link: Link, index: int = 0, total: int = 1) -> str:
+    owner = ((item.get("user") or {}) if isinstance(item.get("user"), dict) else {}).get("username") or link.user
+    caption = ((item.get("caption") or {}) if isinstance(item.get("caption"), dict) else {}).get("text") or ""
+    head = "📖 <b>Instagram storis</b>" if link.kind == "story" else "📥 <b>Instagram'dan yuklandi</b>"
+    lines = [head + (f" · {index + 1}/{total}" if total > 1 else "")]
+    if owner:
+        lines.append(f"👤 <a href=\"https://instagram.com/{_esc(owner)}\">@{_esc(owner)}</a>")
+    if caption:
+        lines.append(f"\n💬 <i>{_esc(caption[:600])}</i>")
+    return "\n".join(lines)
+
+
+async def download_link(link: Link, status=None) -> str:
+    """Havoladagi mediani yuklab, egasiga yuboradi. Natija matnini qaytaradi."""
+    cl = st.client
+    if cl is None:
+        return "❌ Instagram ulanmagan — /ig"
+    if _send_media is None:
+        return "❌ Yuborish sozlanmagan"
+    try:
+        async with _api_lock:
+            pk = await asyncio.to_thread(_pk_sync, cl, link)
+            item = await asyncio.to_thread(_info_sync, cl, pk)
+    except Exception as e:
+        log.warning("Instagram havolasi o'qilmadi (%s)", type(e).__name__)
+        if error_kind(e) in ("auth", "throttle"):
+            await _on_error(e)
+        return f"❌ {explain(e)}"[:350]
+    parts = media_parts(item)
+    if not parts:
+        return ("❌ Bu havolada yuklab olinadigan media topilmadi (yopiq akkaunt bo'lishi mumkin — "
+                "akkauntingiz unga obuna bo'lsa ishlaydi)")
+    sent = 0
+    limit = max(config.IG_MEDIA_MAX_KB * 1024, config.IG_MEDIA_DRIVE_MAX_MB * 1024 * 1024)
+    for i, (url, kind, w, h, dur) in enumerate(parts):
+        if status and len(parts) > 1:
+            await status(f"⏳ Yuklanmoqda: {i + 1}/{len(parts)}")
+        try:
+            data, mime = await _download(url, limit)
+        except Exception as e:
+            log.warning("Instagram media yuklab olinmadi (%s)", type(e).__name__)
+            continue
+        ext = _ext_for(kind, mime, url)
+        video = {"duration": dur, "w": w, "h": h} if kind == "video" else None
+        ok = await _send_media(data, f"instagram_{pk}_{i + 1}{ext}",
+                               link_caption(item, link, i, len(parts)), video,
+                               kind not in ("video", "rasm") or ext not in (".jpg", ".png", ".mp4"))
+        sent += bool(ok)
+    if not sent:
+        return "❌ Yuklab bo'lmadi — havola eskirgan yoki fayl juda katta"
+    return f"✅ Yuborildi ({sent} ta fayl)" if sent > 1 else "✅ Yuborildi"
+
+
+async def download_links(links: list[Link], status=None) -> str:
+    """Bir nechta havola: natijalar ro'yxati."""
+    out = []
+    for i, link in enumerate(links, 1):
+        prefix = f"{i}/{len(links)} " if len(links) > 1 else ""
+        if status:
+            await status(f"⏳ {prefix}Instagram'dan olinmoqda...")
+        out.append(prefix + await download_link(link, status))
+    return "\n".join(out)
+
+
 # ---------- 🖼 media (rasm, video, ovozli xabar) arxivga yuklab olinadi ----------
 MEDIA_BATCH = 6              # bitta aylanishda nechta fayl
 MEDIA_LOOP_SECONDS = 20      # Instagram havolalari tez eskiradi — tez-tez tekshiriladi

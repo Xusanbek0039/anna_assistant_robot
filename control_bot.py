@@ -80,7 +80,9 @@ HELP = (
     "🗂 chat arxivi (qaytarib olingan xabarlar bilan), 📥 Direct xabarlari botga\n"
     "/iglogin &lt;username&gt; &lt;parol&gt; — ulash (xabar darhol o'chiriladi), /igsession &lt;sessionid&gt; — "
     "cookie bilan ulash, /iglogout — chiqish\n"
-    "Instagram bildirishnomasiga reply qilib yozsangiz — javob Instagram'ga ketadi.\n\n"
+    "Instagram bildirishnomasiga reply qilib yozsangiz — javob Instagram'ga ketadi.\n"
+    "📥 <b>Havoladan yuklash:</b> post, reels yoki storis havolasini botga tashlang — rasm/videoni yuklab "
+    "beradi (albom bo'lsa hammasini). Buyruq bilan: /igyukla &lt;havola&gt;\n\n"
     "<b>👀 Kim qiziqdi</b>\n"
     "/korganlar — storis'ingizni kim ko'rgani va profilingizdagi havola orqali botni kim ochgani "
     "(ism, familiya, ID, username), istisnolar. Telegram profilni kim ochganini hech kimga bermaydi.\n\n"
@@ -155,6 +157,8 @@ _awaiting_reply: dict[str, int] = {}
 _find_pending: dict[str, tuple] = {}
 _find_saved: dict[str, list[tuple[int, int]]] = {}
 _find_seq = itertools.count(1)
+# «Buni eslatma deb tushundim» tasdiqlashi: xabar id -> egasining matni
+_watch_pending: dict[str, str] = {}
 # Instagram bildirishnomasi id -> Instagram chat (thread) id — reply qilib yozilsa javob Instagram'ga ketadi
 _ig_notif_map: dict[int, str] = {}
 
@@ -458,6 +462,23 @@ async def ig_notify(thread_id: str, text: str) -> None:
         log.exception("Instagram bildirishnomasi botga yuborilmadi")
 
 
+async def _download_ig_links(event, links: list) -> None:
+    """Instagram havolalaridagi mediani yuklab egasiga yuboradi (jarayon bitta xabarda ko'rsatiladi)."""
+    status = await event.respond("⏳ Instagram'dan olinmoqda...")
+
+    async def show(text: str) -> None:
+        try:
+            await status.edit(text)
+        except Exception:
+            pass  # matn o'zgarmagan yoki Telegram cheklovi — ko'rsatkich muhim emas
+
+    result = await instagram.download_links(links, show)
+    try:
+        await status.edit(result, parse_mode="html", link_preview=False)
+    except Exception:
+        await event.respond(result, parse_mode="html", link_preview=False)
+
+
 async def _edit_or_send(event, text: str, rows: list) -> None:
     """Tugmali ko'rinishni o'rniga yangilaydi; sig'masa yoki tahrirlanmasa — yangi xabar(lar) qilib yuboradi."""
     try:
@@ -492,6 +513,35 @@ async def _send_viewers_panel(event, edit: bool = False) -> None:
         except Exception:
             pass
     await send_long(event.respond, text, parse_mode="html", buttons=_inline(rows), link_preview=False)
+
+
+USER_REF_RE = re.compile(r"(?<![\w@.])@([A-Za-z][A-Za-z0-9_]{3,31})\b|(?<![\w@/])\+?\d[\d \-().]{5,22}\d(?!\w)")
+# Matn faqat telefon raqami yoki @username (boshqa so'zsiz) — bu eslatma, kirim-chiqim emas
+ONLY_REF_RE = re.compile(r"^\s*(?:@[A-Za-z][A-Za-z0-9_]{3,31}|\+?[\d\s\-().]{7,25})\s*$")
+
+
+async def _dont_understand(event) -> None:
+    """Hech bir amalga mos kelmagan matn. Raqam yoki @username bo'lsa — eslatma taklif qilamiz,
+    aks holda nima qilish mumkinligini ko'rsatamiz (oldin faqat «Kimga javob yozmoqchisiz?» chiqardi)."""
+    text = (event.raw_text or "").strip()
+    if USER_REF_RE.search(text) and (req := watchers.parse(text, strict=False)) is not None:
+        _watch_pending[str(event.id)] = text
+        await event.respond(
+            "🤔 Buni eslatma deb tushundim. Qo'yaymi?\n\n" + watchers.describe_request(req),
+            parse_mode="html",
+            buttons=[[Button.inline("🔔 Ha, eslatma qo'y", f"wch:ok:{event.id}".encode()),
+                      Button.inline("❌ Yo'q", b"wch:no")]])
+        return
+    await event.respond(
+        "🤔 Tushunmadim. Men quyidagilarni qila olaman:\n\n"
+        "🔔 <b>Eslatma</b> — «@ali online bo'lsa xabar ber», «95 446 68 86 raqami tg ga qo'shilsa ayt» "
+        "(yoki 🔔 Eslatmalar → ➕ Yangi eslatma)\n"
+        "📥 <b>Instagram'dan yuklash</b> — post, reels yoki storis havolasini yuboring\n"
+        "💾 <b>Telegram'dan saqlash</b> — kanal xabarining havolasini yuboring\n"
+        "🔎 <b>Qidirish</b> — «Ali yuborgan manzilni top», «wifi parolini qidir»\n"
+        "💰 <b>Buxgalter</b> — «nonga 25 ming ishlatdim», «Alidan 200 ming oldim»\n"
+        "✍️ <b>Javob yozish</b> — xulosa xabariga <i>reply</i> qiling yoki «✍️ Javob berish» tugmasi\n\n"
+        "Yoki pastdagi tugmali menyudan foydalaning (/menu).", parse_mode="html")
 
 
 async def _send_as_owner(chat_id: int, text: str, event) -> None:
@@ -650,6 +700,7 @@ BOT_COMMANDS = [
     ("ig", "📸 Instagram: bir martalik media, avtojavob, arxiv"),
     ("iglogin", "🔑 Instagram'ni ulash: /iglogin username parol"),
     ("korganlar", "👀 Storis'ni kim ko'rdi, havola orqali kim keldi"),
+    ("igyukla", "📥 Instagram post/reels/storis mediasini yuklash"),
     ("find", "🔎 Chatlardan istalgan narsani topish"),
     ("save", "💾 Havoladagi mediani Saqlangan xabarlarga joylash"),
     ("bio", "🕒 Bio, iqtibos va online — tugmali panel"),
@@ -1623,6 +1674,21 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         if instagram.connected():
             await _send_ig_panel(event)
 
+    @bot.on(events.NewMessage(pattern=r"^/igyukla(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
+    async def _ig_download(event):
+        links = instagram.parse_media_links(event.pattern_match.group(1) or "")
+        if not links:
+            await event.respond(
+                "📥 <b>Instagram'dan yuklash</b>\n\nHavolani yuboring — buyruq shart emas, shunchaki "
+                "tashlang:\n"
+                "• <code>https://www.instagram.com/p/XXXX/</code> — post (albom bo'lsa hammasi)\n"
+                "• <code>https://www.instagram.com/reel/XXXX/</code> — reels\n"
+                "• <code>https://www.instagram.com/stories/user/123456/</code> — storis\n\n"
+                "Yopiq akkauntdan olish uchun ulangan Instagram akkauntingiz unga obuna bo'lishi kerak.",
+                parse_mode="html")
+            return
+        await _download_ig_links(event, links)
+
     @bot.on(events.NewMessage(pattern=r"^/iglogout(?:@\w+)?$", func=is_owner))
     async def _ig_logout(event):
         await event.respond(await instagram.logout())
@@ -1751,6 +1817,21 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
             text, buttons = await watchers.list_view()
             await event.respond(text, parse_mode="html", buttons=_inline(buttons))
+        elif action == "ok":
+            text = _watch_pending.pop(arg, None)
+            req = watchers.parse(text, strict=False) if text else None
+            if req is None:
+                await event.answer("So'rov eskirgan — qaytadan yozing")
+                return
+            await event.answer("⏳")
+            await _watch_request(event, req)
+        elif action == "no":
+            _watch_pending.clear()
+            await event.answer("Bekor qilindi")
+            try:
+                await event.edit("❌ Eslatma qo'yilmadi.")
+            except Exception:
+                pass
         elif action == "add":
             _awaiting_reply.pop("chat", None)
             _awaiting_reply.pop("ig", None)
@@ -2349,6 +2430,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             if links:
                 await _save_links(event, links)
                 return
+            # Instagram post/reels/storis havolasi -> mediani yuklab beradi
+            if instagram.has_media_link(event.text):
+                await _download_ig_links(event, instagram.parse_media_links(event.text))
+                return
         if chat_id is None:
             chat_id = _awaiting_reply.pop("chat", None)
         # Faqat ID raqami yuborildi -> o'sha odamning lichkasiga o'tish tugmasi
@@ -2367,12 +2452,15 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         if chat_id is None and finder.looks_like_search(event.text):
             await _run_find(event, event.text)
             return
+        # Matn faqat raqam yoki @username bo'lsa — bu eslatma, buxgalterga (va AI'ga) bermaymiz
+        if chat_id is None and ONLY_REF_RE.match(event.text or ""):
+            await _dont_understand(event)
+            return
         # Hech kimga javob kutilmayapti -> balki bu kirim-chiqim ("nonga 25 ming ishlatdim")
         if chat_id is None and config.FINANCE_ENABLED and await _fin_record(event, event.text, "text"):
             return
         if chat_id is None:
-            await event.respond("Kimga javob yozmoqchisiz? Xulosa xabariga reply qiling "
-                                "yoki «✍️ Javob berish» tugmasini bosing.")
+            await _dont_understand(event)
             return
         _awaiting_reply.pop("chat", None)
         await _send_as_owner(chat_id, event.text, event)

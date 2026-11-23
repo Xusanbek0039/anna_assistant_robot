@@ -168,6 +168,15 @@ def about_this(text: str) -> bool:
     return bool(_ABOUT_RE.search(text or ""))
 
 
+def describe_request(req: "Request") -> str:
+    """Eslatma so'rovini odam o'qiydigan ko'rinishda (tasdiqlashdan oldin ko'rsatiladi)."""
+    if req.kind == "phone":
+        return f"📱 <code>{html.escape(fmt_phone(req.phone) if req.phone else req.number)}</code> — "                "Telegram'da paydo bo'lsa (akkaunt ochsa yoki raqamini yashirishni olib tashlasa) xabar beraman"
+    who = req.user_ref or req.name or (req.number and fmt_phone(normalize_phone(req.number) or "")) or "?"
+    how = "har safar online bo'lganda" if req.repeat else "online bo'lsa (bir marta)"
+    return f"🟢 <b>{html.escape(str(who))}</b> — {how} xabar beraman"
+
+
 def bad_number_text(number: str) -> str:
     if not number:
         return ("📱 Qaysi raqam? Masalan: «+998 90 123 45 67 raqami Telegram'ga qo'shilsa xabar ber».")
