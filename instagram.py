@@ -96,6 +96,27 @@ def normalize_proxy(raw: str) -> str:
 
 
 PROXY = normalize_proxy(config.IG_PROXY)
+_PLACEHOLDERS = {"login", "parol", "host", "port", "1.2.3.4"}   # yo'riqnomadagi misol so'zlari
+
+
+def proxy_problem() -> str | None:
+    """IG_PROXY misol matni yoki noto'g'ri formatda bo'lsa — tushuntirish (bunday proksi bilan ulanib bo'lmaydi)."""
+    if not PROXY:
+        return None
+    from urllib.parse import urlsplit
+    u = urlsplit(PROXY)
+    if {(u.hostname or "").lower(), (u.username or "").lower(), (u.password or "").lower()} & _PLACEHOLDERS:
+        return ("IG_PROXY da misol matni turibdi (login/parol/host/port). U yerga proksi provayderi bergan "
+                "haqiqiy manzil yoziladi — Instagram login/paroli EMAS. Proksi sotib olmagan bo'lsangiz, "
+                "Render → Environment da IG_PROXY ni o'chiring yoki bo'sh qoldiring.")
+    try:
+        port = u.port
+    except ValueError:
+        port = None
+    if u.scheme not in ("http", "https", "socks5", "socks5h", "socks4") or not u.hostname or not port:
+        return ("IG_PROXY noto'g'ri formatda — to'g'risi: http://login:parol@ip:port (port — raqam). "
+                "Proksi bo'lmasa, IG_PROXY ni bo'sh qoldiring.")
+    return None
 
 
 def mask_proxy(p: str) -> str:
@@ -616,7 +637,7 @@ async def _connected(cl, typed: str = "") -> None:
 
 async def login(username: str, password: str, say) -> str:
     """say(text) — egasiga xabar (kod so'rash). Natija matnini qaytaradi."""
-    if problem := lib_problem():
+    if problem := lib_problem() or proxy_problem():
         return f"❌ {problem}"
     if _login_lock.locked():
         return "⏳ Login allaqachon ketyapti — Instagram yuborgan kodni shu yerga yozing."
@@ -639,8 +660,8 @@ def clean_sessionid(raw: str) -> str:
 
 
 async def login_session(raw: str) -> str:
-    if problem := lib_problem():
-        return f"❌ {problem}"
+    if problem := lib_problem() or proxy_problem():
+        return f"❌ {_esc(problem)}"
     sid = clean_sessionid(raw)
     if not re.match(r"^\d+(?:%3A|:)\S{10,}$", sid):
         return ("❌ Bu sessionid'ga o'xshamaydi. U raqamlar bilan boshlanadi, masalan: "
@@ -1061,6 +1082,9 @@ async def net_check() -> str:
                    "/igsession usulini sinang yoki residential proksi qo'ying." if ig[0] else
                    "Server Instagram'ga ulana olmayapti — residential proksi kerak (IG_PROXY).")
         return "\n".join(lines + ["", f"➡️ {verdict}"])
+    if problem := proxy_problem():
+        lines += ["", f"❌ {_esc(problem)}"]
+        return "\n".join(lines)
     pip = await asyncio.to_thread(_probe, IP_PROBE_URL, PROXY)
     pig = await asyncio.to_thread(_probe, IG_PROBE_URL, PROXY)
     lines += ["", f"🧦 IG_PROXY: <code>{_esc(mask_proxy(PROXY))}</code>"]
@@ -1131,6 +1155,8 @@ async def panel() -> tuple[str, list]:
         lines.append(f"❌ {_esc(problem)}")
     elif v := lib_version():
         lines.append(f"📦 instagrapi {_esc(v)}")
+    if problem := proxy_problem():
+        lines.append(f"⚠️ {_esc(problem)}")
     if st.client is not None:
         lines.append(f"✅ Ulangan: <b>@{_esc(st.username)}</b>")
     else:
