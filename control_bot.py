@@ -465,7 +465,7 @@ async def ig_notify(thread_id: str, text: str) -> None:
 
 SPIN = ("⏳", "⌛")        # almashganda qum soati aylanayotgandek ko'rinadi
 BAR_LEN = 12
-PROGRESS_EVERY = 1.6      # xabar shuncha soniyada bir yangilanadi (Telegram cheklovidan past)
+PROGRESS_EVERY = 1.1      # xabar shuncha soniyada bir yangilanadi (Telegram cheklovidan past)
 
 
 def progress_bar(done: float) -> str:
@@ -477,10 +477,13 @@ class Progress:
     """Jonli «yuklanmoqda» ko'rsatkichi: xabardagi qum soati aylanadi, progress bar to'ladi va chat
     tepasida Telegram'ning o'z «fayl yuborilmoqda...» yozuvi ko'rinadi."""
 
-    def __init__(self, msg, client=None, chat=None, action: str = "document") -> None:
+    def __init__(self, msg, client=None, chat=None, action: str = "document",
+                 text: str = "Yuklanmoqda...") -> None:
         self.msg, self.client, self.chat, self.action = msg, client, chat, action
-        self.text, self.fraction = "Yuklanmoqda...", None
-        self._tick, self._shown, self._task, self._act = 0, "", None, None
+        self.text, self.fraction = text, None
+        self._tick, self._task, self._act = 0, None, None
+        # Xabar allaqachon shu matn bilan yuborilgan — birinchi yangilanish behuda bo'lmasin
+        self._shown = f"{SPIN[0]} {text}"
 
     def set(self, text: str | None = None, fraction: float | None = None) -> None:
         """Holatni o'zgartiradi (keyingi yangilanishda ko'rinadi). fraction: 0..1 yoki None."""
@@ -512,9 +515,10 @@ class Progress:
                 pass
 
     async def _loop(self) -> None:
+        # Birinchi yangilanish DARHOL: aks holda tez tugagan ishda ko'rsatkich umuman ko'rinmay qolardi
         while True:
-            await asyncio.sleep(PROGRESS_EVERY)
             await self.render()
+            await asyncio.sleep(PROGRESS_EVERY)
 
     async def render(self) -> None:
         spin = SPIN[self._tick % len(SPIN)]
@@ -540,8 +544,9 @@ class Progress:
 
 async def _download_ig_links(event, links: list) -> None:
     """Instagram havolalaridagi mediani yuklab egasiga yuboradi (jonli ko'rsatkich bilan)."""
-    status = await event.respond("⏳ Instagram'dan olinmoqda...")
-    async with Progress(status, ctx.bot, ctx.owner_id, "document") as bar:
+    start = "Instagram'dan olinmoqda..."
+    status = await event.respond(f"{SPIN[0]} {start}")
+    async with Progress(status, ctx.bot, ctx.owner_id, "document", start) as bar:
         result = await instagram.download_links(links, bar)
         await bar.finish(result, event)
 
@@ -623,9 +628,10 @@ async def _send_as_owner(chat_id: int, text: str, event) -> None:
 async def _save_links(event, links: list) -> None:
     """Havolalardagi mediani egasining Saqlangan xabarlariga joylaydi (jonli ko'rsatkich bilan)."""
     many = len(links) > 1
-    status = await event.respond("⏳ Saqlanmoqda...")
+    start = "Saqlanmoqda..."
+    status = await event.respond(f"{SPIN[0]} {start}")
     done: list[str] = []
-    async with Progress(status, ctx.bot, ctx.owner_id, "document") as bar:
+    async with Progress(status, ctx.bot, ctx.owner_id, "document", start) as bar:
         for i, link in enumerate(links, 1):
             prefix = f"{i}/{len(links)} " if many else ""
 

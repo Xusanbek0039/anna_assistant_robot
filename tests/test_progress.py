@@ -168,3 +168,33 @@ def test_finish_falls_back_to_new_message():
     bar = control_bot.Progress(FakeMsg(fail=True))
     run(bar.finish("✅ Natija", Ev()))
     assert sent == ["✅ Natija"]
+
+
+def test_first_update_is_immediate(monkeypatch):
+    """Tez tugagan ishda ham ko'rsatkich ko'rinadi (oldin birinchi yangilanish kechikib, umuman
+    ko'rinmay qolardi — foydalanuvchi faqat qotib qolgan «⏳ ...» matnini ko'rardi)."""
+    monkeypatch.setattr(control_bot, "PROGRESS_EVERY", 5)      # keyingisi hech qachon yetib kelmaydi
+    msg = FakeMsg()
+
+    async def scenario():
+        async with control_bot.Progress(msg, text="boshlandi") as bar:
+            bar.set("🎬 video yuklanmoqda — 2.0 MB / 8.0 MB", 0.25)
+            await asyncio.sleep(0.02)                          # ish 20 ms da tugadi
+
+    run(scenario())
+    assert msg.edits, "ko'rsatkich umuman yangilanmadi"
+    assert "25%" in msg.edits[0][0] and "video yuklanmoqda" in msg.edits[0][0]
+
+
+def test_initial_text_not_re_sent(monkeypatch):
+    """Xabar allaqachon shu matn bilan yuborilgan — behuda tahrirlanmaydi."""
+    monkeypatch.setattr(control_bot, "PROGRESS_EVERY", 5)
+    msg = FakeMsg()
+
+    async def scenario():
+        async with control_bot.Progress(msg, text="Saqlanmoqda...") as bar:
+            await asyncio.sleep(0.02)
+            assert bar.text == "Saqlanmoqda..."
+
+    run(scenario())
+    assert msg.edits == []
