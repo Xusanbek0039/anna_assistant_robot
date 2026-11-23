@@ -247,11 +247,15 @@ def _vtuple(v: str) -> tuple[int, ...]:
 def lib_problem() -> str | None:
     v = lib_version()
     if v is None:
-        return ("instagrapi kutubxonasi o'rnatilmagan. O'rnatish: pip install -r requirements.txt "
-                "(serverda — qayta deploy qiling, u requirements.txt dan o'rnatiladi)")
+        return ("instagrapi kutubxonasi o'rnatilmagan — Instagram qismi shusiz ishlamaydi (bot qolgan hamma "
+                "narsani normal bajaradi).\n"
+                "Kompyuterda: pip install \"instagrapi>=3.2.19\"\n"
+                "Render'da — Settings → Build Command (oxiridagi «|| true» SHART: shunda kutubxona "
+                "o'rnatilmasa ham bot baribir ishga tushadi):\n"
+                "pip install -r requirements.txt && (pip install \"instagrapi>=3.2.19\" || true)")
     if _vtuple(v) < MIN_LIB:
         return (f"instagrapi eski ({v}) — bu versiyada login ishlamaydi. "
-                "Yangilash: pip install -U -r requirements.txt")
+                "Yangilash: pip install -U \"instagrapi>=3.2.19\"")
     return None
 
 
@@ -1352,7 +1356,7 @@ def _probe(url: str, proxy: str | None) -> tuple[bool, str, float]:
     try:
         import requests  # instagrapi bilan birga o'rnatiladi
     except ImportError:
-        return False, "requests o'rnatilmagan — pip install -r requirements.txt", 0.0
+        return False, "requests o'rnatilmagan (instagrapi bilan birga keladi)", 0.0
     started = time.monotonic()
     try:
         r = requests.get(url, timeout=15, headers={"User-Agent": _UA},

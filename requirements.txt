@@ -7,6 +7,11 @@ icalendar>=6.0
 recurring-ical-events>=3.0
 av>=12.0
 httpx>=0.27
-# Instagram Direct (instagram.py, botda /ig). Python 3.11+ kerak.
-# Agar serverda build shu paket sabab yiqilsa — bu qatorni o'chiring: bot Instagram'siz normal ishlaydi
-instagrapi>=3.2.19
+
+# 📸 Instagram (instagram.py, botda /ig) — ATAYIN bu yerda YO'Q.
+# Sababi: instagrapi og'ir C-kutubxonalar keltiradi (Pillow, curl_cffi, pycryptodomex) va u
+# o'rnatilmasa butun bot ishga tushmay qolishi mumkin. Instagram esa shunchaki qo'shimcha imkoniyat.
+# Instagram kerak bo'lsa, uni ALOHIDA, build'ni yiqitmaydigan qilib o'rnatasiz:
+#   pip install "instagrapi>=3.2.19"
+# Render -> Settings -> Build Command (oxirida "|| true" SHART — o'rnatilmasa ham bot ishlaydi):
+#   pip install -r requirements.txt && (pip install "instagrapi>=3.2.19" || true)
