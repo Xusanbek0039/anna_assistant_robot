@@ -1061,8 +1061,7 @@ async def net_check() -> str:
         verdict = ("Ulanish joyida. Login baribir o'tmasa — Instagram server IP'sidan kirishni yoqtirmayapti: "
                    "/igsession usulini sinang yoki residential proksi qo'ying." if ig[0] else
                    "Server Instagram'ga ulana olmayapti — residential proksi kerak (IG_PROXY).")
-        return "
-".join(lines + ["", f"➡️ {verdict}"])
+        return "\n".join(lines + ["", f"➡️ {verdict}"])
     pip = await asyncio.to_thread(_probe, IP_PROBE_URL, PROXY)
     pig = await asyncio.to_thread(_probe, IG_PROBE_URL, PROXY)
     lines += ["", f"🧦 IG_PROXY: <code>{_esc(mask_proxy(PROXY))}</code>"]
@@ -1080,8 +1079,7 @@ async def net_check() -> str:
                    "kerak) yoki vaqtincha bo'shatib qo'ying.")
     else:
         verdict = "Na to'g'ridan-to'g'ri, na proksi orqali ulanib bo'lmadi — server internetini va proksini tekshiring."
-    return "
-".join(lines + ["", f"➡️ {verdict}"])
+    return "\n".join(lines + ["", f"➡️ {verdict}"])
 
 
 async def run() -> None:
