@@ -661,7 +661,7 @@ def clean_sessionid(raw: str) -> str:
 
 async def login_session(raw: str) -> str:
     if problem := lib_problem() or proxy_problem():
-        return f"❌ {_esc(problem)}"
+        return f"❌ {html.escape(problem, quote=False)}"
     sid = clean_sessionid(raw)
     if not re.match(r"^\d+(?:%3A|:)\S{10,}$", sid):
         return ("❌ Bu sessionid'ga o'xshamaydi. U raqamlar bilan boshlanadi, masalan: "
