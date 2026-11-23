@@ -43,37 +43,54 @@ async def init(retry_forever: bool = True) -> bool:
     while True:
         try:
             await db.command("ping")
-            await db.history.create_index([("chat_id", ASCENDING), ("_id", DESCENDING)])
-            await db.history.create_index([("role", ASCENDING), ("ts", DESCENDING)])
-            await db.transactions.create_index([("day", ASCENDING), ("ts", ASCENDING)])
-            await db.transactions.create_index("batch")
-            await db.archive.create_index([("chat_id", ASCENDING), ("msg_id", ASCENDING)], unique=True)
-            await db.archive.create_index([("msg_id", ASCENDING), ("channel", ASCENDING)])
-            await db.archive_chats.create_index([("last", DESCENDING)])
-            await db.archive_chats.create_index([("drive_dirty", ASCENDING), ("changed", ASCENDING)])
-            await db.archive.create_index([("drive_media", ASCENDING), ("date", ASCENDING)], sparse=True)
-            await db.archive.create_index([("date", DESCENDING)])
-            await db.archive.create_index([("deleted_at", DESCENDING)], sparse=True)
-            await db.archive.create_index([("edited_at", DESCENDING)], sparse=True)
-            await db.promises.create_index([("done", ASCENDING), ("due", ASCENDING)])
-            await db.promises.create_index([("chat_id", ASCENDING), ("key", ASCENDING)])
-            await db.watches.create_index([("active", ASCENDING), ("created", ASCENDING)])
-            await db.ig_archive.create_index([("thread_id", ASCENDING), ("msg_id", ASCENDING)], unique=True)
-            await db.ig_archive.create_index([("thread_id", ASCENDING), ("date", ASCENDING)])
-            await db.ig_chats.create_index([("last", DESCENDING)])
-            log.info("MongoDB'ga ulandi (baza: %s)", MONGODB_DB)
-            return True
         except OperationFailure as e:
             if e.code in (18, 8000):  # AuthenticationFailed / Atlas auth xatosi
                 sys.exit("[storage] MongoDB login yoki paroli noto'g'ri (MONGODB_URI ni tekshiring)")
             log.warning("MongoDB xatosi: %s (kod %s)", type(e).__name__, e.code)
         except PyMongoError as e:
-            log.warning("MongoDB'ga ulanib bo'lmadi: %s", type(e).__name__)
+            log.warning("MongoDB'ga ulanib bo'lmadi: %s. Atlas -> Network Access da shu server IP'si "
+                        "(yoki 0.0.0.0/0) ruxsat etilganini tekshiring", type(e).__name__)
+        else:
+            await _create_indexes(db)
+            log.info("MongoDB'ga ulandi (baza: %s)", MONGODB_DB)
+            return True
         if not retry_forever:
             return False
         log.info("%d soniyadan keyin qayta urinaman...", delay)
         await asyncio.sleep(delay)
         delay = min(delay * 2, 60)
+
+
+async def _create_indexes(db) -> None:
+    """Indekslar faqat tezlik uchun — biri yaratilmasa ham dastur ishlashda davom etadi."""
+    indexes = [
+        ("history", [("chat_id", ASCENDING), ("_id", DESCENDING)], {}),
+        ("history", [("role", ASCENDING), ("ts", DESCENDING)], {}),
+        ("transactions", [("day", ASCENDING), ("ts", ASCENDING)], {}),
+        ("transactions", "batch", {}),
+        ("archive", [("chat_id", ASCENDING), ("msg_id", ASCENDING)], {"unique": True}),
+        ("archive", [("msg_id", ASCENDING), ("channel", ASCENDING)], {}),
+        ("archive_chats", [("last", DESCENDING)], {}),
+        ("archive_chats", [("drive_dirty", ASCENDING), ("changed", ASCENDING)], {}),
+        ("archive", [("drive_media", ASCENDING), ("date", ASCENDING)], {"sparse": True}),
+        ("archive", [("date", DESCENDING)], {}),
+        ("archive", [("deleted_at", DESCENDING)], {"sparse": True}),
+        ("archive", [("edited_at", DESCENDING)], {"sparse": True}),
+        ("promises", [("done", ASCENDING), ("due", ASCENDING)], {}),
+        ("promises", [("chat_id", ASCENDING), ("key", ASCENDING)], {}),
+        ("watches", [("active", ASCENDING), ("created", ASCENDING)], {}),
+        ("ig_archive", [("thread_id", ASCENDING), ("msg_id", ASCENDING)], {"unique": True}),
+        ("ig_archive", [("thread_id", ASCENDING), ("date", ASCENDING)], {}),
+        ("ig_chats", [("last", DESCENDING)], {}),
+    ]
+    failed = []
+    for name, keys, opts in indexes:
+        try:
+            await db[name].create_index(keys, **opts)
+        except PyMongoError as e:
+            failed.append(f"{name}: {type(e).__name__}")
+    if failed:
+        log.warning("Ba'zi indekslar yaratilmadi (dastur baribir ishlaydi): %s", ", ".join(failed))
 
 
 # ---------- bitta nusxa qulfi ----------

@@ -73,11 +73,16 @@ async def _archive_sync(user) -> None:
 
 
 async def main() -> None:
+    # Ishga tushish bosqichlari logga yoziladi: dastur biror joyda kutib qolsa (MongoDB, boshqa nusxa,
+    # Telegram), oxirgi qator qayerda to'xtaganini ko'rsatadi
+    log.info("1/6 Sozlamalar tekshirilyapti")
     config.require("API_ID", "API_HASH", "BOT_TOKEN", "OPENAI_API_KEY", "MONGODB_URI")
     if config.BIO_ENABLED:
         validate_settings()
+    log.info("2/6 MongoDB'ga ulanyapti (Atlas'da Network Access -> 0.0.0.0/0 ruxsati borligini tekshiring)")
     await storage.init()
     if config.SINGLE_INSTANCE:
+        log.info("3/6 Nusxa qulfi olinyapti")
         await instance.wait_until_only()  # boshqa nusxa ishlayotgan bo'lsa, Telegram'ga ulanmasdan kutadi
     await runtime.load()
 
@@ -90,11 +95,14 @@ async def main() -> None:
     if voicelab.audio_tools_problem():
         log.error(voicelab.audio_tools_problem())
 
+    log.info("4/6 Shaxsiy akkauntga (userbot) ulanyapti")
     user = create_user_client()
     # Birinchi ishga tushishda telefon raqam, Telegram kodi (va 2FA parol) terminalda so'raladi
     await login(user)
     me = await user.get_me()
+    log.info("Akkaunt: %s (id %s)", me.first_name, me.id)
 
+    log.info("5/6 Nazorat botiga ulanyapti (BOT_TOKEN)")
     bot = TelegramClient(config.BOT_SESSION, config.API_ID, config.API_HASH)
     await bot.start(bot_token=config.BOT_TOKEN)
     bot_me = await bot.get_me()
@@ -159,7 +167,7 @@ async def main() -> None:
     if config.FINANCE_ENABLED:
         background.append(supervise("Moliya hisoboti", finance.run_reports(control_bot.send_html)))
 
-    log.info("Ishlayapti. To'xtatish: Ctrl+C")
+    log.info("6/6 Hammasi ishga tushdi (%d fon vazifasi). To'xtatish: Ctrl+C", len(background))
     try:
         # Telegram klientlaridan biri uzilsa — dastur tugaydi (run.bat qayta ishga tushiradi)
         await asyncio.gather(user.run_until_disconnected(), bot.run_until_disconnected(), *background)

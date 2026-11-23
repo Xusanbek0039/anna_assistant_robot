@@ -25,9 +25,11 @@ async def wait_until_only() -> None:
     """Qulfni oladi. Boshqa nusxa ishlab turgan bo'lsa — u to'xtaguncha kutadi."""
     waited = 0
     while not await storage.acquire_lock(INSTANCE_ID, TTL):
-        if waited % 60 == 0:
-            log.warning("Anna'ning boshqa nusxasi ishlab turibdi — u to'xtaguncha kutaman "
-                        "(ikki nusxa birga ishlasa, bot har xabarni ikki marta yuboradi)")
+        # Har kutishda yoziladi: dastur shu yerda turib qolsa, logdan darhol ko'rinadi
+        log.warning("Anna'ning boshqa nusxasi ishlab turibdi — u to'xtaguncha kutaman (%d s kutdim). "
+                    "Ikki nusxa birga ishlasa, bot har xabarni ikki marta yuborardi. Agar boshqa nusxa yo'q "
+                    "bo'lsa (masalan oldingi nusxa noto'g'ri to'xtagan), %d soniyadan keyin o'zi davom etadi; "
+                    "yoki .env da SINGLE_INSTANCE=false qiling", waited, TTL)
         await asyncio.sleep(HEARTBEAT)
         waited += HEARTBEAT
     log.info("Yagona nusxa sifatida ishga tushyapman (%s)", INSTANCE_ID)
