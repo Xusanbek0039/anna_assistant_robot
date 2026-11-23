@@ -243,12 +243,11 @@ def _vtuple(v: str) -> tuple[int, ...]:
 def lib_problem() -> str | None:
     v = lib_version()
     if v is None:
-        return ("Instagram qismi uchun instagrapi kerak (asosiy talablarga ATAYIN kiritilmagan). "
-                "O'rnatish: pip install -r requirements-instagram.txt — Render'da Build Command'ga qo'shing: "
-                "pip install -r requirements.txt && pip install -r requirements-instagram.txt")
+        return ("instagrapi kutubxonasi o'rnatilmagan. O'rnatish: pip install -r requirements.txt "
+                "(serverda — qayta deploy qiling, u requirements.txt dan o'rnatiladi)")
     if _vtuple(v) < MIN_LIB:
-        return (f"instagrapi eski ({v}) — bu versiyada login ishlamaydi. Yangilang: "
-                "pip install -U -r requirements-instagram.txt")
+        return (f"instagrapi eski ({v}) — bu versiyada login ishlamaydi. "
+                "Yangilash: pip install -U -r requirements.txt")
     return None
 
 
@@ -543,8 +542,24 @@ def _no_password_change(_username):
     raise LoginError("Instagram parolni almashtirishni talab qilyapti — ilovada almashtiring va qayta kiring")
 
 
-def _login_sync(username: str, password: str, ask, old: dict | None):
-    cl = _new_client(_device_only(old))
+def needs_upgrade(e: BaseException) -> bool:
+    """Instagram «ilova versiyasi eski» dedi (instagrapi'ning ma'lum muammosi)."""
+    low = str(e).lower()
+    return "ClientNeedsUpgradeError" in _names(e) or "needs_upgrade" in low or "out of date" in low
+
+
+def app_versions() -> list[str]:
+    """Kutubxonadagi Instagram ilova profillari: standarti birinchi, keyin eskiroqlari."""
+    try:
+        from instagrapi import config as ig_config
+        default = ig_config.DEFAULT_APP_VERSION
+        rest = [v for v in ig_config.APP_SETTINGS if v != default]
+        return [default, *rest][:LOGIN_ATTEMPTS]
+    except Exception:
+        return [""]
+
+
+def _try_login(cl, username: str, password: str, ask) -> None:
     cl.challenge_code_handler = lambda _u, choice: ask(_challenge_prompt(choice))
     cl.change_password_handler = _no_password_change
     try:
@@ -555,7 +570,37 @@ def _login_sync(username: str, password: str, ask, old: dict | None):
         info = (getattr(cl, "last_json", None) or {}).get("two_factor_info") or {}
         # instagrapi 3.x kodni o'zi yuboradi (yangi Bloks login: SMS, autentifikator ilova, zaxira kod)
         cl.login(username, password, verification_code=ask(_two_factor_prompt(info)))
-    return cl
+
+
+def _login_sync(username: str, password: str, ask, old: dict | None, say=None):
+    """Login va parol bilan kirish. Instagram «ilova eski» desa — boshqa ilova profillari ham sinaladi
+    (faqat shu xatoda: noto'g'ri parol yoki tasdiqlash so'ralganda qayta urinish akkauntga zarar qiladi)."""
+    versions = app_versions()
+    last: Exception | None = None
+    for i, version in enumerate(versions):
+        cl = _new_client(_device_only(old))
+        if i and version:
+            try:
+                cl.set_app(version)      # eskiroq Instagram ilovasi sifatida tanishtiramiz
+                cl.set_user_agent()
+            except Exception as e:
+                log.info("Instagram ilova profili %s qo'llanmadi (%s)", version, type(e).__name__)
+                continue
+        try:
+            _try_login(cl, username, password, ask)
+            if i:
+                log.info("Instagram'ga %s ilova profili bilan kirildi", version)
+            return cl
+        except Exception as e:
+            last = e
+            if not needs_upgrade(e) or i == len(versions) - 1:
+                raise
+            log.info("Instagram «ilova eski» dedi (profil %s) — boshqasi sinaladi", version)
+            if say:
+                say(f"⏳ Instagram «ilova eski» dedi. Boshqa variant sinalmoqda "
+                    f"({i + 2}/{len(versions)})...")
+            time.sleep(LOGIN_PAUSE)
+    raise last if last else LoginError("login bo'lmadi")
 
 
 def _session_sync(sessionid: str, old: dict | None):
