@@ -7,4 +7,5 @@ icalendar>=6.0
 recurring-ical-events>=3.0
 av>=12.0
 httpx>=0.27
-instagrapi>=2.1  # Instagram Direct (bir martalik media, avtojavob, arxiv) — norasmiy API, instagram.py
+# Instagram Direct (instagram.py) — norasmiy API. Python 3.11+ kerak; eskiroq versiyalarda login buzilgan
+instagrapi>=3.2.19

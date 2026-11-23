@@ -590,3 +590,44 @@ def test_send_ig_media_video_attributes(monkeypatch):
     attr = kw["attributes"][0]
     assert isinstance(attr, DocumentAttributeVideo) and (attr.w, attr.h, attr.duration) == (720, 1280, 7.5)
     assert kw["supports_streaming"] and kw["parse_mode"] == "html"
+
+
+# ---------- «ilova eski» xatosi va kutubxona versiyasi ----------
+def test_needs_upgrade_explained_with_steps():
+    Upgrade = type("ClientNeedsUpgradeError", (Exception,), {})
+    text = instagram.explain(Upgrade("Your version of Instagram is out of date."))
+    assert "Ha, men edim" in text and "/igsession" in text
+    assert instagram.explain(RuntimeError("needs_upgrade")) == instagram.NEEDS_UPGRADE_HELP
+
+
+def test_login_needs_upgrade_message(ig, monkeypatch):
+    class Old(FakeCl):
+        def login(self, *a, **k):
+            raise type("ClientNeedsUpgradeError", (Exception,), {})("Your version of Instagram is out of date")
+
+    monkeypatch.setattr(instagram, "lib_problem", lambda: None)
+    monkeypatch.setattr(instagram, "_new_client", lambda settings=None: Old())
+    result = run(instagram.login("husan", "x", None))
+    assert result.startswith("❌") and "/igsession" in result
+
+
+@pytest.mark.parametrize("version,ok", [(None, False), ("2.1.5", False), ("3.2.18", False),
+                                        ("3.2.19", True), ("3.10.0", True), ("4.0", True)])
+def test_lib_version_check(monkeypatch, version, ok):
+    monkeypatch.setattr(instagram, "lib_version", lambda: version)
+    problem = instagram.lib_problem()
+    assert (problem is None) is ok
+    if version and not ok:
+        assert version in problem and "pip install -U" in problem
+
+
+def test_saved_app_version_not_reused():
+    saved = {"uuids": {"uuid": "u"}, "user_agent": "Instagram 269.0.0.18.75 Android (...)",
+             "device_settings": {"app_version": "269.0.0.18.75", "version_code": "314665256",
+                                 "bloks_versioning_id": "old", "model": "Pixel 8 Pro", "android_version": 34},
+             "cookies": {"sessionid": "s"}}
+    s = instagram._with_current_app(saved)
+    assert s["device_settings"] == {"model": "Pixel 8 Pro", "android_version": 34}   # qurilma qoladi
+    assert "user_agent" not in s and s["uuids"] == {"uuid": "u"} and s["cookies"] == {"sessionid": "s"}
+    assert saved["device_settings"]["app_version"] == "269.0.0.18.75"              # asl lug'at o'zgarmaydi
+    assert "user_agent" not in instagram._device_only(saved)

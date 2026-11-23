@@ -374,6 +374,13 @@ Instagram akkauntingiz nazorat botiga ulanadi va botdan boshqariladi: **📸 Ins
 
 Faqat sessiya MongoDB'da saqlanadi — dastur qayta ishga tushganda login so'ralmaydi. Chiqish: `/iglogout`.
 
+> **«Your version of Instagram is out of date» / `ClientNeedsUpgradeError`** — bu `instagrapi` ning ma'lum
+> xatosi (GitHub #2971, #2881): Instagram aslida boshqa narsani so'ragan bo'ladi (odatda server IP'sidan
+> kirishni tasdiqlash, email kod yoki noto'g'ri parol), kutubxona esa uni «ilova eski» deb ko'rsatadi.
+> Ilova versiyasini almashtirish yordam bermaydi. Yechim: telefonda Instagram'ni ochib «Ha, men edim» ni
+> bosing va qayta urining — yoki **`/igsession`** usulini ishlating (u login bosqichini chetlab o'tadi).
+> Server (Render)da ishlasa, darhol `/igsession` bilan boshlash tavsiya etiladi.
+
 | Paneldagi tugma | Nima qiladi |
 |---|---|
 | 🔥 Bir martalik media | Kimdir Direct'da bir marta ko'riladigan (yoki «qayta ko'rish mumkin») rasm/video yuborsa — dastur uni **ochmasdan** yuklab oladi va botga oddiy, saqlasa bo'ladigan holda yuboradi. Instagram'da media «ochilmagan» bo'lib qoladi, yuboruvchiga hech narsa bildirilmaydi |

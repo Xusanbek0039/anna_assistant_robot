@@ -404,15 +404,29 @@ def _device_only(settings: dict | None) -> dict | None:
     """Eski sessiyadan faqat «qurilma» ma'lumotlari: Instagram tanish qurilmaga kamroq savol beradi."""
     if not settings:
         return None
-    keep = ("uuids", "device_settings", "user_agent", "country", "country_code", "locale", "timezone_offset")
+    keep = ("uuids", "device_settings", "country", "country_code", "locale", "timezone_offset")
     return {k: settings[k] for k in keep if k in settings} or None
+
+
+_APP_KEYS = ("app_version", "version_code", "bloks_versioning_id")
+
+
+def _with_current_app(settings: dict) -> dict:
+    """Saqlangan sessiyadagi Instagram ilova versiyasi olib tashlanadi — kutubxona yangilanganda uning joriy
+    versiyasi ishlatilsin (aks holda eski versiya qolib, Instagram «ilova eski» deydi). Qurilma va UUID qoladi."""
+    s = dict(settings)
+    dev = s.get("device_settings")
+    if isinstance(dev, dict):
+        s["device_settings"] = {k: v for k, v in dev.items() if k not in _APP_KEYS}
+    s.pop("user_agent", None)   # qurilma + joriy ilova versiyasidan qayta yasaladi
+    return s
 
 
 def _new_client(settings: dict | None = None):
     from instagrapi import Client
     cl = Client()
     if settings:
-        cl.set_settings(settings)
+        cl.set_settings(_with_current_app(settings))
     if config.IG_PROXY:
         cl.set_proxy(config.IG_PROXY)
     cl.delay_range = [1, 3]   # so'rovlar orasida tasodifiy pauza — odamga o'xshab
@@ -431,33 +445,15 @@ def _two_factor_prompt(info: dict) -> str:
         return ("🔐 Ikki bosqichli himoya: autentifikator ilovadagi (Google Authenticator va h.k.) 6 xonali kodni "
                 "shu yerga yozing. Bekor qilish: «bekor»")
     phone = info.get("obfuscated_phone_number") or ""
-    return (f"🔐 Ikki bosqichli himoya: {('…' + phone + ' raqamiga ') if phone else ''}SMS kod keldi — "
-            "kodni shu yerga yozing. Bekor qilish: «bekor»")
+    if phone or info.get("sms_two_factor_on"):
+        return (f"🔐 Ikki bosqichli himoya: {('…' + phone + ' raqamiga ') if phone else ''}SMS kod keldi — "
+                "kodni shu yerga yozing. Bekor qilish: «bekor»")
+    return ("🔐 Ikki bosqichli himoya: SMS'dagi, WhatsApp'dagi yoki autentifikator ilovadagi kodni "
+            "(yoki zaxira kodlardan birini) shu yerga yozing. Bekor qilish: «bekor»")
 
 
 def _no_password_change(_username):
     raise LoginError("Instagram parolni almashtirishni talab qilyapti — ilovada almashtiring va qayta kiring")
-
-
-def _two_factor(cl, username: str, password: str, info: dict, code: str) -> None:
-    ident = info.get("two_factor_identifier")
-    if info.get("totp_two_factor_on") or not ident:
-        cl.login(username, password, verification_code=code)   # instagrapi o'zi (autentifikator ilova)
-        return
-    # SMS kod: instagrapi qayta login qilib yangi SMS yuborib yuboradi — tasdiqlashni o'zimiz yuboramiz
-    from uuid import uuid4
-    data = {
-        "verification_code": code, "phone_id": cl.phone_id, "_csrftoken": getattr(cl, "token", ""),
-        "two_factor_identifier": ident, "username": username, "trust_this_device": "1", "guid": cl.uuid,
-        "device_id": cl.android_device_id, "waterfall_id": str(uuid4()), "verification_method": "1",
-    }
-    cl.private_request("accounts/two_factor_login/", data, login=True)
-    cl.authorization_data = cl.parse_authorization(cl.last_response.headers.get("ig-set-authorization"))
-    cl.last_login = time.time()
-    try:
-        cl.login_flow()
-    except Exception as e:  # login bo'ldi, faqat «ilova ochildi» so'rovlari o'tmadi
-        log.info("Instagram login_flow o'tmadi (%s)", type(e).__name__)
 
 
 def _login_sync(username: str, password: str, ask, old: dict | None):
@@ -470,7 +466,8 @@ def _login_sync(username: str, password: str, ask, old: dict | None):
         if not _is(e, "TwoFactorRequired"):
             raise
         info = (getattr(cl, "last_json", None) or {}).get("two_factor_info") or {}
-        _two_factor(cl, username, password, info, ask(_two_factor_prompt(info)))
+        # instagrapi 3.x kodni o'zi yuboradi (yangi Bloks login: SMS, autentifikator ilova, zaxira kod)
+        cl.login(username, password, verification_code=ask(_two_factor_prompt(info)))
     return cl
 
 
@@ -1002,6 +999,8 @@ async def run() -> None:
 # ---------- nazorat boti uchun ko'rinishlar ----------
 LOGIN_HELP = (
     "🔑 <b>Instagram'ni ulash</b>\n\n"
+    "💡 Bot serverda (Render va h.k.) ishlasa — <b>2-usul</b> ishonchliroq: Instagram server IP'sidan parol "
+    "bilan kirishni ko'pincha to'xtatadi.\n\n"
     "<b>1-usul — login va parol:</b>\n"
     "<code>/iglogin username parol</code>\n"
     "• Xabaringiz darhol o'chiriladi, parol hech qayerga yozilmaydi (faqat sessiya saqlanadi).\n"
@@ -1022,6 +1021,8 @@ async def panel() -> tuple[str, list]:
         lines.append("⚪️ O'chirilgan (.env: INSTAGRAM_ENABLED=false)")
     if problem := lib_problem():
         lines.append(f"❌ {_esc(problem)}")
+    elif v := lib_version():
+        lines.append(f"📦 instagrapi {_esc(v)}")
     if st.client is not None:
         lines.append(f"✅ Ulangan: <b>@{_esc(st.username)}</b>")
     else:
@@ -1097,7 +1098,7 @@ def describe() -> str:
         return problem
     if st.client is None:
         return "ulanmagan (/ig)" + (f" — {st.problem}" if st.problem else "")
-    s = f"@{st.username} ulangan"
+    s = f"@{st.username} ulangan (instagrapi {lib_version()})"
     if st.last_check:
         s += f", oxirgi tekshiruv {_when(st.last_check)}"
     return s + (f", muammo: {st.problem}" if st.problem else "")
