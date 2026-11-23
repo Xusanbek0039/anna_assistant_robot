@@ -31,6 +31,7 @@ DEFAULTS = {
     "ig_autoreply": config.IG_AUTOREPLY,
     "ig_archive": True,               # yozishmalar arxivi + qaytarib olingan xabar ogohlantirishi
     "ig_forward": config.IG_FORWARD,  # yangi Direct xabarlari botga
+    "ig_proxy": True,                 # IG_PROXY ishlatilsinmi (ishlamasa botdan o'chiriladi)
     # 👀 Kim qiziqdi (/korganlar)
     "story_viewers": True,
     "bot_visitors": True,

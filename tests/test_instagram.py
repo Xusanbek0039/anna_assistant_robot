@@ -729,3 +729,40 @@ def test_placeholder_proxy_blocks_login_and_test(ig, monkeypatch):
     text = run(instagram.net_check())
     assert "misol matni" in text and "Proksi IP" not in text
     assert "misol matni" in run(instagram.panel())[0]
+
+
+# ---------- 🧦 proksini botdan o'chirish ----------
+def test_proxy_toggle_from_bot(ig, monkeypatch):
+    monkeypatch.setattr(config, "IG_PROXY", "http://u1:Xy7@gate.pr.io:7000")
+    monkeypatch.setattr(instagram, "PROXY", "http://u1:Xy7@gate.pr.io:7000")
+    text, rows = run(instagram.panel())
+    assert "http://***@gate.pr.io:7000" in text and "Xy7" not in text
+    assert [("✅ 🧦 Proksi (bosib o'chirish/yoqish)", "ig:set:ig_proxy")] in rows
+    Proxy = type("ClientConnectionError", (Exception,), {})
+    assert "🧦 Proksi" in instagram.explain(Proxy("ProxyError curl private transport failed"))
+
+    rebuilt = []
+    monkeypatch.setattr(instagram, "_new_client", lambda settings=None: rebuilt.append(settings) or FakeCl())
+    connect(FakeCl())
+    assert "o'chirildi" in run(instagram.toggle("ig_proxy"))
+    assert instagram.active_proxy() == "" and runtime.get("ig_proxy") is False
+    assert len(rebuilt) == 1 and instagram.connected()             # sessiya saqlangan holda qayta yasaldi
+    text, rows = run(instagram.panel())
+    assert "o'chiq" in text and ("▫️ 🧦 Proksi (bosib o'chirish/yoqish)", "ig:set:ig_proxy") in rows[-2]
+    assert "botdan o'chirilgan" in instagram.explain(Proxy("timeout"))
+
+    monkeypatch.setattr(instagram, "_probe", lambda url, proxy: (True, "35.1.1.1" if proxy is None else "X", 0.1))
+    assert "botdan o'chirilgan" in run(instagram.net_check())
+    assert "yoqildi" in run(instagram.toggle("ig_proxy")) and instagram.active_proxy()
+
+
+def test_proxy_toggle_without_proxy(ig, monkeypatch):
+    monkeypatch.setattr(instagram, "PROXY", "")
+    assert "o'chiradigan proksi yo'q" in run(instagram.toggle("ig_proxy"))
+    assert all(d != "ig:set:ig_proxy" for row in run(instagram.panel())[1] for _, d in row)
+
+
+def test_disabled_placeholder_proxy_does_not_block_login(ig, monkeypatch):
+    monkeypatch.setattr(instagram, "PROXY", "http://login:parol@host:port")
+    monkeypatch.setitem(runtime._values, "ig_proxy", False)
+    assert instagram.proxy_problem() is None                         # o'chirilgan — xalaqit bermaydi
