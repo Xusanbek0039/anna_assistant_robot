@@ -82,6 +82,54 @@ class LoginError(Exception):
     """Login jarayonidagi tushunarli xato (matni egasiga ko'rsatiladi)."""
 
 
+def normalize_proxy(raw: str) -> str:
+    """Provayderlar turli ko'rinishda beradi — instagrapi tushunadigan URL'ga keltiradi:
+    ip:port:login:parol -> http://login:parol@ip:port;  login:parol@ip:port / ip:port -> http://..."""
+    p = (raw or "").strip().strip("\"'")
+    if not p or "://" in p:
+        return p
+    m = re.fullmatch(r"([^:/@\s]+):(\d{2,5}):([^:@\s]+):(\S+)", p)
+    if m:
+        host, port, user, password = m.groups()
+        return f"http://{user}:{password}@{host}:{port}"
+    return f"http://{p}"
+
+
+PROXY = normalize_proxy(config.IG_PROXY)
+
+
+def mask_proxy(p: str) -> str:
+    return re.sub(r"(://)[^@/\s]+@", r"\1***@", p or "")
+
+
+def _scrub(text: str) -> str:
+    """Xato matnidan proksi login/paroli olib tashlanadi."""
+    text = text or ""
+    for secret in {config.IG_PROXY, PROXY}:
+        if secret:
+            text = text.replace(secret, mask_proxy(secret))
+    return re.sub(r"(://)[^@/\s:]+:[^@/\s]+@", r"\1***@", text)
+
+
+def _net_explain(e: BaseException) -> str:
+    detail = _scrub(" ".join(str(e).split()))[:220]
+    low = f"{type(e).__name__} {detail}".lower()
+    if "407" in low or "proxy authentication" in low:
+        why = "proksi login yoki paroli noto'g'ri (407)"
+    elif "proxy" in low or "socks" in low:
+        why = "proksiga ulanib bo'lmadi"
+    elif "timed out" in low or "timeout" in low:
+        why = "Instagram javob bermadi (vaqt tugadi)"
+    else:
+        why = "Instagram'ga ulanib bo'lmadi"
+    if PROXY:
+        hint = ("IG_PROXY ishlatilyapti — manzil, port, login va parolni tekshiring yoki IG_PROXY ni vaqtincha "
+                "bo'shatib ko'ring.")
+    else:
+        hint = "IG_PROXY bo'sh — server Instagram'ga to'g'ridan-to'g'ri ulana olmadi."
+    return f"{why}. {hint} Tekshirish: /ig → 🌐 Ulanish testi.\n({type(e).__name__}: {detail})"
+
+
 def _names(e: BaseException) -> set[str]:
     return {c.__name__ for c in type(e).__mro__}
 
@@ -134,9 +182,9 @@ def explain(e: BaseException) -> str:
         return "bunday Instagram akkaunt topilmadi"
     if names & {"ProxyAddressIsBlocked", "IPBlocked"}:
         return "bu IP manzil Instagram tomonidan bloklangan (.env: IG_PROXY)"
-    if names & _NET_ERRORS:
-        return "Instagram'ga ulanib bo'lmadi (internet yoki proksi)"
-    msg = " ".join(str(e).split())[:150]
+    if names & _NET_ERRORS or "proxyerror" in low:
+        return _net_explain(e)
+    msg = _scrub(" ".join(str(e).split()))[:150]
     return type(e).__name__ + (f": {msg}" if msg else "")
 
 
@@ -427,8 +475,8 @@ def _new_client(settings: dict | None = None):
     cl = Client()
     if settings:
         cl.set_settings(_with_current_app(settings))
-    if config.IG_PROXY:
-        cl.set_proxy(config.IG_PROXY)
+    if PROXY:
+        cl.set_proxy(PROXY)
     cl.delay_range = [1, 3]   # so'rovlar orasida tasodifiy pauza — odamga o'xshab
     return cl
 
@@ -578,7 +626,7 @@ async def login(username: str, password: str, say) -> str:
         try:
             cl = await asyncio.to_thread(_login_sync, username.strip().lstrip("@"), password, ask, old)
         except Exception as e:
-            log.warning("Instagram login bo'lmadi (%s)", type(e).__name__)
+            log.warning("Instagram login bo'lmadi: %s: %s", type(e).__name__, _scrub(str(e))[:300])
             return f"❌ Instagram'ga kirilmadi: {explain(e)}"
         await _connected(cl, username.strip().lstrip("@"))
     return f"✅ Instagram ulandi: @{st.username}\nPanel: /ig"
@@ -602,7 +650,7 @@ async def login_session(raw: str) -> str:
         try:
             cl = await asyncio.to_thread(_session_sync, sid, old)
         except Exception as e:
-            log.warning("Instagram sessionid bilan kirilmadi (%s)", type(e).__name__)
+            log.warning("Instagram sessionid bilan kirilmadi: %s: %s", type(e).__name__, _scrub(str(e))[:300])
             return f"❌ Sessiya bilan kirilmadi: {_esc(explain(e))}"
         await _connected(cl)
     return f"✅ Instagram ulandi: @{_esc(st.username)}\nPanel: /ig"
@@ -973,6 +1021,69 @@ async def check_now() -> str:
     return f"✅ {res['threads']} ta chat tekshirildi, saqlandi: {res['saved']}, javob: {res['replied']}"
 
 
+IG_PROBE_URL = "https://i.instagram.com/"
+IP_PROBE_URL = "https://api.ipify.org"
+
+
+def _probe(url: str, proxy: str | None) -> tuple[bool, str, float]:
+    """(yetib bordimi, qiymat yoki xato, soniya). Har qanday HTTP javob = server yetib bordi.
+    instagrapi kabi requests ishlatiladi (socks5 ham PySocks orqali ishlaydi)."""
+    import requests
+    started = time.monotonic()
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": _UA},
+                         proxies={"http": proxy, "https": proxy} if proxy else None)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {_scrub(' '.join(str(e).split()))[:160]}", 0.0
+    body = (r.text or "").strip()[:40] if url == IP_PROBE_URL and r.ok else ""
+    return True, body or f"HTTP {r.status_code}", time.monotonic() - started
+
+
+def _shown(res: tuple[bool, str, float]) -> str:
+    ok, value, took = res
+    return _esc(value) + (f" · {took:.1f} s" if ok else "")
+
+
+async def net_check() -> str:
+    """Botdagi «🌐 Ulanish testi»: server Instagram'ga to'g'ridan-to'g'ri va proksi orqali yetadimi."""
+    try:
+        import requests  # noqa: F401 — instagrapi bilan birga o'rnatiladi
+    except ImportError:
+        return "❌ requests kutubxonasi yo'q — pip install -r requirements.txt"
+    mark = lambda res: "✅" if res[0] else "❌"  # noqa: E731
+    ip = await asyncio.to_thread(_probe, IP_PROBE_URL, None)
+    ig = await asyncio.to_thread(_probe, IG_PROBE_URL, None)
+    lines = ["🌐 <b>Instagram ulanish testi</b>", "",
+             f"{mark(ip)} Server IP: {_shown(ip)}",
+             f"{mark(ig)} Server → Instagram (to'g'ridan-to'g'ri): {_shown(ig)}"]
+    if not PROXY:
+        lines.append("▫️ IG_PROXY: bo'sh")
+        verdict = ("Ulanish joyida. Login baribir o'tmasa — Instagram server IP'sidan kirishni yoqtirmayapti: "
+                   "/igsession usulini sinang yoki residential proksi qo'ying." if ig[0] else
+                   "Server Instagram'ga ulana olmayapti — residential proksi kerak (IG_PROXY).")
+        return "
+".join(lines + ["", f"➡️ {verdict}"])
+    pip = await asyncio.to_thread(_probe, IP_PROBE_URL, PROXY)
+    pig = await asyncio.to_thread(_probe, IG_PROBE_URL, PROXY)
+    lines += ["", f"🧦 IG_PROXY: <code>{_esc(mask_proxy(PROXY))}</code>"]
+    if PROXY != config.IG_PROXY.strip().strip("\"'"):
+        lines.append("ℹ️ Proksi formati avtomatik to'g'rilandi (masalan ip:port:login:parol → "
+                     "http://login:parol@ip:port)")
+    lines += [f"{mark(pip)} Proksi IP: {_shown(pip)}", f"{mark(pig)} Proksi → Instagram: {_shown(pig)}"]
+    if pig[0] and pip[0] and ip[0] and pip[1] == ip[1]:
+        verdict = "Proksi javob beryapti, lekin chiquvchi IP server IP'si bilan bir xil — proksi ishlamayapti."
+    elif pig[0]:
+        verdict = "Proksi ishlayapti. Login baribir o'tmasa — /igsession usulini sinang."
+    elif ig[0]:
+        verdict = ("Proksi ishlamayapti, to'g'ridan-to'g'ri ulanish esa ishlayapti. IG_PROXY ni tuzating (manzil, "
+                   "port, login, parol; ba'zi provayderlarda server IP'sini ruxsat etilganlar ro'yxatiga qo'shish "
+                   "kerak) yoki vaqtincha bo'shatib qo'ying.")
+    else:
+        verdict = "Na to'g'ridan-to'g'ri, na proksi orqali ulanib bo'lmadi — server internetini va proksini tekshiring."
+    return "
+".join(lines + ["", f"➡️ {verdict}"])
+
+
 async def run() -> None:
     """Fon vazifasi: sessiyani tiklaydi va Direct'ni muntazam tekshiradi."""
     await asyncio.sleep(5)
@@ -1047,7 +1158,8 @@ async def panel() -> tuple[str, list]:
               "🗂 — yozishmalar arxivi, qaytarib olingan xabar haqida xabar\n📥 — yangi xabarlar botga keladi"]
     btn = [(f"{'✅' if runtime.get(k) else '▫️'} {label}", f"ig:set:{k}") for k, label in TOGGLES.items()]
     rows = [btn[0:2], btn[2:4], [("💬 Chatlar arxivi", "ig:chats:0"), ("🔄 Hozir tekshirish", "ig:check")],
-            [("🚪 Chiqish", "ig:logout")] if st.client is not None else [("🔑 Ulash", "ig:help")]]
+            [("🚪 Chiqish", "ig:logout") if st.client is not None else ("🔑 Ulash", "ig:help"),
+             ("🌐 Ulanish testi", "ig:net")]]
     return "\n".join(lines), rows
 
 
