@@ -293,6 +293,7 @@ class Item:
     duration: float = 0.0
     share_url: str = ""       # ulashilgan post/reels/storis havolasi (bosib ko'rish uchun)
     author: str = ""          # ulashilgan postning muallifi (@username)
+    itype: str = ""           # Instagram'dagi asl xabar turi (item_type) — muammo bo'lsa logga yoziladi
 
 
 @dataclass
@@ -339,7 +340,9 @@ def _describe(it: dict) -> tuple[str, str]:
     if itype == "media":
         return ("video" if sub("media").get("media_type") == 2 else "rasm"), ""
     if itype in ("raven_media", "visual_media"):
-        return "rasm", ""
+        vm = sub("visual_media")
+        media = vm.get("media") if isinstance(vm.get("media"), dict) else {}
+        return ("video" if media.get("media_type") == 2 else "rasm"), ""
     if itype == "voice_media":
         return "ovozli xabar", ""
     if itype == "animated_media":
@@ -442,7 +445,17 @@ def share_link(it: dict, kind: str) -> tuple[str, str]:
 def _attach_media(item: Item, it: dict) -> None:
     """Xabardagi yuklab olinadigan faylni topadi (bir martalik, oddiy rasm/video, ovoz, GIF, ulashilgan post)."""
     vm = it.get("visual_media")
-    if isinstance(vm, dict) and str(vm.get("view_mode") or "").lower() != "permanent":
+    if isinstance(vm, dict) and str(vm.get("view_mode") or "").lower() == "permanent":
+        # Yangi formatdagi ODDIY (saqlanib qoladigan) rasm/video — fayl visual_media ichida keladi
+        media = vm.get("media") if isinstance(vm.get("media"), dict) else {}
+        url, kind, w, h, dur = _from_media(media)
+        if not url and isinstance(media.get("carousel_media"), list) and media["carousel_media"]:
+            url, kind, w, h, dur = _from_media(media["carousel_media"][0])
+        item.kind = kind or item.kind
+        if url:
+            item.url, item.width, item.height, item.duration = url, w, h, dur
+        return
+    if isinstance(vm, dict):
         item.ephemeral = True
         item.view_mode = str(vm.get("view_mode") or "once").lower()
         media = vm.get("media") if isinstance(vm.get("media"), dict) else {}
@@ -466,6 +479,8 @@ def _attach_media(item: Item, it: dict) -> None:
         if isinstance(block, dict):
             inner = block.get(key) if isinstance(block.get(key), dict) else block
             url, kind, w, h, dur = _from_media(inner)
+            if not url and isinstance(inner.get("carousel_media"), list) and inner["carousel_media"]:
+                url, kind, w, h, dur = _from_media(inner["carousel_media"][0])   # bir nechta rasm birga
             if url:
                 item.url, item.width, item.height, item.duration = url, w, h, dur
                 if key == "media":
@@ -480,7 +495,7 @@ def parse_item(it: dict, viewer_id: str = "") -> Item | None:
     sender = str(it.get("user_id") or "")
     out = bool(it.get("is_sent_by_viewer")) or (bool(viewer_id) and sender == str(viewer_id))
     kind, text = _describe(it)
-    item = Item(item_id, sender, out, _ts(it.get("timestamp")), kind, text)
+    item = Item(item_id, sender, out, _ts(it.get("timestamp")), kind, text, itype=str(it.get("item_type") or ""))
     if kind in ("reels", "post", "storis", "storisga javob"):
         item.share_url, item.author = share_link(it, kind)
     _attach_media(item, it)
@@ -1580,6 +1595,34 @@ async def _save_ephemeral(threads: list[Thread], acc: _State | None = None) -> i
 
 
 SENT_KINDS = ("rasm", "video")
+SENT_WAIT = 10 * 60          # yuborgan mediangiz fayli shuncha vaqt kutiladi (Instagram'ga yuklanib bo'lishi uchun)
+SENT_REFETCH_EVERY = 60      # fayl ko'rinmasa — chat shuncha soniyada bir to'liq qayta o'qiladi
+_sent_wait: dict[str, list[float]] = {}          # kalit -> [birinchi ko'rilgan vaqt, oxirgi qayta o'qish]
+
+
+def _find_item_sync(cl, thread_id: str, item_id: str) -> dict | None:
+    """Chatni to'g'ridan-to'g'ri o'qib, bitta xabarni topadi (inbox ba'zan fayl manzilini bermaydi)."""
+    raw = _thread_page_sync(cl, thread_id)
+    return next((i for i in raw.get("items") or [] if isinstance(i, dict)
+                 and str(i.get("item_id")) == item_id), None)
+
+
+async def _sent_retry(acc: _State, th: Thread, it: Item, key: str) -> Item | None:
+    """Fayl manzili yo'q: chatni qayta o'qib ko'radi. Topilsa — yangilangan xabar; vaqt tugagan bo'lsa —
+    o'zi (manzilsiz); hali kutish kerak bo'lsa — None."""
+    now = time.time()
+    first, last = _sent_wait.setdefault(key, [now, 0.0])
+    if now - last >= SENT_REFETCH_EVERY and acc.client is not None:
+        _sent_wait[key][1] = now
+        try:
+            async with _api_lock:
+                raw = await asyncio.to_thread(_find_item_sync, acc.client, th.thread_id, it.item_id)
+            fresh = parse_item(raw, acc.user_id) if raw else None
+            if fresh is not None and fresh.url:
+                return fresh
+        except Exception as e:
+            log.info("Yuborgan media uchun chat qayta o'qilmadi (%s)", type(e).__name__)
+    return it if now - first >= SENT_WAIT else None
 
 
 def sent_caption(th: Thread, it: Item, acc: _State | None = None) -> str:
@@ -1619,11 +1662,19 @@ async def _forward_sent(threads: list[Thread], acc: _State | None = None) -> int
             meta = {"status": "out", "thread_id": th.thread_id, "sender": acc.name(), "kind": it.kind,
                     "date": it.ts, "view_once": it.ephemeral}
             if not it.url:
-                # Instagram yuboruvchining o'ziga ham faylni bermadi (ko'pincha bir martalik media ko'rilgach)
+                it = await _sent_retry(acc, th, it, key)
+                if it is None:       # hali kutyapmiz — keyingi tekshiruvda yana qaraymiz
+                    continue
+            if not it.url:
+                # 10 daqiqa ichida ham Instagram faylni bermadi (ko'pincha bir martalik media ko'rilgach)
+                _sent_wait.pop(key, None)
                 await storage.ig_saved_add(key, {**meta, "status": "out_missed"})
+                log.warning("Siz yuborgan %s ning fayli topilmadi (item_type=%s, ephemeral=%s)",
+                            it.kind, it.itype, it.ephemeral)
                 await _say(f"📤 Instagram ({acc.name()}): siz «{th.title}» ga {it.kind} yubordingiz, lekin "
                            "Instagram faylni bermadi — nusxa olib bo'lmadi.")
                 continue
+            _sent_wait.pop(key, None)
             try:
                 data, mime = await _download(it.url)
             except Exception as e:

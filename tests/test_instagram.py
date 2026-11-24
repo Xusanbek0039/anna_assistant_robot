@@ -1005,12 +1005,39 @@ def test_sent_media_toggle_off(ig):
     assert run(instagram.check_once())["sent"] == 0 and ig.media == []
 
 
-def test_sent_view_once_without_url_is_reported(ig):
+def test_sent_view_once_without_url_is_reported(ig, monkeypatch):
+    monkeypatch.setattr(instagram, "_sent_wait", {})
     connect(FakeCl([thread("111", [raven("mine", uid="1", seen=True)])]))
+    run(instagram.check_once())
+    assert ig.media == [] and ig.alerts == []        # darhol taslim bo'lmaydi — fayl keyinroq paydo bo'lishi mumkin
+    monkeypatch.setattr(instagram, "SENT_WAIT", 0)   # kutish vaqti tugadi
     run(instagram.check_once())
     assert ig.media == [] and "faylni bermadi" in ig.alerts[0]
     run(instagram.check_once())
     assert len(ig.alerts) == 1
+
+
+def test_sent_media_url_found_by_rereading_thread(ig, monkeypatch):
+    """Inbox fayl manzilini bermasa — chat to'g'ridan-to'g'ri qayta o'qiladi va rasm o'sha yerdan olinadi."""
+    monkeypatch.setattr(instagram, "_sent_wait", {})
+
+    class Cl(FakeCl):
+        def private_request(self, endpoint, data=None, params=None, **kw):
+            if endpoint.startswith("direct_v2/threads/"):
+                return {"thread": {"items": [photo("p1")]}}
+            return super().private_request(endpoint, data, params, **kw)
+
+    bare = {"item_id": "p1", "user_id": "1", "timestamp": NEW, "item_type": "media", "media": {"media_type": 1}}
+    connect(Cl([thread("111", [bare])]))
+    assert run(instagram.check_once())["sent"] == 1
+    assert [m.filename for m in ig.media] == ["instagram_men_p1.jpg"] and ig.alerts == []
+
+
+def test_permanent_visual_media_is_regular_photo_with_file():
+    """Yangi formatdagi oddiy rasm/video: visual_media, view_mode=permanent."""
+    raw = raven("pv", uid="1", video=True, mode="permanent")
+    it = instagram.parse_item(raw, "1")
+    assert it.out and not it.ephemeral and it.kind == "video" and it.url == "https://cdn/hd.mp4"
 
 
 def test_two_accounts_work_together(ig):
