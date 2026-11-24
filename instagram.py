@@ -886,6 +886,15 @@ async def _connected(cl, typed: str = "", acc: _State | None = None) -> None:
     wake()
 
 
+def _cmds_for_slot(text: str, slot: str) -> str:
+    """2-akkaunt uchun matndagi /iglogin, /igsession, /iglogout -> /iglogin2, ... ga almashtiriladi."""
+    if str(slot) == "1":
+        return text
+    for cmd in ("/iglogin", "/igsession", "/iglogout"):
+        text = re.sub(re.escape(cmd) + r"(?![\w])", cmd + str(slot), text)
+    return text
+
+
 def _slot_hint(slot: str) -> str:
     return "" if slot == "1" else f" ({slot}-akkaunt)"
 
@@ -907,7 +916,7 @@ async def login(username: str, password: str, say, slot: str = "1") -> str:
             cl = await asyncio.to_thread(_login_sync, username.strip().lstrip("@"), password, ask, old, tell)
         except Exception as e:
             log.warning("Instagram login bo'lmadi: %s: %s", type(e).__name__, _scrub(str(e))[:300])
-            return f"❌ Instagram'ga kirilmadi{_slot_hint(acc.slot)}: {explain(e)}"
+            return f"❌ Instagram'ga kirilmadi{_slot_hint(acc.slot)}: {_cmds_for_slot(explain(e), acc.slot)}"
         await _connected(cl, username.strip().lstrip("@"), acc)
     return f"✅ Instagram ulandi{_slot_hint(acc.slot)}: @{acc.username}\nPanel: /ig"
 
@@ -932,7 +941,7 @@ async def login_session(raw: str, slot: str = "1") -> str:
             cl = await asyncio.to_thread(_session_sync, sid, old)
         except Exception as e:
             log.warning("Instagram sessionid bilan kirilmadi: %s: %s", type(e).__name__, _scrub(str(e))[:300])
-            return f"❌ Sessiya bilan kirilmadi{_slot_hint(acc.slot)}: {_esc(explain(e))}"
+            return f"❌ Sessiya bilan kirilmadi{_slot_hint(acc.slot)}: {_esc(_cmds_for_slot(explain(e), acc.slot))}"
         await _connected(cl, "", acc)
     return f"✅ Instagram ulandi{_slot_hint(acc.slot)}: @{_esc(acc.username)}\nPanel: /ig"
 
@@ -2048,9 +2057,7 @@ def login_help(slot: str = "1") -> str:
     """Ulash yo'riqnomasi: 2-akkaunt uchun buyruqlar «2» bilan ko'rsatiladi."""
     if str(slot) != "2":
         return LOGIN_HELP
-    text = LOGIN_HELP.split("\n\n➕")[0]
-    for cmd in ("/iglogin", "/igsession", "/iglogout"):
-        text = re.sub(re.escape(cmd) + r"\b", cmd + "2", text)
+    text = _cmds_for_slot(LOGIN_HELP.split("\n\n➕")[0], slot)
     return text.replace("🔑 <b>Instagram'ni ulash</b>", "🔑 <b>2-Instagram akkauntni ulash</b>", 1)
 
 
