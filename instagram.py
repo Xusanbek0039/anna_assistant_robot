@@ -1671,8 +1671,17 @@ async def _forward_sent(threads: list[Thread], acc: _State | None = None) -> int
                 await storage.ig_saved_add(key, {**meta, "status": "out_missed"})
                 log.warning("Siz yuborgan %s ning fayli topilmadi (item_type=%s, ephemeral=%s)",
                             it.kind, it.itype, it.ephemeral)
-                await _say(f"📤 Instagram ({acc.name()}): siz «{th.title}» ga {it.kind} yubordingiz, lekin "
-                           "Instagram faylni bermadi — nusxa olib bo'lmadi.")
+                if it.ephemeral:
+                    # Instagram o'zingiz yuborgan bir martalik mediani sizga ham qaytarib bermaydi (ilovada ham
+                    # ochib bo'lmaydi) — har safar emas, haftada bir marta tushuntiramiz
+                    await _say_once("sent_ephemeral",
+                                    "📤 Instagram: siz yuborgan 🔥 vaqtinchalik (bir marta ko'riladigan) rasm/video "
+                                    "nusxasini olib bo'lmaydi — Instagram uni yuboruvchining o'ziga ham bermaydi "
+                                    "(ilovada ham qayta ochib bo'lmaydi). Oddiy rasm/video va sizga kelgan "
+                                    "vaqtinchalik media esa botga keladi.", every=7 * 24 * 3600)
+                else:
+                    await _say(f"📤 Instagram ({acc.name()}): siz «{th.title}» ga {it.kind} yubordingiz, lekin "
+                               "Instagram faylni bermadi — nusxa olib bo'lmadi.")
                 continue
             _sent_wait.pop(key, None)
             try:

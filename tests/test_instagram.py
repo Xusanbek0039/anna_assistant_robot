@@ -1012,9 +1012,28 @@ def test_sent_view_once_without_url_is_reported(ig, monkeypatch):
     assert ig.media == [] and ig.alerts == []        # darhol taslim bo'lmaydi — fayl keyinroq paydo bo'lishi mumkin
     monkeypatch.setattr(instagram, "SENT_WAIT", 0)   # kutish vaqti tugadi
     run(instagram.check_once())
-    assert ig.media == [] and "faylni bermadi" in ig.alerts[0]
+    assert ig.media == [] and "yuboruvchining o'ziga ham bermaydi" in ig.alerts[0]
     run(instagram.check_once())
     assert len(ig.alerts) == 1
+
+
+def test_sent_view_once_explained_only_once(ig, monkeypatch):
+    """Har bir vaqtinchalik rasm uchun bir xil ogohlantirish kelavermasin."""
+    monkeypatch.setattr(instagram, "_sent_wait", {})
+    monkeypatch.setattr(instagram, "SENT_WAIT", 0)
+    connect(FakeCl([thread("111", [raven("m1", uid="1", seen=True),
+                                   raven("m2", uid="1", seen=True, ts=NEW + 1)])]))
+    run(instagram.check_once())
+    assert len(ig.alerts) == 1 and "out:m1" in ig.fs.saved and "out:m2" in ig.fs.saved
+
+
+def test_sent_regular_photo_without_url_is_reported(ig, monkeypatch):
+    monkeypatch.setattr(instagram, "_sent_wait", {})
+    monkeypatch.setattr(instagram, "SENT_WAIT", 0)
+    bare = {"item_id": "p1", "user_id": "1", "timestamp": NEW, "item_type": "media", "media": {"media_type": 1}}
+    connect(FakeCl([thread("111", [bare])]))
+    run(instagram.check_once())
+    assert "faylni bermadi" in ig.alerts[0]
 
 
 def test_sent_media_url_found_by_rereading_thread(ig, monkeypatch):
