@@ -834,16 +834,22 @@ async def watch_delete(watch_id: str) -> bool:
 
 
 # ---------- 📸 Instagram (instagram.py) ----------
-async def ig_get_session() -> dict | None:
-    return await _get_db().instagram.find_one({"_id": "session"})
+def _ig_session_id(slot: str = "1") -> str:
+    """1-akkaunt — «session» (eski yozuv o'zgarmaydi), 2-akkaunt — «session2»."""
+    return "session" if str(slot) == "1" else f"session{slot}"
 
 
-async def ig_set_session(**fields) -> None:
-    await _get_db().instagram.update_one({"_id": "session"}, {"$set": {**fields, "ts": time.time()}}, upsert=True)
+async def ig_get_session(slot: str = "1") -> dict | None:
+    return await _get_db().instagram.find_one({"_id": _ig_session_id(slot)})
 
 
-async def ig_delete_session() -> None:
-    await _get_db().instagram.delete_one({"_id": "session"})
+async def ig_set_session(slot: str = "1", **fields) -> None:
+    await _get_db().instagram.update_one({"_id": _ig_session_id(slot)}, {"$set": {**fields, "ts": time.time()}},
+                                         upsert=True)
+
+
+async def ig_delete_session(slot: str = "1") -> None:
+    await _get_db().instagram.delete_one({"_id": _ig_session_id(slot)})
 
 
 async def ig_saved_has(item_id: str) -> bool:

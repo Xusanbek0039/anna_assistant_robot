@@ -69,6 +69,8 @@ def ig(monkeypatch):
     st = instagram._State()
     st.started = STARTED
     monkeypatch.setattr(instagram, "st", st)
+    monkeypatch.setattr(instagram, "st2", instagram._State("2"))
+    monkeypatch.setattr(instagram, "_thread_acc", {})
     monkeypatch.setattr(instagram, "_api_lock", asyncio.Lock())
     monkeypatch.setattr(gdrive, "enabled", lambda: False)
     out = type("O", (), {})()

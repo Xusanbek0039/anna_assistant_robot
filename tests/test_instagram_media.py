@@ -53,6 +53,8 @@ def ig(monkeypatch):
     st = instagram._State()
     st.started = STARTED
     monkeypatch.setattr(instagram, "st", st)
+    monkeypatch.setattr(instagram, "st2", instagram._State("2"))
+    monkeypatch.setattr(instagram, "_thread_acc", {})
     for name in ("_known", "_missing", "_muted_until", "_alerted"):
         monkeypatch.setattr(instagram, name, {})
     monkeypatch.setattr(instagram, "_ai_sent",

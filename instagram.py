@@ -9,6 +9,10 @@ Imkoniyatlar (har birini /ig panelidan yoqib-o'chirsa bo'ladi):
   🗂 Chat arxivi — yozishmalar MongoDB'ga yoziladi; kimdir xabarini qaytarib olsa (unsend) — botga xabar keladi,
      yozishmani HTML fayl qilib olasiz.
   📥 Xabarlar botga — Direct'ga kelgan yangi xabarlar botga keladi; bildirishnomaga reply qilib javob yozasiz.
+  📤 Men yuborgan media — siz Direct'da kimgadir yuborgan rasm/video (oddiy ham, o'chib ketadigan ham) botga
+     nusxa bo'lib keladi.
+  👥 2 ta akkaunt — /iglogin2 (/igsession2, /iglogout2) bilan ikkinchi akkaunt ulanadi; ikkalasi bir vaqtda
+     tekshiriladi, xabarlarda qaysi akkauntga tegishli ekani yoziladi, javob o'sha akkauntdan ketadi.
 
 Qanday ishlaydi: Instagram'ning rasmiy API'si shaxsiy Direct'ni bermaydi — telefon ilovasi o'rnida ishlaydigan
 instagrapi kutubxonasi ishlatiladi va dastur har IG_POLL_SECONDS da Direct'ni tekshiradi.
@@ -71,7 +75,8 @@ USERNAME_RE = re.compile(r"[A-Za-z0-9._]{1,30}")
 _UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
 
 TOGGLES = {"ig_save": "🔥 Bir martalik media", "ig_autoreply": "🤖 Avtojavob",
-           "ig_archive": "🗂 Arxiv", "ig_forward": "📥 Xabarlar botga"}
+           "ig_archive": "🗂 Arxiv", "ig_forward": "📥 Xabarlar botga",
+           "ig_sent": "📤 Men yuborgan media"}
 _TEXT_KINDS = {"", "havola", "like", "amal", "xabar", "qo'ng'iroq"}
 _SKIP_UNSENT = {"amal", "xabar", "qo'ng'iroq"}   # vaqtinchalik xizmat xabarlari — «qaytarib olindi» deyilmaydi
 
@@ -521,10 +526,12 @@ def who_html(full: str, username: str) -> str:
     return s
 
 
-def media_caption(th: Thread, it: Item) -> str:
+def media_caption(th: Thread, it: Item, acc: "_State | None" = None) -> str:
     uname, full = th.person(it.sender_id)
     mode = "bir marta ko'riladigan" if it.view_mode == "once" else "o'chib ketadigan"
     lines = [f"📸 <b>Instagram</b> — 🔥 {mode} {it.kind}", f"👤 {who_html(full, uname)}"]
+    if acc is not None and (line := acc_line(acc)):
+        lines.append(line)
     if th.group:
         lines.append(f"👥 {_esc(th.title)}")
     lines.append(f"🕒 {_when(it.ts)}")
@@ -550,7 +557,10 @@ def doc_of(th: Thread, it: Item, ai_text: bool = False) -> dict:
     return doc
 
 
-# ---------- holat ----------
+# ---------- holat (har bir ulangan Instagram akkaunt uchun alohida) ----------
+SLOTS = ("1", "2")           # bir vaqtda 2 ta akkaunt: /iglogin va /iglogin2
+
+
 class _State:
     client = None            # instagrapi.Client (ulangan bo'lsa)
     username = ""
@@ -563,8 +573,55 @@ class _State:
     saved_at = 0.0
     started = time.time()    # avtojavob va bildirishnomalar faqat shundan keyin kelgan xabarlarga
 
+    def __init__(self, slot: str = "1"):
+        self.slot = slot
 
-st = _State()
+    def key(self, value: str) -> str:
+        """1-akkaunt uchun o'zi (eski yozuvlar bilan mos), 2-akkaunt uchun «2:» old qo'shimchasi bilan."""
+        return value if self.slot == "1" else f"{self.slot}:{value}"
+
+    def name(self) -> str:
+        return f"@{self.username}" if self.username else f"{self.slot}-akkaunt"
+
+
+st = _State("1")             # 1-akkaunt (asosiy)
+st2 = _State("2")            # 2-akkaunt
+_thread_acc: dict[str, str] = {}                 # thread_id -> qaysi akkauntning chati (slot)
+
+
+def accounts() -> list[_State]:
+    return [st, st2]
+
+
+def account(slot="1") -> _State:
+    return st2 if str(slot) == "2" else st
+
+
+def connected_accounts() -> list[_State]:
+    return [a for a in accounts() if a.client is not None]
+
+
+def multi() -> bool:
+    """Ikkala akkaunt ulangan — xabarlarda qaysi akkauntga kelgani yoziladi."""
+    return len(connected_accounts()) > 1
+
+
+def acc_line(acc: _State) -> str:
+    return f"📱 Akkaunt: <b>{_esc(acc.name())}</b>" if multi() else ""
+
+
+async def _acc_for(thread_id: str, info: dict | None = None) -> _State | None:
+    """Chat qaysi (ulangan) akkauntga tegishli. Topilmasa — None."""
+    slot = _thread_acc.get(thread_id)
+    if slot is None:
+        if info is None:
+            try:
+                info = await storage.ig_chat_get(thread_id)
+            except Exception:
+                info = None
+        slot = (info or {}).get("acc") or "1"
+    acc = account(slot)
+    return acc if acc.client is not None else None
 _alert = None        # async (matn) -> None
 _send_media = None   # async (data, filename, caption_html, video: dict | None, as_file: bool) -> bool
 _notify = None       # async (thread_id, html) -> None  (tugmalar: javob, AI jim, HTML)
@@ -589,8 +646,10 @@ def wake() -> None:
     _wake.set()
 
 
-def connected() -> bool:
-    return st.client is not None
+def connected(slot=None) -> bool:
+    if slot is None:
+        return bool(connected_accounts())
+    return account(slot).client is not None
 
 
 async def _say(text: str) -> None:
@@ -783,27 +842,30 @@ def _asker(loop, say):
     return ask
 
 
-async def _saved_settings() -> dict | None:
+async def _saved_settings(acc: _State | None = None) -> dict | None:
     try:
-        doc = await storage.ig_get_session()
+        doc = await storage.ig_get_session((acc or st).slot)
         return json.loads(doc["settings"]) if doc and doc.get("settings") else None
     except Exception:
         return None
 
 
-async def _save_session() -> None:
-    cl = st.client
+async def _save_session(acc: _State | None = None) -> None:
+    acc = acc or st
+    cl = acc.client
     if cl is None:
         return
     try:
         settings = json.dumps(cl.get_settings(), default=str)
-        await storage.ig_set_session(username=st.username, user_id=st.user_id, settings=settings, active=True)
-        st.saved_at = time.time()
+        await storage.ig_set_session(acc.slot, username=acc.username, user_id=acc.user_id, settings=settings,
+                                     active=True)
+        acc.saved_at = time.time()
     except Exception as e:
         log.warning("Instagram sessiyasi bazaga yozilmadi (%s)", type(e).__name__)
 
 
-async def _connected(cl, typed: str = "") -> None:
+async def _connected(cl, typed: str = "", acc: _State | None = None) -> None:
+    acc = acc or st
     # Email yoki telefon raqam bilan kirilgan bo'lsa — haqiqiy username Instagram'dan olinadi
     if typed:
         name = typed if USERNAME_RE.fullmatch(typed) and not typed.isdigit() else ""
@@ -815,14 +877,22 @@ async def _connected(cl, typed: str = "") -> None:
                 name = await asyncio.to_thread(_current_username, cl)
         except Exception:
             name = typed
-    st.client, st.username, st.user_id = cl, name, str(getattr(cl, "user_id", "") or "")
-    st.problem, st.fail_streak, st.paused_until = "", 0, 0.0
-    await _save_session()
+    acc.client, acc.username, acc.user_id = cl, name, str(getattr(cl, "user_id", "") or "")
+    acc.problem, acc.fail_streak, acc.paused_until = "", 0, 0.0
+    if acc.slot != "1":
+        # Yangi qo'shilgan akkaunt: eski xabarlar (ulanishdan oldingilari) botga to'kilib kelmasin
+        acc.started = time.time()
+    await _save_session(acc)
     wake()
 
 
-async def login(username: str, password: str, say) -> str:
+def _slot_hint(slot: str) -> str:
+    return "" if slot == "1" else f" ({slot}-akkaunt)"
+
+
+async def login(username: str, password: str, say, slot: str = "1") -> str:
     """say(text) — egasiga xabar (kod so'rash). Natija matnini qaytaradi."""
+    acc = account(slot)
     if problem := lib_problem() or proxy_problem():
         return f"❌ {problem}"
     if _login_lock.locked():
@@ -832,14 +902,14 @@ async def login(username: str, password: str, say) -> str:
         ask = _asker(loop, say)
         # Oqim ichidan egasiga xabar (javob kutmasdan): «boshqa variant sinalmoqda...»
         tell = (lambda text: asyncio.run_coroutine_threadsafe(say(text), loop)) if say else None
-        old = await _saved_settings()
+        old = await _saved_settings(acc)
         try:
             cl = await asyncio.to_thread(_login_sync, username.strip().lstrip("@"), password, ask, old, tell)
         except Exception as e:
             log.warning("Instagram login bo'lmadi: %s: %s", type(e).__name__, _scrub(str(e))[:300])
-            return f"❌ Instagram'ga kirilmadi: {explain(e)}"
-        await _connected(cl, username.strip().lstrip("@"))
-    return f"✅ Instagram ulandi: @{st.username}\nPanel: /ig"
+            return f"❌ Instagram'ga kirilmadi{_slot_hint(acc.slot)}: {explain(e)}"
+        await _connected(cl, username.strip().lstrip("@"), acc)
+    return f"✅ Instagram ulandi{_slot_hint(acc.slot)}: @{acc.username}\nPanel: /ig"
 
 
 def clean_sessionid(raw: str) -> str:
@@ -848,7 +918,8 @@ def clean_sessionid(raw: str) -> str:
     return sid.split(";")[0].strip().strip("\"'")
 
 
-async def login_session(raw: str) -> str:
+async def login_session(raw: str, slot: str = "1") -> str:
+    acc = account(slot)
     if problem := lib_problem() or proxy_problem():
         return f"❌ {html.escape(problem, quote=False)}"
     sid = clean_sessionid(raw)
@@ -856,19 +927,21 @@ async def login_session(raw: str) -> str:
         return ("❌ Bu sessionid'ga o'xshamaydi. U raqamlar bilan boshlanadi, masalan: "
                 "<code>1234567890%3AAbCdEf...</code>")
     async with _login_lock:
-        old = await _saved_settings()
+        old = await _saved_settings(acc)
         try:
             cl = await asyncio.to_thread(_session_sync, sid, old)
         except Exception as e:
             log.warning("Instagram sessionid bilan kirilmadi: %s: %s", type(e).__name__, _scrub(str(e))[:300])
-            return f"❌ Sessiya bilan kirilmadi: {_esc(explain(e))}"
-        await _connected(cl)
-    return f"✅ Instagram ulandi: @{_esc(st.username)}\nPanel: /ig"
+            return f"❌ Sessiya bilan kirilmadi{_slot_hint(acc.slot)}: {_esc(explain(e))}"
+        await _connected(cl, "", acc)
+    return f"✅ Instagram ulandi{_slot_hint(acc.slot)}: @{_esc(acc.username)}\nPanel: /ig"
 
 
-async def logout() -> str:
-    cl, st.client = st.client, None
-    st.username, st.user_id, st.problem = "", "", ""
+async def logout(slot: str = "1") -> str:
+    acc = account(slot)
+    name = acc.name()
+    cl, acc.client = acc.client, None
+    acc.username, acc.user_id, acc.problem = "", "", ""
     if cl is not None:
         try:
             async with _api_lock:
@@ -876,18 +949,21 @@ async def logout() -> str:
         except Exception as e:
             log.info("Instagram'dan chiqish so'rovi o'tmadi (%s)", type(e).__name__)
     try:
-        await storage.ig_delete_session()
+        await storage.ig_delete_session(acc.slot)
     except Exception as e:
         log.warning("Instagram sessiyasi bazadan o'chirilmadi (%s)", type(e).__name__)
+    if acc.slot != "1":
+        return f"🚪 {acc.slot}-akkauntdan ({name}) chiqildi, sessiya o'chirildi."
     return "🚪 Instagram akkauntidan chiqildi, sessiya o'chirildi."
 
 
-async def restore() -> bool:
+async def restore(acc: _State | None = None) -> bool:
     """Bazadagi sessiya bilan qayta ulanadi (login so'ralmaydi)."""
+    acc = acc or st
     if lib_problem():
         return False
     try:
-        doc = await storage.ig_get_session()
+        doc = await storage.ig_get_session(acc.slot)
     except Exception as e:
         log.warning("Instagram sessiyasi o'qilmadi (%s)", type(e).__name__)
         return False
@@ -896,13 +972,13 @@ async def restore() -> bool:
     try:
         cl = await asyncio.to_thread(_new_client, json.loads(doc["settings"]))
     except Exception as e:
-        st.problem = f"sessiya tiklanmadi: {explain(e)}"
+        acc.problem = f"sessiya tiklanmadi: {explain(e)}"
         log.warning("Instagram sessiyasi tiklanmadi (%s)", type(e).__name__)
         return False
-    st.client, st.username = cl, doc.get("username") or ""
-    st.user_id = str(doc.get("user_id") or getattr(cl, "user_id", "") or "")
-    st.saved_at = time.time()
-    log.info("Instagram sessiyasi tiklandi: @%s", st.username)
+    acc.client, acc.username = cl, doc.get("username") or ""
+    acc.user_id = str(doc.get("user_id") or getattr(cl, "user_id", "") or "")
+    acc.saved_at = time.time()
+    log.info("Instagram sessiyasi tiklandi (%s-akkaunt): @%s", acc.slot, acc.username)
     return True
 
 
@@ -934,9 +1010,10 @@ def _thread_page_sync(cl, thread_id: str, cursor: str = "") -> dict:
     return ((res or {}).get("thread") or {}) if isinstance(res, dict) else {}
 
 
-async def backfill_thread(thread_id: str, limit: int, title: str = "") -> int:
+async def backfill_thread(thread_id: str, limit: int, title: str = "", acc: _State | None = None) -> int:
     """Chatning eski yozishmalarini arxivga oladi (sahifalab). Yangi qo'shilgan xabarlar soni."""
-    cl = st.client
+    acc = acc or await _acc_for(thread_id)
+    cl = acc.client if acc else None
     if cl is None:
         raise LoginError("Instagram ulanmagan (/ig)")
     added, cursor, seen = 0, "", 0
@@ -944,7 +1021,7 @@ async def backfill_thread(thread_id: str, limit: int, title: str = "") -> int:
         async with _api_lock:
             raw = await asyncio.to_thread(_thread_page_sync, cl, thread_id, cursor)
         th = parse_thread({**raw, "thread_id": thread_id, "thread_title": raw.get("thread_title") or title},
-                          st.user_id)
+                          acc.user_id)
         if not th.items:
             break
         seen += len(th.items)
@@ -956,7 +1033,7 @@ async def backfill_thread(thread_id: str, limit: int, title: str = "") -> int:
         await storage.ig_chat_touch(thread_id, th.title, usernames, th.group, th.items[-1].ts, len(docs))
         if runtime.get("ig_save"):      # orada ochilmagan bir martalik media bo'lsa — saqlab qolamiz
             try:
-                await _save_ephemeral([th])
+                await _save_ephemeral([th], acc)
             except Exception:
                 log.exception("Tarixdagi bir martalik media saqlanmadi")
         cursor = str(raw.get("oldest_cursor") or "")
@@ -972,11 +1049,16 @@ async def backfill_all(alert=None) -> tuple[int, int]:
     chats = msgs = 0
     while True:
         rows = await storage.ig_backfill_pending(BACKFILL_CHATS)
-        if not rows or st.client is None:
+        if not rows or not connected_accounts():
             break
+        tried = 0
         for info in rows:
-            if st.client is None:
+            if not connected_accounts():
                 break
+            acc = await _acc_for(info["thread_id"], info)
+            if acc is None:          # bu chat hozir ulanmagan akkauntniki — keyinroq
+                continue
+            tried += 1
             try:
                 msgs += await backfill_thread(info["thread_id"], config.IG_SYNC_LIMIT, info.get("title") or "")
                 chats += 1
@@ -986,11 +1068,11 @@ async def backfill_all(alert=None) -> tuple[int, int]:
                 kind = error_kind(e)
                 log.warning("Instagram chat tarixi olinmadi (%s): %s", info.get("title"), explain(e)[:120])
                 if kind in ("auth", "throttle"):
-                    await _on_error(e)
+                    await _on_error(e, acc)
                     return chats, msgs
                 await storage.ig_chat_set(info["thread_id"], backfilled=time.time())  # qayta urinmaymiz
             await asyncio.sleep(BACKFILL_PAUSE)
-        if len(rows) < BACKFILL_CHATS:
+        if not tried or len(rows) < BACKFILL_CHATS:
             break
     if chats and alert:
         await alert(f"🗂 Instagram arxivi: {chats} ta chatdan {msgs} ta xabar olindi. "
@@ -1007,7 +1089,7 @@ async def backfill_loop(alert) -> None:
         await asyncio.sleep(BACKFILL_START_DELAY)
         # Hali ulanmagan yoki arxiv o'chirilgan bo'lsa — uzoq kutmaymiz, keyingi daqiqada yana tekshiramiz
         # (shunda botdan ulangandan keyin tarix darhol olinadi)
-        if st.client is None or not runtime.get("ig_archive"):
+        if not connected_accounts() or not runtime.get("ig_archive"):
             continue
         try:
             if await storage.ig_backfill_pending(1):
@@ -1100,7 +1182,8 @@ def link_caption(item: dict, link: Link, index: int = 0, total: int = 1) -> str:
 
 async def download_link(link: Link, bar=None, prefix: str = "") -> str:
     """Havoladagi mediani yuklab, egasiga yuboradi. bar — jonli ko'rsatkich (control_bot.Progress)."""
-    cl = st.client
+    acc = next(iter(connected_accounts()), None)
+    cl = acc.client if acc else None
     if cl is None:
         return "❌ Instagram ulanmagan — /ig"
     if _send_media is None:
@@ -1114,7 +1197,7 @@ async def download_link(link: Link, bar=None, prefix: str = "") -> str:
     except Exception as e:
         log.warning("Instagram havolasi o'qilmadi (%s)", type(e).__name__)
         if error_kind(e) in ("auth", "throttle"):
-            await _on_error(e)
+            await _on_error(e, acc)
         return f"❌ {explain(e)}"[:350]
     parts = media_parts(item)
     if not parts:
@@ -1278,7 +1361,7 @@ async def media_loop() -> None:
     await asyncio.sleep(45)
     while True:
         _media_wake.clear()
-        if st.client is not None and runtime.get("ig_media") and runtime.get("ig_archive"):
+        if connected_accounts() and runtime.get("ig_media") and runtime.get("ig_archive"):
             try:
                 if await media_sync_pending():
                     continue      # yana bor — darhol davom etamiz
@@ -1451,19 +1534,21 @@ def _ext(kind: str, mime: str) -> str:
     return {"image/png": ".png", "image/webp": ".webp", "image/heic": ".heic", "image/avif": ".avif"}.get(mime, ".jpg")
 
 
-async def _save_ephemeral(threads: list[Thread]) -> int:
+async def _save_ephemeral(threads: list[Thread], acc: _State | None = None) -> int:
+    acc = acc or st
     saved = 0
     for th in threads:
         for it in th.items:
-            if not it.ephemeral or it.out or await storage.ig_saved_has(it.item_id):
+            key = acc.key(it.item_id)
+            if not it.ephemeral or it.out or await storage.ig_saved_has(key):
                 continue
             uname, full = th.person(it.sender_id)
             who = full or uname or th.title
             if not it.url:
                 # siz ochib qo'ygansiz (yoki muddati o'tgan) — Instagram endi bermaydi; faqat yangilari haqida aytamiz
-                if it.ts >= st.started:
-                    await storage.ig_saved_add(it.item_id, {"status": "missed", "thread_id": th.thread_id,
-                                                            "sender": who, "kind": it.kind, "date": it.ts})
+                if it.ts >= acc.started:
+                    await storage.ig_saved_add(key, {"status": "missed", "thread_id": th.thread_id,
+                                                     "sender": who, "kind": it.kind, "date": it.ts})
                     await _say(f"😔 Instagram: {who} bir martalik {it.kind} yubordi, lekin u allaqachon ochilgan — "
                                "saqlab bo'lmadi. Keyingi safar bildirishnoma kelsa, avval botni tekshiring.")
                 continue
@@ -1475,14 +1560,76 @@ async def _save_ephemeral(threads: list[Thread]) -> int:
                 continue
             ext = _ext(it.kind, mime)
             video = ({"duration": it.duration, "w": it.width, "h": it.height} if it.kind == "video" else None)
-            ok = await _send_media(data, f"instagram_{it.item_id[-12:]}{ext}", media_caption(th, it), video,
+            ok = await _send_media(data, f"instagram_{it.item_id[-12:]}{ext}", media_caption(th, it, acc), video,
                                    it.kind != "video" and ext not in (".jpg", ".png"))
             if ok:
-                await storage.ig_saved_add(it.item_id, {"status": "saved", "thread_id": th.thread_id,
-                                                        "sender": who, "kind": it.kind, "date": it.ts})
+                await storage.ig_saved_add(key, {"status": "saved", "thread_id": th.thread_id,
+                                                 "sender": who, "kind": it.kind, "date": it.ts})
                 saved += 1
                 log.info("Instagram: %s yuborgan bir martalik %s saqlandi", who, it.kind)
     return saved
+
+
+SENT_KINDS = ("rasm", "video")
+
+
+def sent_caption(th: Thread, it: Item, acc: _State | None = None) -> str:
+    """Siz Direct'da yuborgan rasm/video — kimga yuborilgani bilan."""
+    others = [(u, f) for pk, (u, f) in th.users.items() if pk != it.sender_id]
+    if it.ephemeral:
+        mode = "bir marta ko'riladigan" if it.view_mode == "once" else "o'chib ketadigan"
+        head = f"📤 <b>Instagram</b> — siz yuborgan 🔥 {mode} {it.kind}"
+    else:
+        head = f"📤 <b>Instagram</b> — siz yuborgan {it.kind}"
+    lines = [head]
+    if acc is not None and (line := acc_line(acc)):
+        lines.append(line)
+    if th.group:
+        lines.append(f"👥 Guruh: {_esc(th.title)}")
+    elif others:
+        uname, full = others[0]
+        lines.append(f"➡️ Kimga: {who_html(full, uname)}")
+    else:
+        lines.append(f"➡️ Kimga: {_esc(th.title)}")
+    lines.append(f"🕒 {_when(it.ts)}")
+    return "\n".join(lines)
+
+
+async def _forward_sent(threads: list[Thread], acc: _State | None = None) -> int:
+    """Siz (shu akkauntdan) kimgadir yuborgan rasm/video — oddiy ham, o'chib ketadigan ham — botga keladi.
+    Faqat dastur ishga tushgandan (akkaunt ulangandan) keyin yuborilganlari; har biri bir marta."""
+    acc = acc or st
+    sent = 0
+    for th in threads:
+        for it in th.items:
+            if not it.out or it.kind not in SENT_KINDS or it.ts < acc.started:
+                continue
+            key = f"out:{acc.key(it.item_id)}"
+            if await storage.ig_saved_has(key):
+                continue
+            meta = {"status": "out", "thread_id": th.thread_id, "sender": acc.name(), "kind": it.kind,
+                    "date": it.ts, "view_once": it.ephemeral}
+            if not it.url:
+                # Instagram yuboruvchining o'ziga ham faylni bermadi (ko'pincha bir martalik media ko'rilgach)
+                await storage.ig_saved_add(key, {**meta, "status": "out_missed"})
+                await _say(f"📤 Instagram ({acc.name()}): siz «{th.title}» ga {it.kind} yubordingiz, lekin "
+                           "Instagram faylni bermadi — nusxa olib bo'lmadi.")
+                continue
+            try:
+                data, mime = await _download(it.url)
+            except Exception as e:
+                log.warning("Siz yuborgan media yuklab olinmadi (%s) — keyingi tekshiruvda yana urinaman",
+                            type(e).__name__)
+                continue
+            ext = _ext(it.kind, mime)
+            video = ({"duration": it.duration, "w": it.width, "h": it.height} if it.kind == "video" else None)
+            ok = await _send_media(data, f"instagram_men_{it.item_id[-12:]}{ext}", sent_caption(th, it, acc),
+                                   video, it.kind != "video" and ext not in (".jpg", ".png"))
+            if ok:
+                await storage.ig_saved_add(key, meta)
+                sent += 1
+                log.info("Instagram: siz yuborgan %s botga yuborildi (%s)", it.kind, acc.name())
+    return sent
 
 
 def unsent_text(th: Thread, docs: list[dict]) -> str:
@@ -1500,7 +1647,8 @@ def unsent_text(th: Thread, docs: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def _archive_thread(th: Thread) -> None:
+async def _archive_thread(th: Thread, acc: _State | None = None) -> None:
+    acc = acc or st
     if not th.items:
         return
     ai_texts = set(_ai_sent[th.thread_id])
@@ -1514,7 +1662,7 @@ async def _archive_thread(th: Thread) -> None:
     present = {it.item_id for it in th.items}
     gone = []
     for d in await storage.ig_archive_window(th.thread_id, th.items[0].ts):
-        key = (th.thread_id, d["msg_id"])
+        key = (acc.key(th.thread_id), d["msg_id"])
         if d["msg_id"] in present or d.get("view_once") or d.get("kind") in _SKIP_UNSENT:
             _missing.pop(key, None)
             continue
@@ -1530,7 +1678,10 @@ async def _archive_thread(th: Thread) -> None:
     await storage.ig_chat_set(th.thread_id, changed=now, drive_dirty=True)
     theirs = [d for d in gone if not d.get("out")]
     if theirs and _notify:
-        await _notify(th.thread_id, unsent_text(th, theirs))
+        text = unsent_text(th, theirs)
+        if line := acc_line(acc):
+            text = text.replace("\n", f"\n{line}\n", 1)
+        await _notify(th.thread_id, text)
 
 
 def _history(th: Thread, ai_ids: set[str]) -> list[dict]:
@@ -1558,8 +1709,9 @@ def _send_sync(cl, thread_id: str, text: str) -> None:
         raise
 
 
-async def _send_text(thread_id: str, text: str, by_ai: bool = False) -> None:
-    cl = st.client
+async def _send_text(thread_id: str, text: str, by_ai: bool = False, acc: _State | None = None) -> None:
+    acc = acc or await _acc_for(thread_id)
+    cl = acc.client if acc else None
     if cl is None:
         raise LoginError("Instagram ulanmagan (/ig)")
     if by_ai:
@@ -1588,13 +1740,15 @@ def share_of(items: list[Item]) -> str:
     return next((i.share_url for i in reversed(items) if i.share_url), "")
 
 
-def notify_text(th: Thread, items: list[Item], result: dict | None) -> str:
+def notify_text(th: Thread, items: list[Item], result: dict | None, acc: "_State | None" = None) -> str:
     uname, full = th.person(items[-1].sender_id)
     urgent = bool(result and (result.get("urgent") or result.get("call_owner")))
     head = "🔴 <b>SHOSHILINCH — Instagram</b>" if urgent else "📸 <b>Instagram: yangi xabar</b>"
     if th.pending:
         head += " <i>(so'rov — Requests papkasida)</i>"
     lines = [head, f"👤 {who_html(full, uname)}"]
+    if acc is not None and (line := acc_line(acc)):
+        lines.append(line)
     if th.group:
         lines.append(f"👥 {_esc(th.title)}")
     content = "\n".join(c for c in (content_of(i) for i in items) if c)
@@ -1609,7 +1763,7 @@ def notify_text(th: Thread, items: list[Item], result: dict | None) -> str:
     return "\n".join(lines)
 
 
-async def _ai_reply(th: Thread, status) -> dict | None:
+async def _ai_reply(th: Thread, status, acc: _State | None = None) -> dict | None:
     key = f"ig{th.thread_id}"
     ok, reason = await usage.check(key)
     if not ok:
@@ -1632,35 +1786,37 @@ async def _ai_reply(th: Thread, status) -> dict | None:
         await _say_once("ai", f"⚠️ Instagram avtojavob: AI ishlamadi ({type(e).__name__}). Xabarlar botga keladi.")
         return None
     try:
-        await _send_text(th.thread_id, result["reply"], by_ai=True)
+        await _send_text(th.thread_id, result["reply"], by_ai=True, acc=acc or st)
     except Exception as e:
         log.warning("Instagram avtojavob yuborilmadi (%s)", type(e).__name__)
         result["send_error"], result["reply"] = explain(e), None
     return result
 
 
-async def _on_incoming(th: Thread, items: list[Item]) -> bool:
+async def _on_incoming(th: Thread, items: list[Item], acc: _State | None = None) -> bool:
     """Yangi kelgan xabarlar: avtojavob va/yoki botga bildirishnoma. AI javob bergan bo'lsa True."""
     auto = runtime.get("ig_autoreply")
     status = await availability.get_status() if auto else None
     result = None
     if (auto and status.reply and not th.group and not th.pending
             and _muted_until.get(th.thread_id, 0) <= time.time()):
-        result = await _ai_reply(th, status)
+        result = await _ai_reply(th, status, acc)
     want = (result is not None or runtime.get("ig_forward")
             or (auto and status.notify and not th.group))
     if want and _notify:
-        await _notify(th.thread_id, notify_text(th, items, result), share_of(items))
+        await _notify(th.thread_id, notify_text(th, items, result, acc), share_of(items))
     return bool(result and result.get("reply"))
 
 
-async def _process_fresh(threads: list[Thread]) -> int:
+async def _process_fresh(threads: list[Thread], acc: _State | None = None) -> int:
+    acc = acc or st
     replied = 0
     now = time.time()
     for th in threads:
-        known = _known.get(th.thread_id, set())
-        fresh = [it for it in th.items if it.item_id not in known and it.ts >= st.started]
-        _known[th.thread_id] = {it.item_id for it in th.items}
+        kkey = acc.key(th.thread_id)
+        known = _known.get(kkey, set())
+        fresh = [it for it in th.items if it.item_id not in known and it.ts >= acc.started]
+        _known[kkey] = {it.item_id for it in th.items}
         if not fresh:
             continue
         ai_texts = set(_ai_sent[th.thread_id])
@@ -1675,7 +1831,7 @@ async def _process_fresh(threads: list[Thread]) -> int:
         if not incoming:
             continue
         try:
-            replied += await _on_incoming(th, incoming)
+            replied += await _on_incoming(th, incoming, acc)
         except Exception:
             log.exception("Instagram xabari qayta ishlanmadi")
     return replied
@@ -1685,69 +1841,94 @@ def _any_on() -> bool:
     return any(runtime.get(k) for k in TOGGLES)
 
 
-async def check_once() -> dict:
-    """Bitta tekshiruv. Natija: {"threads", "saved", "replied"}. Xatoni yuqoriga uzatadi."""
+async def check_once(acc: _State | None = None) -> dict:
+    """Bitta akkauntni bir marta tekshiradi. Natija: {"threads", "saved", "replied", "sent"}.
+    Xatoni yuqoriga uzatadi."""
+    acc = acc or st
     async with _check_lock:
-        cl = st.client
+        cl = acc.client
         if cl is None:
-            return {"threads": 0, "saved": 0, "replied": 0}
-        st.polls += 1
+            return {"threads": 0, "saved": 0, "replied": 0, "sent": 0}
+        acc.polls += 1
         async with _api_lock:
-            raw = await asyncio.to_thread(_fetch_sync, cl, st.polls % PENDING_EVERY == 1)
-        threads = [parse_thread(t, st.user_id) for t in raw]
-        st.last_check, st.problem, st.fail_streak = time.time(), "", 0
-        res = {"threads": len(threads), "saved": 0, "replied": 0}
+            raw = await asyncio.to_thread(_fetch_sync, cl, acc.polls % PENDING_EVERY == 1)
+        threads = [parse_thread(t, acc.user_id) for t in raw]
+        acc.last_check, acc.problem, acc.fail_streak = time.time(), "", 0
+        res = {"threads": len(threads), "saved": 0, "replied": 0, "sent": 0}
         if runtime.get("ig_save"):
-            res["saved"] = await _save_ephemeral(threads)
+            res["saved"] = await _save_ephemeral(threads, acc)
+        if runtime.get("ig_sent"):
+            res["sent"] = await _forward_sent(threads, acc)
         if runtime.get("ig_archive"):
             for th in threads:
                 try:
-                    await _archive_thread(th)
+                    await _archive_thread(th, acc)
                 except Exception:
                     log.exception("Instagram chati arxivlanmadi")
-        res["replied"] = await _process_fresh(threads)
-        if time.time() - st.saved_at > SETTINGS_SAVE_EVERY:
-            await _save_session()
+        for th in threads:   # chat qaysi akkauntniki — javob o'sha akkauntdan ketadi
+            if _thread_acc.get(th.thread_id) != acc.slot:
+                _thread_acc[th.thread_id] = acc.slot
+                if runtime.get("ig_archive"):
+                    try:
+                        await storage.ig_chat_set(th.thread_id, acc=acc.slot)
+                    except Exception:
+                        pass
+        res["replied"] = await _process_fresh(threads, acc)
+        if time.time() - acc.saved_at > SETTINGS_SAVE_EVERY:
+            await _save_session(acc)
         return res
 
 
-async def _on_error(e: Exception) -> None:
+async def _on_error(e: Exception, acc: _State | None = None) -> None:
+    acc = acc or st
     kind = error_kind(e)
+    who = f" ({acc.slot}-akkaunt {acc.name()})" if acc.slot != "1" or multi() else ""
+    suffix = "" if acc.slot == "1" else acc.slot
     if kind == "auth":
-        log.warning("Instagram sessiyasi yaroqsiz (%s)", type(e).__name__)
-        st.client = None
-        st.problem = "sessiya tugadi yoki Instagram tasdiqlash so'rayapti — qayta ulaning"
+        log.warning("Instagram sessiyasi yaroqsiz (%s-akkaunt, %s)", acc.slot, type(e).__name__)
+        acc.client = None
+        acc.problem = "sessiya tugadi yoki Instagram tasdiqlash so'rayapti — qayta ulaning"
         try:
-            await storage.ig_set_session(active=False)
+            await storage.ig_set_session(acc.slot, active=False)
         except Exception:
             pass
-        await _say("⚠️ Instagram sessiyasi tugadi yoki Instagram tasdiqlash so'rayapti.\n"
-                   "Bir martalik media hozircha SAQLANMAYDI! Qayta ulaning: /iglogin username parol "
-                   "(yoki /igsession). Batafsil: /ig")
+        await _say(f"⚠️ Instagram{who} sessiyasi tugadi yoki Instagram tasdiqlash so'rayapti.\n"
+                   f"Bir martalik media hozircha SAQLANMAYDI! Qayta ulaning: /iglogin{suffix} username parol "
+                   f"(yoki /igsession{suffix}). Batafsil: /ig")
     elif kind == "throttle":
-        st.paused_until = time.time() + THROTTLE_PAUSE
-        st.problem = "Instagram «biroz kuting» dedi — tekshiruv vaqtincha to'xtatildi"
+        acc.paused_until = time.time() + THROTTLE_PAUSE
+        acc.problem = "Instagram «biroz kuting» dedi — tekshiruv vaqtincha to'xtatildi"
         log.warning("Instagram cheklovi (%s) — %d daqiqa kutiladi", type(e).__name__, THROTTLE_PAUSE // 60)
-        await _say(f"⏸ Instagram cheklov qo'ydi ({type(e).__name__}) — {THROTTLE_PAUSE // 60} daqiqa tekshirilmaydi. "
-                   "Tez-tez bo'lsa .env dagi IG_POLL_SECONDS ni oshiring.")
+        await _say(f"⏸ Instagram{who} cheklov qo'ydi ({type(e).__name__}) — {THROTTLE_PAUSE // 60} daqiqa "
+                   "tekshirilmaydi. Tez-tez bo'lsa .env dagi IG_POLL_SECONDS ni oshiring.")
     else:
-        st.fail_streak += 1
-        st.problem = explain(e)
-        log.warning("Instagram tekshirilmadi: %s", st.problem)
-        if st.fail_streak == FAIL_ALERT:
-            await _say(f"⚠️ Instagram {FAIL_ALERT} marta ketma-ket tekshirilmadi: {st.problem}")
+        acc.fail_streak += 1
+        acc.problem = explain(e)
+        log.warning("Instagram tekshirilmadi (%s-akkaunt): %s", acc.slot, acc.problem)
+        if acc.fail_streak == FAIL_ALERT:
+            await _say(f"⚠️ Instagram{who} {FAIL_ALERT} marta ketma-ket tekshirilmadi: {acc.problem}")
 
 
 async def check_now() -> str:
-    """Botdagi «🔄 Hozir tekshirish» tugmasi."""
-    if st.client is None:
+    """Botdagi «🔄 Hozir tekshirish» tugmasi — ulangan barcha akkauntlar."""
+    accs = connected_accounts()
+    if not accs:
         return "Instagram ulanmagan"
-    try:
-        res = await check_once()
-    except Exception as e:
-        await _on_error(e)
-        return f"❌ {explain(e)}"[:190]
-    return f"✅ {res['threads']} ta chat tekshirildi, saqlandi: {res['saved']}, javob: {res['replied']}"
+    out = []
+    for acc in accs:
+        prefix = f"{acc.name()}: " if len(accs) > 1 else ""
+        try:
+            res = await check_once(acc)
+        except Exception as e:
+            await _on_error(e, acc)
+            out.append(f"{prefix}❌ {explain(e)}"[:190])
+            continue
+        line = (f"{prefix}✅ {res['threads']} ta chat tekshirildi, saqlandi: {res['saved']}, "
+                f"javob: {res['replied']}")
+        if res.get("sent"):
+            line += f", siz yuborgan media: {res['sent']}"
+        out.append(line)
+    return "\n".join(out)
 
 
 IG_PROBE_URL = "https://i.instagram.com/"
@@ -1819,17 +2000,22 @@ async def run() -> None:
     await asyncio.sleep(5)
     if lib_problem():
         log.info("Instagram: %s", lib_problem())
-    elif not await restore():
-        log.info("Instagram ulanmagan — botda /ig orqali ulang")
+    else:
+        restored = [await restore(acc) for acc in accounts()]
+        if not any(restored):
+            log.info("Instagram ulanmagan — botda /ig orqali ulang")
     while True:
         _wake.clear()
-        if st.client is not None and _any_on() and time.time() >= st.paused_until:
-            try:
-                await check_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                await _on_error(e)
+        if _any_on():
+            for acc in accounts():   # ikkala akkaunt ham har aylanishda tekshiriladi
+                if acc.client is None or time.time() < acc.paused_until:
+                    continue
+                try:
+                    await check_once(acc)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    await _on_error(e, acc)
         delay = config.IG_POLL_SECONDS * random.uniform(0.8, 1.2)  # bir xil oraliqda emas — odamga o'xshab
         try:
             await asyncio.wait_for(_wake.wait(), timeout=delay)
@@ -1852,8 +2038,20 @@ LOGIN_HELP = (
     "3) <b>sessionid</b> qatoridagi qiymatni nusxalang\n"
     "4) <code>/igsession QIYMAT</code>\n\n"
     "⚠️ Bu norasmiy yo'l. Instagram «yangi qurilmadan kirildi» desa — ilovada «Bu men edim» ni bosing.\n"
-    "Chiqish: /iglogout"
+    "Chiqish: /iglogout\n\n"
+    "➕ <b>2-akkaunt</b> (ikkalasi bir vaqtda ishlaydi): xuddi shunday, faqat buyruq oxirida «2» — "
+    "<code>/iglogin2 username parol</code>, <code>/igsession2 QIYMAT</code>, chiqish: /iglogout2"
 )
+
+
+def login_help(slot: str = "1") -> str:
+    """Ulash yo'riqnomasi: 2-akkaunt uchun buyruqlar «2» bilan ko'rsatiladi."""
+    if str(slot) != "2":
+        return LOGIN_HELP
+    text = LOGIN_HELP.split("\n\n➕")[0]
+    for cmd in ("/iglogin", "/igsession", "/iglogout"):
+        text = re.sub(re.escape(cmd) + r"\b", cmd + "2", text)
+    return text.replace("🔑 <b>Instagram'ni ulash</b>", "🔑 <b>2-Instagram akkauntni ulash</b>", 1)
 
 
 async def panel() -> tuple[str, list]:
@@ -1869,16 +2067,21 @@ async def panel() -> tuple[str, list]:
         lines.append(f"🧦 Proksi: <code>{_esc(mask_proxy(PROXY))}</code> ({state})")
     if problem := proxy_problem():
         lines.append(f"⚠️ {_esc(problem)}")
-    if st.client is not None:
-        lines.append(f"✅ Ulangan: <b>@{_esc(st.username)}</b>")
-    else:
-        lines.append("❌ Akkaunt ulanmagan — «🔑 Ulash» tugmasini bosing")
-    if st.last_check:
-        lines.append(f"🕒 Oxirgi tekshiruv: {_when(st.last_check)} (har ~{config.IG_POLL_SECONDS} soniyada)")
-    if st.paused_until > time.time():
-        lines.append(f"⏸ Instagram cheklovi — {_when(st.paused_until)} gacha kutiladi")
-    if st.problem:
-        lines.append(f"⚠️ {_esc(st.problem)}")
+    for acc in accounts():
+        tag = "" if acc.slot == "1" else f"{acc.slot}-akkaunt: "
+        if acc.client is not None:
+            lines.append(f"✅ {tag}Ulangan: <b>@{_esc(acc.username)}</b>")
+        elif acc.slot == "1":
+            lines.append("❌ Akkaunt ulanmagan — «🔑 Ulash» tugmasini bosing")
+        else:
+            lines.append(f"➕ {tag}ulanmagan — «🔑 2-akkauntni ulash» (/iglogin2)")
+        if acc.last_check:
+            lines.append(f"🕒 {tag}Oxirgi tekshiruv: {_when(acc.last_check)} "
+                         f"(har ~{config.IG_POLL_SECONDS} soniyada)")
+        if acc.paused_until > time.time():
+            lines.append(f"⏸ {tag}Instagram cheklovi — {_when(acc.paused_until)} gacha kutiladi")
+        if acc.problem:
+            lines.append(f"⚠️ {tag}{_esc(acc.problem)}")
     try:
         lines.append(f"🔥 Saqlangan bir martalik media: {await storage.ig_saved_count()} ta")
     except Exception:
@@ -1914,9 +2117,14 @@ async def panel() -> tuple[str, list]:
     lines += [f"🤖 Avtojavob Telegram rejimiga bo'ysunadi — hozir: {mode_name}", "",
               "🔥 — bir martalik rasm/video saqlanadi\n🤖 — Anna Direct'ga javob beradi\n"
               "🗂 — yozishmalar arxivi, qaytarib olingan xabar haqida xabar\n📥 — yangi xabarlar botga keladi\n"
+              "📤 — siz Direct'da yuborgan rasm/video (oddiy va o'chib ketadigan) botga keladi\n"
               "🖼 — rasm, video, ovozli xabarlar arxivga yuklab olinadi (o'chirilsa ham sizda qoladi)"]
     btn = [(f"{'✅' if runtime.get(k) else '▫️'} {label}", f"ig:set:{k}") for k, label in TOGGLES.items()]
-    rows = [btn[0:2], btn[2:4], [("💬 Chatlar arxivi", "ig:chats:0"), ("🔄 Hozir tekshirish", "ig:check")]]
+    rows = [btn[0:2], btn[2:4], btn[4:], [("💬 Chatlar arxivi", "ig:chats:0"), ("🔄 Hozir tekshirish", "ig:check")]]
+    if st2.client is not None:
+        rows.append([(f"🚪 2-akkauntdan chiqish (@{st2.username})"[:60], "ig:logout:2")])
+    else:
+        rows.append([("🔑 2-akkauntni ulash", "ig:help:2")])
     rows.append([(f"{'✅' if runtime.get('ig_media') else '▫️'} 🖼 Rasm/video/ovozni saqlash",
                   "ig:set:ig_media")])
     import gdrive
@@ -1973,10 +2181,10 @@ async def _toggle_proxy() -> str:
         return "IG_PROXY bo'sh — o'chiradigan proksi yo'q"
     value = not runtime.get("ig_proxy")
     await runtime.update(ig_proxy=value)
-    if st.client is not None:   # ulangan klient yangi sozlama bilan qayta yasaladi (sessiya saqlanadi)
+    for acc in connected_accounts():   # ulangan klient yangi sozlama bilan qayta yasaladi (sessiya saqlanadi)
         try:
             async with _api_lock:
-                st.client = await asyncio.to_thread(_new_client, st.client.get_settings())
+                acc.client = await asyncio.to_thread(_new_client, acc.client.get_settings())
         except Exception as e:
             log.warning("Proksi almashtirilgach klient qayta yasalmadi (%s)", type(e).__name__)
     wake()
@@ -2211,9 +2419,12 @@ def describe() -> str:
         return "o'chirilgan (INSTAGRAM_ENABLED=false)"
     if problem := lib_problem():
         return problem
-    if st.client is None:
+    if not connected_accounts():
         return "ulanmagan (/ig)" + (f" — {st.problem}" if st.problem else "")
-    s = f"@{st.username} ulangan (instagrapi {lib_version()})"
-    if st.last_check:
-        s += f", oxirgi tekshiruv {_when(st.last_check)}"
-    return s + (f", muammo: {st.problem}" if st.problem else "")
+    parts = []
+    for acc in connected_accounts():
+        s = f"@{acc.username} ulangan"
+        if acc.last_check:
+            s += f", oxirgi tekshiruv {_when(acc.last_check)}"
+        parts.append(s + (f", muammo: {acc.problem}" if acc.problem else ""))
+    return "; ".join(parts) + f" (instagrapi {lib_version()})"

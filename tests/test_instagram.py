@@ -67,19 +67,26 @@ class FakeCl:
 class FakeIgStorage:
     def __init__(self):
         self.session = None
+        self.sessions: dict[str, dict] = {}       # 2-akkaunt va h.k.
         self.saved: dict[str, dict] = {}
         self.archive: dict[tuple, dict] = {}
         self.chats: dict[str, dict] = {}
         self.media: dict[tuple, tuple[bytes, str]] = {}
 
-    async def ig_get_session(self):
-        return self.session
+    async def ig_get_session(self, slot="1"):
+        return self.session if slot == "1" else self.sessions.get(slot)
 
-    async def ig_set_session(self, **fields):
-        self.session = {**(self.session or {}), **fields}
+    async def ig_set_session(self, slot="1", **fields):
+        if slot == "1":
+            self.session = {**(self.session or {}), **fields}
+        else:
+            self.sessions[slot] = {**(self.sessions.get(slot) or {}), **fields}
 
-    async def ig_delete_session(self):
-        self.session = None
+    async def ig_delete_session(self, slot="1"):
+        if slot == "1":
+            self.session = None
+        else:
+            self.sessions.pop(slot, None)
 
     async def ig_saved_has(self, item_id):
         return item_id in self.saved
@@ -215,6 +222,8 @@ def ig(monkeypatch):
     st = instagram._State()
     st.started = STARTED
     monkeypatch.setattr(instagram, "st", st)
+    monkeypatch.setattr(instagram, "st2", instagram._State("2"))
+    monkeypatch.setattr(instagram, "_thread_acc", {})
     for name in ("_known", "_missing", "_muted_until", "_alerted"):
         monkeypatch.setattr(instagram, name, {})
     monkeypatch.setattr(instagram, "_ai_sent", instagram.defaultdict(lambda: instagram.deque(maxlen=50)))
@@ -312,15 +321,16 @@ def test_view_once_saved_once_and_not_marked_seen(ig):
                                 raven("mine", uid="1", ts=NEW + 2_000_000)])])
     connect(cl)
     res = run(instagram.check_once())
-    assert res["saved"] == 2
-    assert [m.filename for m in ig.media] == ["instagram_a.jpg", "instagram_v.mp4"]
+    assert res["saved"] == 2 and res["sent"] == 1
+    # o'zingiz yuborgan bir martalik rasm ham botga keladi («📤 Men yuborgan media»)
+    assert [m.filename for m in ig.media] == ["instagram_a.jpg", "instagram_v.mp4", "instagram_men_mine.jpg"]
     assert ig.media[1].video == {"duration": 7.5, "w": 720, "h": 1280} and not ig.media[0].as_file
     assert "Ali Valiyev" in ig.media[0].caption and "@ali.v" in ig.media[0].caption
     assert "bir marta" in ig.media[0].caption
     # Faqat o'qish so'rovlari — mediani «ochildi» qiladigan so'rov yo'q
     assert set(cl.calls) <= {"direct_v2/inbox/", "direct_v2/pending_inbox/"}
     run(instagram.check_once())
-    assert len(ig.media) == 2 and ig.fs.saved["a"]["status"] == "saved"   # qayta yuborilmaydi
+    assert len(ig.media) == 3 and ig.fs.saved["a"]["status"] == "saved"   # qayta yuborilmaydi
     assert run(storage.ig_saved_count()) == 2
 
 
@@ -962,3 +972,89 @@ def test_lib_problem_points_to_main_requirements(monkeypatch):
     monkeypatch.setattr(instagram, "lib_version", lambda: None)
     problem = instagram.lib_problem()
     assert "requirements.txt" in problem and "requirements-instagram" not in problem
+
+
+# ---------- siz yuborgan media va 2 ta akkaunt ----------
+def photo(iid, uid="1", ts=NEW, video=False):
+    """Oddiy (saqlanib qoladigan) rasm/video xabari."""
+    media = {"media_type": 2 if video else 1,
+             "image_versions2": {"candidates": [{"url": f"https://cdn/{iid}.jpg", "width": 1080, "height": 1350}]}}
+    if video:
+        media["video_versions"] = [{"url": f"https://cdn/{iid}.mp4", "width": 720, "height": 1280}]
+        media["video_duration"] = 3.0
+    return {"item_id": iid, "user_id": uid, "timestamp": ts, "item_type": "media", "media": media}
+
+
+def test_sent_media_forwarded_once(ig):
+    cl = FakeCl([thread("111", [photo("p1"), photo("v1", ts=NEW + 1, video=True), photo("old", ts=OLD),
+                                 photo("theirs", uid="2", ts=NEW + 2)])])
+    connect(cl)
+    res = run(instagram.check_once())
+    assert res["sent"] == 2
+    names = [m.filename for m in ig.media]
+    assert names == ["instagram_men_p1.jpg", "instagram_men_v1.mp4"]   # eskisi va suhbatdoshniki — yo'q
+    assert "siz yuborgan rasm" in ig.media[0].caption and "Kimga" in ig.media[0].caption
+    assert "@ali.v" in ig.media[0].caption and ig.media[1].video["duration"] == 3.0
+    run(instagram.check_once())
+    assert len(ig.media) == 2                                            # qayta yuborilmaydi
+
+
+def test_sent_media_toggle_off(ig):
+    run(runtime.update(ig_sent=False))
+    connect(FakeCl([thread("111", [photo("p1")])]))
+    assert run(instagram.check_once())["sent"] == 0 and ig.media == []
+
+
+def test_sent_view_once_without_url_is_reported(ig):
+    connect(FakeCl([thread("111", [raven("mine", uid="1", seen=True)])]))
+    run(instagram.check_once())
+    assert ig.media == [] and "faylni bermadi" in ig.alerts[0]
+    run(instagram.check_once())
+    assert len(ig.alerts) == 1
+
+
+def test_two_accounts_work_together(ig):
+    run(runtime.update(ig_forward=True))
+    cl1 = FakeCl([thread("111", [text_item("x1", "2", "salom")])])
+    cl2 = FakeCl([thread("999", [raven("r9"), photo("p9", ts=NEW + 1), text_item("x9", "2", "qalaysan", ts=NEW + 2)])])
+    connect(cl1)
+    st2 = instagram.st2
+    st2.client, st2.user_id, st2.username, st2.started = cl2, "1", "ikkinchi", STARTED
+    assert instagram.multi() and instagram.connected("2")
+    run(instagram.check_once(instagram.st))
+    run(instagram.check_once(st2))
+    # 2-akkauntdagi bir martalik media va siz yuborgan rasm botga keldi — qaysi akkauntligi yozilgan
+    assert [m.filename for m in ig.media] == ["instagram_r9.jpg", "instagram_men_p9.jpg"]
+    assert all("@ikkinchi" in m.caption for m in ig.media)
+    assert "2:r9" in ig.fs.saved and "out:2:p9" in ig.fs.saved
+    assert [tid for tid, _ in ig.notes] == ["111", "999"]
+    assert "@husan" in ig.notes[0][1] and "@ikkinchi" in ig.notes[1][1]
+    # Botdan yozilgan javob — o'sha chat qaysi akkauntniki bo'lsa, o'shandan ketadi
+    run(instagram.send_text("999", "javob"))
+    run(instagram.send_text("111", "javob1"))
+    assert cl2.sent == [("javob", [999])] and cl1.sent == [("javob1", [111])]
+    assert ig.fs.chats["999"]["acc"] == "2"
+
+
+def test_second_account_session_and_logout_are_separate(ig):
+    connect(FakeCl())
+    st2 = instagram.st2
+    st2.client, st2.username = FakeCl(), "ikkinchi"
+    run(instagram._save_session(st2))
+    assert ig.fs.sessions["2"]["username"] == "ikkinchi" and ig.fs.session is None
+    text, rows = run(instagram.panel())
+    assert "2-akkaunt: Ulangan: <b>@ikkinchi</b>" in text
+    assert ("🚪 2-akkauntdan chiqish (@ikkinchi)", "ig:logout:2") in [b for row in rows for b in row]
+    assert "2-akkaunt" in run(instagram.logout("2"))
+    assert "2" not in ig.fs.sessions and instagram.connected("1") and not instagram.connected("2")
+    assert "/iglogin2 username parol" in instagram.login_help("2")
+    assert "/iglogin username parol" in instagram.login_help("1")
+
+
+def test_second_account_auth_error_keeps_first(ig):
+    connect(FakeCl())
+    st2 = instagram.st2
+    st2.client, st2.username = FakeCl(), "ikkinchi"
+    run(instagram._on_error(type("LoginRequired", (Exception,), {})(), st2))
+    assert instagram.connected("1") and not instagram.connected("2")
+    assert "/iglogin2" in ig.alerts[0] and "@ikkinchi" in ig.alerts[0]

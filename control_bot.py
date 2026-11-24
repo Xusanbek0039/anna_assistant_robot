@@ -82,6 +82,7 @@ HELP = (
     "🗂 chat arxivi (qaytarib olingan xabarlar bilan), 📥 Direct xabarlari botga\n"
     "/iglogin &lt;username&gt; &lt;parol&gt; — ulash (xabar darhol o'chiriladi), /igsession &lt;sessionid&gt; — "
     "cookie bilan ulash, /iglogout — chiqish\n"
+    "/iglogin2, /igsession2, /iglogout2 — 2-Instagram akkaunt (ikkalasi bir vaqtda ishlaydi)\n"
     "Instagram bildirishnomasiga reply qilib yozsangiz — javob Instagram'ga ketadi.\n"
     "📥 <b>Havoladan yuklash:</b> post, reels yoki storis havolasini botga tashlang — rasm/videoni yuklab "
     "beradi (albom bo'lsa hammasini). Buyruq bilan: /igyukla &lt;havola&gt;\n\n"
@@ -1631,47 +1632,49 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     async def _ig_cmd(event):
         await _send_ig_panel(event)
 
-    @bot.on(events.NewMessage(pattern=r"^/iglogin(?:@\w+)?(?:\s+([\s\S]*))?$", func=is_owner))
+    @bot.on(events.NewMessage(pattern=r"^/iglogin(2?)(?:@\w+)?(?:\s+([\s\S]*))?$", func=is_owner))
     async def _ig_login(event):
-        args = (event.pattern_match.group(1) or "").strip().split(maxsplit=1)
+        slot = event.pattern_match.group(1) or "1"     # /iglogin2 — 2-akkaunt
+        args = (event.pattern_match.group(2) or "").strip().split(maxsplit=1)
         username, password = (args + ["", ""])[:2]
         try:
             await event.delete()  # parol chatda qolmasin
         except Exception:
             log.warning("Parolli xabar o'chirilmadi — uni o'zingiz o'chiring")
         if not username or not password:
-            await event.respond(instagram.LOGIN_HELP, parse_mode="html")
+            await event.respond(instagram.login_help(slot), parse_mode="html")
             return
         status = await event.respond("⏳ Instagram'ga kirilmoqda... (parolli xabaringiz o'chirildi)")
 
         async def say(text: str) -> None:
             await bot.send_message(owner_id, text)
 
-        result = await instagram.login(username, password.strip(), say)
+        result = await instagram.login(username, password.strip(), say, slot)
         try:
             await status.edit(result)
         except Exception:
             await event.respond(result)
-        if instagram.connected():
+        if instagram.connected(slot):
             await _send_ig_panel(event)
 
-    @bot.on(events.NewMessage(pattern=r"^/igsession(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
+    @bot.on(events.NewMessage(pattern=r"^/igsession(2?)(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
     async def _ig_session(event):
-        raw = event.pattern_match.group(1)
+        slot = event.pattern_match.group(1) or "1"     # /igsession2 — 2-akkaunt
+        raw = event.pattern_match.group(2)
         try:
             await event.delete()  # sessionid — parol bilan barobar
         except Exception:
             pass
         if not raw:
-            await event.respond(instagram.LOGIN_HELP, parse_mode="html")
+            await event.respond(instagram.login_help(slot), parse_mode="html")
             return
         status = await event.respond("⏳ Sessiya tekshirilmoqda... (xabaringiz o'chirildi)")
-        result = await instagram.login_session(raw)
+        result = await instagram.login_session(raw, slot)
         try:
             await status.edit(result, parse_mode="html")
         except Exception:
             await event.respond(result, parse_mode="html")
-        if instagram.connected():
+        if instagram.connected(slot):
             await _send_ig_panel(event)
 
     @bot.on(events.NewMessage(pattern=r"^/igyukla(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
@@ -1689,9 +1692,9 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return
         await _download_ig_links(event, links)
 
-    @bot.on(events.NewMessage(pattern=r"^/iglogout(?:@\w+)?$", func=is_owner))
+    @bot.on(events.NewMessage(pattern=r"^/iglogout(2?)(?:@\w+)?$", func=is_owner))
     async def _ig_logout(event):
-        await event.respond(await instagram.logout())
+        await event.respond(await instagram.logout(event.pattern_match.group(1) or "1"))
 
     @bot.on(events.CallbackQuery(pattern=rb"^ig:", func=is_owner))
     async def _ig_callback(event):
@@ -1708,18 +1711,20 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await _send_ig_panel(event, extra=await instagram.check_now(), edit=True)
         elif action == "help":
             await event.answer()
-            await event.respond(instagram.LOGIN_HELP, parse_mode="html")
+            await event.respond(instagram.login_help(arg or "1"), parse_mode="html")
         elif action == "net":
             await event.answer("🌐 Tekshirilmoqda (15 soniyagacha)...")
             await event.respond(await instagram.net_check(), parse_mode="html", link_preview=False)
         elif action == "logout":
+            slot = arg or "1"
+            which = "2-akkauntdan" if slot == "2" else "akkauntidan"
             await event.answer()
-            await event.respond("🚪 Instagram akkauntidan chiqaymi? Bir martalik media saqlanmay qoladi.",
-                                buttons=[[Button.inline("✅ Ha, chiqish", b"ig:logout_ok"),
+            await event.respond(f"🚪 Instagram {which} chiqaymi? Bir martalik media saqlanmay qoladi.",
+                                buttons=[[Button.inline("✅ Ha, chiqish", f"ig:logout_ok:{slot}".encode()),
                                           Button.inline("↩️ Yo'q", b"ig:panel")]])
         elif action == "logout_ok":
             await event.answer()
-            await event.edit(await instagram.logout())
+            await event.edit(await instagram.logout(arg or "1"))
         elif action == "chats":
             await event.answer()
             text, rows = await instagram.chats_view(int(arg) if arg.isdigit() else 0)

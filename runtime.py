@@ -31,6 +31,7 @@ DEFAULTS = {
     "ig_autoreply": config.IG_AUTOREPLY,
     "ig_archive": True,               # yozishmalar arxivi + qaytarib olingan xabar ogohlantirishi
     "ig_forward": config.IG_FORWARD,  # yangi Direct xabarlari botga
+    "ig_sent": True,                  # siz Direct'da yuborgan rasm/video (oddiy va o'chib ketadigan) botga
     "ig_proxy": True,                 # IG_PROXY ishlatilsinmi (ishlamasa botdan o'chiriladi)
     "ig_drive": config.IG_DRIVE,      # Instagram arxivi Google Drive'ga
     "ig_media": config.IG_MEDIA_ENABLED,   # rasm/video/ovozni yuklab olib arxivda saqlash
