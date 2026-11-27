@@ -440,8 +440,19 @@ async def client_for(chat_id: int, default):
 
 
 # ---------- eksport ----------
-async def backfill(user, chat_id: int, limit: int) -> int:
-    """Telegram'da hali turgan xabarlarni ham arxivga qo'shadi (arxiv yoqilishidan oldingilari uchun)."""
+BACKFILL_BATCH = 500   # katta chatlar tarixini bo'laklab bazaga yozish (xotirani tejash uchun)
+
+
+async def _mark_full_synced(chat_id: int) -> None:
+    try:
+        await storage.archive_chat_set(chat_id, full_synced=True)
+    except Exception:
+        pass
+
+
+async def backfill(user, chat_id: int, limit: int | None = None) -> int:
+    """Telegram'da hali turgan xabarlarni ham arxivga qo'shadi (arxiv yoqilishidan oldingilari uchun).
+    limit=None — shu vaqtgacha bo'lgan BARCHA xabarlar (500 talik bo'laklarda, xotirani to'ldirmasdan)."""
     user = await client_for(chat_id, user)
     try:
         entity = await user.get_entity(chat_id)
@@ -450,19 +461,35 @@ async def backfill(user, chat_id: int, limit: int) -> int:
         return 0
     group = not isinstance(entity, User)
     kind = "user" if not group else ("channel" if getattr(entity, "broadcast", False) else "group")
-    docs = []
+    docs: list[dict] = []
+    added = total = 0
+    max_date = 0.0
+    completed = True
     try:
         async for m in user.iter_messages(entity, limit=limit):
             if isinstance(m, Message):
-                docs.append(_as_history(message_doc(m, chat_id, display_name(m.sender) if group and not m.out else "")))
+                doc = _as_history(message_doc(m, chat_id, display_name(m.sender) if group and not m.out else ""))
+                if doc["date"] > max_date:
+                    max_date = doc["date"]
+                docs.append(doc)
+                total += 1
+                if len(docs) >= BACKFILL_BATCH:
+                    added += await storage.archive_add_many(docs)
+                    docs.clear()
+                    await asyncio.sleep(0.15)
     except Exception as e:
-        log.info("Chat %s tarixi o'qilmadi (%s)", chat_id, type(e).__name__)
-    added = await storage.archive_add_many(docs)
-    if docs or await storage.archive_chat(chat_id) is None:
+        completed = False
+        log.info("Chat %s tarixi to'liq o'qilmadi (%s)", chat_id, type(e).__name__)
+    if docs:
+        added += await storage.archive_add_many(docs)
+        docs.clear()
+    if total or await storage.archive_chat(chat_id) is None:
         await storage.archive_touch_chat(chat_id, display_name(entity) or str(chat_id),
                                          getattr(entity, "username", None), kind,
-                                         max((d["date"] for d in docs), default=0), added,
+                                         max_date, added,
                                          account_deleted=is_deleted_account(entity))
+    if completed and limit is None:
+        await _mark_full_synced(chat_id)
     return added
 
 
@@ -476,21 +503,24 @@ def _as_history(doc: dict) -> dict:
 def _dialog_kind(dialog) -> str | None:
     """Nusxalanadigan chat turi yoki None."""
     ent = dialog.entity
+    me_id = _me_ids.get(storage.arc_slot(), _me_id)
     if dialog.is_user:
-        if not isinstance(ent, User) or ent.bot or ent.is_self or ent.id in (TELEGRAM_SERVICE_ID, _me_id):
+        if not isinstance(ent, User) or ent.bot or ent.is_self or ent.id in (TELEGRAM_SERVICE_ID, me_id):
             return None
         return "user"
-    if dialog.is_group and runtime.get("archive_groups"):
+    if dialog.is_group and (runtime.get("archive_groups") or groups.is_enabled(dialog.id)):
         return "group"
-    if channels.is_broadcast(dialog) and channels.is_enabled(dialog.id):
+    # 2-akkaunt kanallari 1-akkaunt arxivida (via=2) saqlanadi — sync_selected_channels ularni alohida oladi
+    if storage.arc_slot() == 1 and channels.is_broadcast(dialog) and channels.is_enabled(dialog.id):
         return "channel"
     return None
 
 
-async def sync_existing(user, per_chat: int, pause: float = 0.5) -> tuple[int, int]:
+async def sync_existing(user, per_chat: int, pause: float = 0.5, full: bool = False) -> tuple[int, int]:
     """Mavjud chatlardagi yozishmalarni arxivga nusxalaydi (faqat matn va media nomi, fayllar yuklanmaydi).
-    Birinchi marta — har chatdan oxirgi `per_chat` ta xabar; keyingi ishga tushishlarda — faqat arxivdagi
-    oxirgi xabardan keyin kelganlari (dastur o'chiq turgan paytdagilar). (chatlar, yangi xabarlar) soni."""
+    - full=True (masalan 2-akkaunt) yoki belgilangan kanal/guruhlarda: birinchi marta shu vaqtgacha bo'lgan
+      BARCHA xabarlar (500 talik bo'laklarda) olinadi va full_synced=True belgilanadi.
+    - Keyingi ishga tushishlarda (yoki full=False oddiy chatlarda): faqat oxirgi xabardan keyin kelganlari."""
     chats = added_total = 0
     async for dialog in user.iter_dialogs():
         if not runtime.get("archive_enabled"):
@@ -500,20 +530,41 @@ async def sync_existing(user, per_chat: int, pause: float = 0.5) -> tuple[int, i
             continue
         chat_id = dialog.id
         try:
+            need_full = (full
+                         or (kind == "group" and groups.is_enabled(chat_id))
+                         or (kind == "channel" and channels.is_enabled(chat_id)))
+            info = await storage.archive_chat(chat_id) if need_full else None
+            do_full = need_full and not (info and info.get("full_synced"))
             last = await storage.archive_last_msg_id(chat_id)
-            if last and dialog.message.id <= last:
+            if not do_full and last and dialog.message.id <= last:
                 continue  # yangi xabar yo'q
-            docs = []
-            async for m in user.iter_messages(dialog.entity, limit=per_chat, min_id=last):
+            req_limit = None if do_full else per_chat
+            req_min = 0 if do_full else last
+            docs: list[dict] = []
+            added = total = 0
+            max_date = 0.0
+            async for m in user.iter_messages(dialog.entity, limit=req_limit, min_id=req_min):
                 if isinstance(m, Message):
-                    docs.append(_as_history(message_doc(
-                        m, chat_id, display_name(m.sender) if kind == "group" and not m.out else "")))
-            added = await storage.archive_add_many(docs)
+                    doc = _as_history(message_doc(
+                        m, chat_id, display_name(m.sender) if kind == "group" and not m.out else ""))
+                    if doc["date"] > max_date:
+                        max_date = doc["date"]
+                    docs.append(doc)
+                    total += 1
+                    if len(docs) >= BACKFILL_BATCH:
+                        added += await storage.archive_add_many(docs)
+                        docs.clear()
+                        await asyncio.sleep(0.15)
             if docs:
+                added += await storage.archive_add_many(docs)
+                docs.clear()
+            if total:
                 await storage.archive_touch_chat(chat_id, display_name(dialog.entity) or str(chat_id),
                                                  getattr(dialog.entity, "username", None), kind,
-                                                 max(d["date"] for d in docs), added,
+                                                 max_date, added,
                                                  account_deleted=is_deleted_account(dialog.entity))
+            if do_full:
+                await _mark_full_synced(chat_id)
             if added:
                 chats += 1
                 added_total += added
@@ -521,6 +572,59 @@ async def sync_existing(user, per_chat: int, pause: float = 0.5) -> tuple[int, i
             log.warning("Chat %s nusxalanmadi (%s)", chat_id, type(e).__name__)
         await asyncio.sleep(pause)  # Telegram cheklovi (FloodWait) ga tushmaslik uchun
     log.info("Arxiv: mavjud chatlardan %d ta xabar nusxalandi (%d ta chat)", added_total, chats)
+    return chats, added_total
+
+
+async def sync_selected_channels(user, slot: int, pause: float = 0.5) -> tuple[int, int]:
+    """2-akkauntdagi belgilangan 📢 kanallarning shu vaqtgacha bo'lgan barcha postlarini arxivga (slot 1, via=slot)."""
+    if not runtime.get("archive_enabled") or not channels.enabled_count():
+        return 0, 0
+    chats = added_total = 0
+    with storage.use_slot(1):
+        async for dialog in user.iter_dialogs():
+            if not runtime.get("archive_enabled"):
+                break
+            if not (channels.is_broadcast(dialog) and channels.is_enabled(dialog.id)) or dialog.message is None:
+                continue
+            chat_id = dialog.id
+            try:
+                info = await storage.archive_chat(chat_id)
+                do_full = not (info and info.get("full_synced"))
+                last = await storage.archive_last_msg_id(chat_id)
+                if not do_full and last and dialog.message.id <= last:
+                    continue
+                docs: list[dict] = []
+                added = total = 0
+                max_date = 0.0
+                async for m in user.iter_messages(dialog.entity, limit=None if do_full else config.ARCHIVE_SYNC_LIMIT,
+                                                  min_id=0 if do_full else last):
+                    if isinstance(m, Message):
+                        doc = _as_history(message_doc(m, chat_id, ""))
+                        if doc["date"] > max_date:
+                            max_date = doc["date"]
+                        docs.append(doc)
+                        total += 1
+                        if len(docs) >= BACKFILL_BATCH:
+                            added += await storage.archive_add_many(docs)
+                            docs.clear()
+                            await asyncio.sleep(0.15)
+                if docs:
+                    added += await storage.archive_add_many(docs)
+                    docs.clear()
+                if total:
+                    await storage.archive_touch_chat(chat_id, display_name(dialog.entity) or str(chat_id),
+                                                     getattr(dialog.entity, "username", None), "channel",
+                                                     max_date, added,
+                                                     account_deleted=is_deleted_account(dialog.entity))
+                    await mark_via(chat_id, slot)
+                if do_full:
+                    await _mark_full_synced(chat_id)
+                if added:
+                    chats += 1
+                    added_total += added
+            except Exception as e:
+                log.warning("Kanal %s nusxalanmadi (%s-akkaunt, %s)", chat_id, slot, type(e).__name__)
+            await asyncio.sleep(pause)
     return chats, added_total
 
 

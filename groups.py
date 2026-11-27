@@ -215,13 +215,34 @@ async def clone(event) -> None:
     link = message_link(chat, msg.id)
 
     quote = ""
+    plain_quote = ""
+    reply_msg_id = None
     if msg.is_reply:
         try:
             r = await msg.get_reply_message()
             if r is not None:
-                rname, _ = _sender_name(await r.get_sender())
-                rtext = (r.message or "").strip() or (f"[{userbot._media_label(r)}]" if r.media else "")
+                rname, rusername = _sender_name(await r.get_sender())
+                rlabel = userbot._media_label(r) if r.media else None
+                rtext = (r.message or "").strip() or (f"[{rlabel}]" if rlabel else "")
                 quote = f"↩️ <i>{_esc(rname)}: {_esc(rtext[:150])}</i>\n"
+                plain_quote = f"↩️ {rname}: {rtext[:150]}"
+                if rlabel and rlabel != "stiker" and (getattr(r, "file", None) or getattr(r, "photo", None)):
+                    rsize = getattr(getattr(r, "file", None), "size", 0) or 0
+                    if rsize <= MAX_MEDIA_BYTES:
+                        try:
+                            rdata = await r.download_media(file=bytes)
+                        except Exception as e:
+                            log.warning("Javob berilgan guruh mediasi yuklab olinmadi (%s)", type(e).__name__)
+                            rdata = None
+                        if rdata:
+                            reply_msg_id = await _send_media(
+                                event.chat_id, f"👥 {group} · ↩️ {rname}", rdata,
+                                userbot._media_filename(r, rlabel), kind=rlabel, username=rusername,
+                                caption=(r.message or "").strip(),
+                                mime=(getattr(getattr(r, "file", None), "mime_type", None) or "").lower(),
+                                attributes=getattr(getattr(r.media, "document", None), "attributes", None),
+                                link_reply=False,
+                            )
         except Exception:
             pass
 
@@ -235,11 +256,17 @@ async def clone(event) -> None:
                 log.warning("Guruh mediasi yuklab olinmadi (%s)", type(e).__name__)
                 data = None
             if data:
+                cap = f"{plain_quote}\n{text}".strip() if plain_quote else text
+                media_kw = dict(
+                    kind=label, username=username, caption=cap,
+                    mime=(getattr(msg.file, "mime_type", None) or "").lower(),
+                    attributes=getattr(getattr(msg.media, "document", None), "attributes", None),
+                    link_reply=False,
+                )
+                if reply_msg_id is not None:
+                    media_kw["reply_to"] = reply_msg_id
                 await _send_media(event.chat_id, f"👥 {group} · {name}", data,
-                                  userbot._media_filename(msg, label), kind=label, username=username,
-                                  caption=text, mime=(getattr(msg.file, "mime_type", None) or "").lower(),
-                                  attributes=getattr(getattr(msg.media, "document", None), "attributes", None),
-                                  link_reply=False)
+                                  userbot._media_filename(msg, label), **media_kw)
                 return
         text = (f"[{label}: {size / 1024 / 1024:.0f} MB — yuklanmadi, limit {config.MAX_MEDIA_MB} MB] "
                 + text).strip()
@@ -250,7 +277,10 @@ async def clone(event) -> None:
 
     who = f"<b>{_esc(name)}</b>" + (f" (@{_esc(username)})" if username else "")
     body = f"👥 <b>{_esc(group)}</b>\n👤 {who}\n{quote}\n{_esc(text[:3500])}"
-    await _send_text(body, link)
+    if reply_msg_id is not None:
+        await _send_text(body, link, reply_to=reply_msg_id)
+    else:
+        await _send_text(body, link)
 
 
 async def run() -> None:

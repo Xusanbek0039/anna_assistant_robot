@@ -435,3 +435,74 @@ def test_mongo_blob_capped(arc, monkeypatch):
     m.photo, m.video = None, object()
     m.file.mime_type, m.file.size = "video/mp4", archive.MONGO_BLOB_MAX + 1
     assert run(archive._save_blob(m)) is None                       # 12 MB dan katta — saqlanmaydi
+
+
+def test_sync_full_history_for_selected_groups_channels_and_second_account(arc, monkeypatch):
+    """Belgilangan guruh/kanal va 2-akkauntdagi shu vaqtgacha bo'lgan BARCHA xabarlar saqlanadi."""
+    from telethon.tl.types import Message
+    import channels
+    import groups
+
+    async def last_id(chat_id):
+        ids = [m for (c, m) in arc.msgs if c == chat_id]
+        return max(ids, default=0)
+
+    async def chat_set(chat_id, **fields):
+        arc.chats.setdefault(chat_id, {"chat_id": chat_id}).update(fields)
+
+    monkeypatch.setattr(storage, "archive_last_msg_id", last_id, raising=False)
+    monkeypatch.setattr(storage, "archive_chat_set", chat_set, raising=False)
+    monkeypatch.setattr(groups, "_enabled", {-100: "Radiklaa"})
+    monkeypatch.setattr(channels, "_enabled", {-200: "Yangiliklar"})
+
+    def tg_msg(i, text):
+        return Message(id=i, peer_id=PeerUser(5), date=datetime(2026, 1, 1, tzinfo=timezone.utc), message=text)
+
+    class Dialog:
+        def __init__(self, entity, msgs, *, user=False, group=False, channel=False):
+            self.entity, self.id, self.msgs = entity, entity.id, msgs
+            self.is_user, self.is_group, self.is_channel = user, group, channel
+            self.name = getattr(entity, "title", None) or getattr(entity, "first_name", "")
+            self.message = msgs[-1] if msgs else None
+
+    class Tg:
+        def __init__(self, dialogs):
+            self.dialogs = dialogs
+
+        async def iter_dialogs(self):
+            for d in self.dialogs:
+                yield d
+
+        async def iter_messages(self, entity, limit=None, min_id=0):
+            d = next(x for x in self.dialogs if x.entity is entity)
+            rows = [m for m in d.msgs if m.id > min_id]
+            if limit is not None:
+                rows = rows[-limit:]
+            for m in reversed(rows):
+                yield m
+
+    grp_ent = type("G", (), {"id": -100, "title": "Radiklaa", "username": None})()
+    chn_ent = type("C", (), {"id": -200, "title": "Yangiliklar", "username": "news", "broadcast": True})()
+    grp_msgs = [tg_msg(i, f"g{i}") for i in range(1, 6)]
+    chn_msgs = [tg_msg(i, f"c{i}") for i in range(1, 5)]
+
+    # Guruhda bitta eng oxirgi xabar oldin yozilib qolgan bo'lsa ham — eski 1..4 xabarlar baribir olinishi shart
+    arc.msgs[(-100, 5)] = {"chat_id": -100, "msg_id": 5, "text": "g5"}
+    arc.chats[-100] = {"chat_id": -100, "title": "Radiklaa", "count": 1, "last": 0}
+
+    tg = Tg([
+        Dialog(grp_ent, grp_msgs, group=True),
+        Dialog(chn_ent, chn_msgs, channel=True),
+    ])
+    chats, added = run(archive.sync_existing(tg, per_chat=2, pause=0))
+    assert chats == 2 and added == 8  # g1..g4 (4 ta) + c1..c4 (4 ta)
+    assert arc.chats[-100]["full_synced"] is True and arc.chats[-200]["full_synced"] is True
+
+    # 2-akkaunt (full=True): shaxsiy chatdagi per_chat=2 dan ham ko'p BARCHA xabarlar olinadi
+    usr_ent = _person(10)
+    usr_msgs = [tg_msg(i, f"u{i}") for i in range(1, 6)]
+    monkeypatch.setattr(archive, "_me_id", 10)          # 1-akkaunt id=10
+    monkeypatch.setitem(archive._me_ids, 2, 999)        # 2-akkaunt id=999 -> id=10 o'tkazib yuborilmasin
+    with storage.use_slot(2):
+        c2, a2 = run(archive.sync_existing(Tg([Dialog(usr_ent, usr_msgs, user=True)]), per_chat=2, pause=0, full=True))
+    assert c2 == 1 and a2 == 5 and arc.chats[10]["full_synced"] is True

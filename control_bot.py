@@ -658,22 +658,27 @@ SECOND_CONNECT_TIMEOUT = 90
 
 
 async def _sync_second_archive(client, slot: int) -> None:
-    """2-akkaunt mavjud chatlaridagi yozishmalar ham arxivga (1-akkauntdagidek, bir martalik)."""
+    """2-akkaunt mavjud chatlari, belgilangan guruhlari va kanallaridagi barcha yozishmalar arxivga."""
     _requester.set(None)
     await asyncio.sleep(30)
-    if config.ARCHIVE_SYNC_LIMIT <= 0:
-        return
     with storage.use_slot(slot):
         try:
-            chats, added = await archive.sync_existing(client, config.ARCHIVE_SYNC_LIMIT)
+            chats, added = await archive.sync_existing(client, config.ARCHIVE_SYNC_LIMIT, full=True)
         except Exception:
             log.exception("%d-akkaunt chatlari arxivga nusxalanmadi", slot)
-            return
+            chats, added = 0, 0
         try:   # akkaunti o'chirilgan odamlar bilan yozishmalar ham (1-akkauntdagidek)
             await deleted_accounts.refresh(client)
         except Exception:
             log.exception("%d-akkaunt o'chirilgan akkauntlari arxivlanmadi", slot)
+    try:
+        ch_chats, ch_added = await archive.sync_selected_channels(client, slot)
+        chats += ch_chats
+        added += ch_added
+    except Exception:
+        log.exception("%d-akkaunt kanallari arxivga nusxalanmadi", slot)
     if added:
+        archive.drive_wake()
         await alert(f"🗂 {_acc_title(slot)}: {chats} ta chatdan {added} ta xabar arxivga nusxalandi "
                     "(🗂 Chat arxivi → shu akkaunt).")
 
@@ -887,7 +892,8 @@ _MEDIA_ICONS = {"rasm": "📸", "video": "🎬", "ovozli xabar": "🎤", "video-
 async def send_media(chat_id: int, name: str, data: bytes, filename: str | None = None, *,
                      kind: str = "media", username: str | None = None, caption: str = "",
                      view_once: bool = False, mime: str = "", attributes=None,
-                     thumb: bytes | None = None, link_reply: bool = True, slot: int = 1) -> int | None:
+                     thumb: bytes | None = None, link_reply: bool = True, slot: int = 1,
+                     reply_to: int | None = None) -> int | None:
     """Suhbatdosh yuborgan mediani egasiga ASL ko'rinishida yuboradi: rasm — rasm, video — video,
     ovozli xabar — ovozli xabar. Bir marta ko'riladigan media ham oddiy (saqlasa bo'ladigan) holda keladi.
     Yuborilgan xabar id sini qaytaradi (bildirishnoma shunga reply bo'lib keladi)."""
@@ -912,12 +918,12 @@ async def send_media(chat_id: int, name: str, data: bytes, filename: str | None 
                 voice_note=kind == "ovozli xabar",
                 video_note=is_round,
                 supports_streaming=kind in ("video", "video-xabar"),
-                attributes=attributes, thumb=thumb,
+                attributes=attributes, thumb=thumb, reply_to=reply_to,
             )
         except Exception:
             log.exception("Media asl ko'rinishida yuborilmadi — fayl sifatida yuboriladi")
             msg = await ctx.bot.send_file(ctx.owner_id, _file(), caption=None if is_round else cap,
-                                          parse_mode="html", force_document=True)
+                                          parse_mode="html", force_document=True, reply_to=reply_to)
         if link_reply:  # guruh nusxasiga reply qilinsa, javob guruhga ketmasin (link_reply=False)
             _remember_notif(msg.id, chat_id, slot)
         if is_round:  # dumaloq videoga izoh yozib bo'lmaydi — alohida xabar
@@ -1152,12 +1158,13 @@ async def _send_channels_panel(event, page: int = 0, edit: bool = False, refresh
 
 
 async def _channel_backfill(chat_id: int, title: str, slot: int = 1) -> None:
-    """Kanal yoqilgan zahoti — oxirgi postlari ham arxivga (fon vazifasi)."""
-    limit = config.ARCHIVE_SYNC_LIMIT or 1000
+    """Kanal yoqilgan zahoti — shu vaqtgacha bo'lgan barcha postlari ham arxivga (fon vazifasi)."""
+    _requester.set(None)
     client = ctx.users.get(slot) or ctx.user
     try:
-        added = await archive.backfill(client, chat_id, limit)
-        await archive.mark_via(chat_id, slot)   # backfill chat yozuvini yaratdi — endi «via» saqlanadi
+        with storage.use_slot(1):
+            added = await archive.backfill(client, chat_id, limit=None)
+            await archive.mark_via(chat_id, slot)   # backfill chat yozuvini yaratdi — endi «via» saqlanadi
     except Exception as e:
         log.exception("Kanal tarixi arxivga olinmadi")
         await alert(f"⚠️ «{title}» kanalining eski postlari arxivga olinmadi: {type(e).__name__}")
@@ -1165,6 +1172,21 @@ async def _channel_backfill(chat_id: int, title: str, slot: int = 1) -> None:
     archive.drive_wake()
     await alert(f"📢 «{title}»: {added} ta post arxivga olindi. Bundan keyingi postlar ham yozib boriladi "
                 "(🗂 Chat arxivi → 💬 Chatlar).")
+
+
+async def _group_backfill(chat_id: int, title: str, slot: int = 1) -> None:
+    """Guruh yoqilgan zahoti — shu vaqtgacha bo'lgan barcha yozishmalari ham arxivga (fon vazifasi)."""
+    _requester.set(None)
+    client = ctx.users.get(slot) or ctx.user
+    try:
+        with storage.use_slot(slot):
+            added = await archive.backfill(client, chat_id, limit=None)
+    except Exception as e:
+        log.exception("Guruh tarixi arxivga olinmadi")
+        await alert(f"⚠️ «{title}» guruhining eski xabarlari arxivga olinmadi: {type(e).__name__}")
+        return
+    archive.drive_wake()
+    await alert(f"👥 «{title}»: {added} ta xabar arxivga olindi. Bundan keyingi xabarlar ham yozib boriladi.")
 
 
 async def _inbox_for(event, slot: int | None) -> None:
@@ -1226,11 +1248,16 @@ async def _enabled_groups_view(slot: int | None) -> tuple[str, list]:
 
 
 @_broadcast
-async def group_clone_text(text: str, link: str | None) -> None:
+async def group_clone_text(text: str, link: str | None, reply_to: int | None = None) -> None:
     """👥 Guruhdan nusxalangan matnli xabar (groups.py)."""
     buttons = [[Button.url("🔗 Guruhda ochish", link)]] if link else None
     parts = split_message(text)
-    for part in parts[:-1]:
+    if len(parts) == 1:
+        await ctx.bot.send_message(ctx.owner_id, parts[0], parse_mode="html", buttons=buttons,
+                                   link_preview=False, reply_to=reply_to)
+        return
+    await ctx.bot.send_message(ctx.owner_id, parts[0], parse_mode="html", link_preview=False, reply_to=reply_to)
+    for part in parts[1:-1]:
         await ctx.bot.send_message(ctx.owner_id, part, parse_mode="html", link_preview=False)
     await ctx.bot.send_message(ctx.owner_id, parts[-1], parse_mode="html", buttons=buttons, link_preview=False)
 
@@ -2629,9 +2656,16 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         if action == "t" and len(parts) in (4, 5):
             chat_id, page = int(parts[2]), int(parts[3])
             slot = int(parts[4]) if len(parts) == 5 else None
-            title = next((g["title"] for g in await groups.my_groups(only=slot) if g["id"] == chat_id), "")
+            all_g = await groups.my_groups(only=slot)
+            found_g = next((g for g in all_g if g["id"] == chat_id), None)
+            title = found_g["title"] if found_g else ""
             on = await groups.toggle(chat_id, title)
-            await event.answer(("✅ Klonlash yoqildi: " if on else "⏸ Klonlash o'chirildi: ") + title[:150])
+            if on:
+                target_slot = slot or ((found_g.get("slots") or [1])[0] if found_g else 1)
+                await event.answer("✅ Klonlash yoqildi: " + title[:130] + " — eski xabarlar ham olinmoqda")
+                asyncio.create_task(_group_backfill(chat_id, title, target_slot))
+            else:
+                await event.answer("⏸ Klonlash o'chirildi: " + title[:150])
             await _send_groups_panel(event, page, edit=True, slot=slot)
         elif action in ("p", "r"):
             slot = int(parts[3]) if len(parts) > 3 else None

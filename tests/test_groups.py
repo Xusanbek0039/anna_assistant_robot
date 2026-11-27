@@ -104,11 +104,12 @@ class Event:
 def _capture(monkeypatch):
     sent = {"text": [], "media": []}
 
-    async def send_text(text, link):
-        sent["text"].append((text, link))
+    async def send_text(text, link, **kw):
+        sent["text"].append((text, link, kw))
 
     async def send_media(*args, **kw):
         sent["media"].append((args, kw))
+        return 100 + len(sent["media"])
 
     monkeypatch.setattr(groups, "_send_text", send_text)
     monkeypatch.setattr(groups, "_send_media", send_media)
@@ -118,11 +119,25 @@ def _capture(monkeypatch):
 def test_clone_text_with_reply(monkeypatch, store):
     sent = _capture(monkeypatch)
     run(groups.clone(Event(Msg("Salom <hammaga>", reply=Msg("ertaga uchrashamiz")))))
-    text, link = sent["text"][0]
+    text, link, kw = sent["text"][0]
     assert "👥 <b>Dasturchilar</b>" in text and "<b>Ali</b> (@ali)" in text
     assert "Salom &lt;hammaga&gt;" in text                     # HTML xavfsiz
     assert "↩️ <i>Vali: ertaga uchrashamiz</i>" in text
-    assert link == "https://t.me/uzdev/11"
+    assert link == "https://t.me/uzdev/11" and kw == {}
+
+
+def test_clone_reply_to_photo_sends_replied_photo_too(monkeypatch, store):
+    sent = _capture(monkeypatch)
+    file = type("F", (), {"size": 1000, "mime_type": "image/jpeg", "name": None, "ext": ".jpg"})()
+    replied = Msg("", media="photo", file=file)
+    run(groups.clone(Event(Msg("Ол", reply=replied))))
+    assert len(sent["media"]) == 1
+    args, mkw = sent["media"][0]
+    assert args[1] == "👥 Dasturchilar · ↩️ Vali" and args[2] == b"jpg-bytes"
+    assert mkw["kind"] == "rasm" and mkw["link_reply"] is False
+    text, link, tkw = sent["text"][0]
+    assert "↩️ <i>Vali: [rasm]</i>" in text and "Ол" in text
+    assert tkw.get("reply_to") == 101 and link == "https://t.me/uzdev/11"
 
 
 def test_clone_photo_goes_as_media(monkeypatch, store):

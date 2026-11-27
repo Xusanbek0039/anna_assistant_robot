@@ -133,6 +133,7 @@ async def main() -> None:
 async def _run(startup_hb: asyncio.Task | None = None) -> None:
     await runtime.load()
     await channels.load()       # 📢 arxivlanadigan kanallar (/kanallar)
+    await groups.load()         # 👥 klonlanadigan va arxivlanadigan guruhlar (/guruhlar)
     await gdrive.load_token()   # botdan (/drive) qayta ulangan bo'lsa — yangi token bazada
 
     problem = await ai.check_key()
