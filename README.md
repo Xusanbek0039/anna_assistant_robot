@@ -30,7 +30,7 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `watchers.py` | 🔔 Eslatmalar: «95 446 68 86 raqami tg ga qo'shilsa xabar ber», «@ali online bo'lsa xabar ber» — hodisa ro'y berganda bot xabar beradi; panelda «➕ Yangi eslatma» tugmasi va Telegram cheklovi holati ko'rinadi |
 | `instagram.py` | 📸 Instagram (`/ig`): bir marta ko'riladigan rasm/videolarni ochmasdan saqlash, Direct'ga avtojavob, yozishmalar arxivi (eski tarix bilan) va Google Drive'ga HTML nusxasi, qaytarib olingan (unsend) xabarlar, chatni botda o'qish |
 | `groups.py` | 👥 Guruhlar (`/guruhlar`): akkauntingizdagi guruhlar ro'yxati — yoqilgan guruhga kelgan xabarlar (matn, rasm, video, ovozli, fayl) botga nusxalanadi |
-| `promises.py` | AI chat xulosasi (/xulosa) va va'dalar kuzatuvi (/vadalar): kechqurun yangi va'dalarni topadi, ertalab muddati kelganlarini eslatadi |
+| `summary.py` | 🧠 AI chat xulosasi (/xulosa): qisqa xulosa, mavzular, ochiq qolgan masalalar |
 | `weekly.py` | Haftalik chat hisoboti: faol suhbatlar, kim o'chirdi/tahrirladi, kim javob kutyapti |
 | `backup.py`, `restore_backup.py` | Bazani har kuni Drive'ga zaxiralash (`Anna zaxira/<sana>/`) va undan tiklash: `python restore_backup.py <papka> --yes` |
 | `schedule.py` | Har kuni belgilangan vaqtda bajariladigan vazifalar uchun umumiy sikl |

@@ -25,7 +25,7 @@ import groups
 import health
 import instagram
 import progress
-import promises
+import summary
 import report
 import runtime
 import saver
@@ -68,8 +68,7 @@ HELP = (
     "Qidiruv o'chirilgan va tahrirlangan xabarlar ichidan ham topadi.\n"
     "/deleted — akkauntini o'chirgan odamlar (taxminiy ismi bilan) va ular bilan yozishmalar. "
     "Oddiy yozsangiz ham bo'ladi: «o'chirilgan akkauntlarni ko'rsat», «Aziz aka bilan chatni top»\n"
-    "/xulosa &lt;ism&gt; — yozishmaning AI xulosasi, va'dalar va ochiq savollar\n"
-    "/vadalar — bergan va'dalaringiz (muddati kelganda eslatadi)\n"
+    "/xulosa &lt;ism&gt; — yozishmaning AI xulosasi va ochiq qolgan masalalar\n"
     "Har yakshanba — haftalik chat hisoboti, har kuni — bazaning Drive'ga zaxirasi. "
     "Sozlash: 🗂 Chat arxivi → ⚙️ Kuzatuv sozlamalari\n\n"
     "<b>🔔 Eslatmalar</b>\n"
@@ -134,19 +133,18 @@ MENU_FIN = "💰 Moliya"
 MENU_FIND = "🔎 Qidirish"
 MENU_REPORT = "📈 Hisobot"
 MENU_HELP = "❓ Yordam"
-MENU_PROMISES = "📌 Va'dalar"
 MENU_WATCH = "🔔 Eslatmalar"
 MENU_IG = "📸 Instagram"
 MENU_GROUPS = "👥 Guruhlar"
 MENU_CHANNELS = "📢 Kanallar"
-MENU_TEXTS = {MENU_PANEL, MENU_INBOX, MENU_ARCHIVE, MENU_FIN, MENU_FIND, MENU_REPORT, MENU_HELP, MENU_PROMISES,
+MENU_TEXTS = {MENU_PANEL, MENU_INBOX, MENU_ARCHIVE, MENU_FIN, MENU_FIND, MENU_REPORT, MENU_HELP,
               MENU_WATCH, MENU_IG, MENU_GROUPS, MENU_CHANNELS}
 
 
 def main_keyboard() -> list:
     return [
         [Button.text(MENU_PANEL, resize=True, persistent=True), Button.text(MENU_INBOX), Button.text(MENU_WATCH)],
-        [Button.text(MENU_ARCHIVE), Button.text(MENU_PROMISES), Button.text(MENU_FIN)],
+        [Button.text(MENU_ARCHIVE), Button.text(MENU_FIN)],
         [Button.text(MENU_FIND), Button.text(MENU_REPORT), Button.text(MENU_HELP)],
         [Button.text(MENU_IG), Button.text(MENU_GROUPS), Button.text(MENU_CHANNELS)],
     ]
@@ -1140,8 +1138,7 @@ BOT_COMMANDS = [
     ("menu", "📋 Tugmali menyuni ochish"),
     ("arxiv", "🗂 Chat arxivi: o'chirilgan yozishmani HTML qilib olish"),
     ("deleted", "👻 Akkauntini o'chirganlar — taxminiy ismi bilan"),
-    ("xulosa", "🧠 Yozishma xulosasi va va'dalar: /xulosa Ali"),
-    ("vadalar", "📌 Bergan va'dalaringiz ro'yxati"),
+    ("xulosa", "🧠 Yozishma xulosasi: /xulosa Ali"),
     ("eslatma", "🔔 Eslatmalar: raqam tg ga qo'shilsa / odam online bo'lsa"),
     ("ig", "📸 Instagram: bir martalik media, avtojavob, arxiv"),
     ("tglogin", "🔑 Telegram akkaunt: holati va boshqasini ulash"),
@@ -1369,8 +1366,7 @@ async def _archive_panel() -> tuple[str, list]:
         media_on = runtime.get("drive_media")
         buttons.append([Button.inline("⏸ Rasm/video Drive'ga — to'xtatish" if media_on
                                       else "🖼 Rasm/videoni Drive'ga yuklash", b"arc:set:drive_media")])
-    buttons.append([Button.inline("⚙️ Kuzatuv sozlamalari", b"arc:watch"),
-                    Button.inline("📌 Va'dalar", b"arc:promises")])
+    buttons.append([Button.inline("⚙️ Kuzatuv sozlamalari", b"arc:watch")])
     return text, buttons
 
 
@@ -1547,39 +1543,28 @@ async def edited_alert(chat_id: int, old: dict, new_text: str) -> None:
 SUMMARY_DAYS = {"7": 7, "30": 30, "0": None}
 
 
-def _summary_text(info: dict, days: int | None, n: int, res: dict, added: list[dict]) -> str:
+def _summary_text(info: dict, days: int | None, n: int, res: dict) -> str:
     period = f"oxirgi {days} kun" if days else "butun arxiv"
     lines = [f"🧠 <b>Xulosa</b> — {_who(info.get('title') or '', info.get('username'), info.get('chat_id', 0))}",
              f"<i>{period}, {n} ta xabar</i>", "", html.escape(res.get("summary") or "—")]
     if res.get("topics"):
         lines += ["", "🏷 <b>Mavzular:</b> " + html.escape(", ".join(res["topics"]))]
-    mine = [p for p in res.get("promises") or [] if p["who"] == "men"]
-    theirs = [p for p in res.get("promises") or [] if p["who"] != "men"]
-    if mine:
-        lines += ["", "📌 <b>Sizning va'dalaringiz:</b>"]
-        lines += [f"• {html.escape(p['text'])}" + (f" — <b>{p['due']}</b>" if p.get("due") else "") for p in mine]
-    if theirs:
-        lines += ["", "🤝 <b>Uning va'dalari:</b>"]
-        lines += [f"• {html.escape(p['text'])}" + (f" — <b>{p['due']}</b>" if p.get("due") else "") for p in theirs]
     if res.get("open_questions"):
         lines += ["", "❓ <b>Ochiq qolgan masalalar:</b>"]
         lines += [f"• {html.escape(q)}" for q in res["open_questions"]]
-    if added:
-        lines += ["", f"✅ {len(added)} ta va'dangiz ro'yxatga qo'shildi (/vadalar) — muddati kelganda eslataman."]
     return "\n".join(lines)
 
 
 async def _send_summary(chat_id: int, days: int | None) -> None:
     status = await ctx.bot.send_message(ctx.owner_id, "🧠 Yozishmani o'qiyapman...")
     try:
-        res, info, n = await promises.summarize(chat_id, days)
+        res, info, n = await summary.summarize(chat_id, days)
         if not res:
             await status.edit("🤷 Bu davrda arxivda yozishma yo'q.")
             return
-        added = await promises.save_promises(chat_id, info.get("title") or "", res["promises"], "summary")
-        await status.edit(_summary_text({**info, "chat_id": chat_id}, days, n, res, added), parse_mode="html",
+        await status.edit(_summary_text({**info, "chat_id": chat_id}, days, n, res), parse_mode="html",
                           buttons=_html_buttons(chat_id)[:1])
-    except promises.NoAI as e:
+    except summary.NoAI as e:
         await status.edit(f"⚠️ AI hozir ishlamaydi: {e}")
     except Exception as e:
         log.exception("Xulosa tayyorlanmadi")
@@ -1592,41 +1577,6 @@ def _summary_buttons(chat_id: int) -> list:
              Button.inline("🧠 Hammasi", f"arc:sum:{chat_id}:0".encode())]]
 
 
-# ---------- va'dalar ----------
-def _promise_line(p: dict, today: str) -> str:
-    due = p.get("due")
-    mark = ""
-    if due:
-        mark = " 🔴 <b>muddati o'tgan</b>" if due < today else (" 🟠 <b>bugun</b>" if due == today else "")
-        due = f" — {due}"
-    return f"📌 <b>{html.escape(p.get('title') or '')}</b>: {html.escape(p['text'])}{due or ''}{mark}"
-
-
-def _promise_buttons(pid: str) -> list:
-    return [[Button.inline("✅ Bajarildi", f"prm:done:{pid}".encode()),
-             Button.inline("⏰ Ertaga", f"prm:later:{pid}".encode()),
-             Button.inline("🗑", f"prm:del:{pid}".encode())]]
-
-
-async def send_promises(rows: list[dict], header: str) -> None:
-    """Va'dalar ro'yxati: har biri alohida xabar (o'z tugmalari bilan)."""
-    today = promises.today()
-    await ctx.bot.send_message(ctx.owner_id, header, parse_mode="html")
-    for p in rows[:20]:
-        await ctx.bot.send_message(ctx.owner_id, _promise_line(p, today), parse_mode="html",
-                                   buttons=_promise_buttons(p["id"]))
-
-
-async def _show_promises(event) -> None:
-    rows = await storage.promise_list()
-    if not rows:
-        await event.respond("📌 Ochiq va'dalar yo'q.\nChat xulosasini oling (🗂 Chat arxivi → chat → 🧠 Xulosa) — "
-                            "u yerdagi va'dalaringiz shu ro'yxatga tushadi. Har kechqurun bugungi yozishmalar "
-                            "ham avtomatik tekshiriladi.")
-        return
-    await send_promises(rows, f"📌 <b>Ochiq va'dalaringiz</b> ({len(rows)} ta)")
-
-
 # ---------- haftalik hisobot ----------
 async def send_weekly(text: str, chat_ids: list[int]) -> None:
     buttons = [[Button.inline(f"✍️ Javob: {i + 1}", f"reply:{cid}".encode())] for i, cid in enumerate(chat_ids)]
@@ -1636,7 +1586,6 @@ async def send_weekly(text: str, chat_ids: list[int]) -> None:
 # ---------- kuzatuv sozlamalari ----------
 WATCH_KEYS = {
     "edit_alerts": "✏️ Tahrir ogohlantirishi",
-    "promise_scan": "📌 Va'dalarni har kech topish (AI)",
     "weekly_report": "📊 Haftalik chat hisoboti",
     "drive_backup": "💾 Bazani har kuni Drive'ga zaxiralash",
 }
@@ -2014,8 +1963,6 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                                 "«wifi parolini qidir».")
         elif choice == MENU_REPORT:
             await event.respond(await report.make_report(), parse_mode="html")
-        elif choice == MENU_PROMISES:
-            await _show_promises(event)
         elif choice == MENU_WATCH:
             text, buttons = await watchers.list_view()
             await event.respond(text, parse_mode="html", buttons=_inline(buttons))
@@ -2356,36 +2303,6 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         else:
             await event.answer()
 
-    @bot.on(events.NewMessage(pattern=r"^/vadalar$", func=is_owner))
-    async def _vadalar(event):
-        await _show_promises(event)
-
-    @bot.on(events.CallbackQuery(pattern=rb"^prm:", func=is_owner))
-    async def _prm_callback(event):
-        _, action, pid = event.data.decode().split(":", 2)
-        if action == "done":
-            ok = await storage.promise_update(pid, done=True, done_at=time.time())
-            await event.answer("✅ Bajarildi" if ok else "Topilmadi")
-            if ok:
-                try:
-                    msg = await event.get_message()
-                    await event.edit("✅ <s>" + html.escape(msg.raw_text or "") + "</s>", parse_mode="html")
-                except Exception:
-                    pass
-        elif action == "later":
-            ok = await storage.promise_update(pid, due=promises.tomorrow())
-            await event.answer("⏰ Ertaga eslataman" if ok else "Topilmadi")
-        elif action == "del":
-            ok = await storage.promise_delete(pid)
-            await event.answer("🗑 O'chirildi" if ok else "Topilmadi")
-            if ok:
-                try:
-                    await event.delete()
-                except Exception:
-                    pass
-        else:
-            await event.answer()
-
     @bot.on(events.CallbackQuery(pattern=rb"^arc:", func=is_owner))
     async def _arc_callback(event):
         parts = event.data.decode().split(":")
@@ -2413,10 +2330,6 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         if action == "weekly":
             await event.answer()
             await send_weekly(*await weekly.make())
-            return
-        if action == "promises":
-            await event.answer()
-            await _show_promises(event)
             return
         if action == "gonescan":
             await event.answer("🔎 Tekshirilmoqda...")

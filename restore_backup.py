@@ -2,7 +2,7 @@
 
 1. Google Drive -> «Anna zaxira» -> kerakli sana papkasini kompyuterga yuklab oling (zip bo'lsa — oching).
 2. python restore_backup.py <papka> --yes             # barcha kolleksiyalar
-   python restore_backup.py <papka> --yes --only archive,promises
+   python restore_backup.py <papka> --yes --only archive,history
 
 Hujjatlar _id bo'yicha yoziladi (bor bo'lsa — zaxiradagi bilan almashtiriladi, yo'q bo'lsa — qo'shiladi).
 Bazadagi zaxirada yo'q yozuvlar O'CHIRILMAYDI.
@@ -55,7 +55,7 @@ async def main(argv: list[str]) -> None:
     ap = argparse.ArgumentParser(description="Anna: Drive zaxirasidan MongoDB'ni tiklash")
     ap.add_argument("folder", help="yuklab olingan zaxira papkasi (ichida *.jsonl.gz)")
     ap.add_argument("--yes", action="store_true", help="tasdiqlash — busiz hech narsa yozilmaydi")
-    ap.add_argument("--only", default="", help="faqat shu kolleksiyalar, vergul bilan: archive,promises")
+    ap.add_argument("--only", default="", help="faqat shu kolleksiyalar, vergul bilan: archive,history")
     args = ap.parse_args(argv)
     only = {s.strip() for s in args.only.split(",") if s.strip()} or None
     files = find_files(args.folder, only)

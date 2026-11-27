@@ -191,12 +191,6 @@ IG_MEDIA_DRIVE_MAX_MB = _int("IG_MEDIA_DRIVE_MAX_MB", 100)   # Drive'ga shu hajm
 IG_HTML_MEDIA_MB = _int("IG_HTML_MEDIA_MB", 40)        # bitta HTML faylga joylanadigan media hajmi
 
 
-# --- Va'dalar (AI chat yozishmalaridan topadi va eslatadi) ---
-PROMISE_SCAN = _bool("PROMISE_SCAN", True)
-PROMISE_SCAN_TIME = _str("PROMISE_SCAN_TIME", "21:30")
-PROMISE_REMIND_TIME = _str("PROMISE_REMIND_TIME", "09:00")
-PROMISE_SCAN_CHATS = max(1, _int("PROMISE_SCAN_CHATS", 15))  # kechki tekshiruvda ko'pi bilan nechta chat
-
 # --- Haftalik chat hisoboti ---
 WEEKLY_REPORT = _bool("WEEKLY_REPORT", True)
 WEEKLY_REPORT_DAY = min(7, max(1, _int("WEEKLY_REPORT_DAY", 7)))  # 1=Du ... 7=Ya

@@ -16,7 +16,6 @@ import groups
 import health
 import instagram
 import instance
-import promises
 import report
 import runtime
 import storage
@@ -176,8 +175,6 @@ async def main() -> None:
            *([supervise("Instagram Drive", instagram.drive_loop(control_bot.alert))] if gdrive.enabled() else []),
            ] if config.INSTAGRAM_ENABLED else []),
         supervise("Guruh xabarlarini klonlash", groups.run()),
-        supervise("Va'dalar tekshiruvi", promises.run_scan(control_bot.send_promises)),
-        supervise("Va'dalar eslatmasi", promises.run_remind(control_bot.send_promises)),
         supervise("Haftalik chat hisoboti", weekly.run(control_bot.send_weekly)),
     ]
     if config.REPORT_ENABLED:

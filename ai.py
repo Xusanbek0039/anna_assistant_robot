@@ -287,26 +287,10 @@ SUMMARY_PROMPT = (
     "O'zbek tilida JSON qaytar:\n"
     '{{"summary": "3-6 gapli qisqa xulosa: nima haqida gaplashildi, nima kelishildi",\n'
     '  "topics": ["asosiy mavzular, 1-5 ta, qisqa"],\n'
-    '  "promises": [{{"who": "men" yoki "u", "text": "kim nimani qilishga va\'da berdi (qisqa, aniq)", '
-    '"due": "YYYY-MM-DD yoki null"}}],\n'
     '  "open_questions": ["javobsiz qolgan savollar yoki hal bo\'lmagan masalalar"]}}\n'
-    "Qoidalar: \"men\" — {owner} (\"Siz\") bergan va'da, \"u\" — suhbatdosh bergan va'da. Faqat aniq va'da/"
-    "kelishuvlarni yoz (\"ertaga pul o'tkazaman\", \"hujjatni jumagacha yuboraman\"), salomlashuv va oddiy "
-    "gaplarni emas. Muddat matnda nisbiy bo'lsa (ertaga, jumaga) — bugungi sanadan hisobla; aytilmagan bo'lsa "
-    "null. Bajarilgani yozishmada ko'rinib turgan va'dalarni qo'shma. O'chirilgan/tahrirlangan belgisi bor "
+    "Qoidalar: salomlashuv va oddiy gaplarni emas, mazmunni yoz. O'chirilgan/tahrirlangan belgisi bor "
     "xabarlarni ham hisobga ol. Hech narsa bo'lmasa — bo'sh ro'yxat."
 )
-
-
-def _due(value) -> str | None:
-    """AI bergan sana: faqat to'g'ri YYYY-MM-DD, aks holda None."""
-    from datetime import date
-    if not isinstance(value, str):
-        return None
-    try:
-        return date.fromisoformat(value.strip()[:10]).isoformat()
-    except ValueError:
-        return None
 
 
 def _str_list(value, limit: int = 8) -> list[str]:
@@ -317,22 +301,15 @@ def _str_list(value, limit: int = 8) -> list[str]:
 
 def parse_summary(data: dict) -> dict:
     """AI JSON javobini xavfsiz shaklga keltiradi (noto'g'ri maydonlar tashlab yuboriladi)."""
-    promises = []
-    for p in data.get("promises") or []:
-        if not isinstance(p, dict) or not str(p.get("text", "")).strip():
-            continue
-        who = "men" if str(p.get("who", "")).strip().lower() in ("men", "siz", "me", "owner") else "u"
-        promises.append({"who": who, "text": str(p["text"]).strip()[:300], "due": _due(p.get("due"))})
     return {
         "summary": str(data.get("summary", "")).strip(),
         "topics": _str_list(data.get("topics"), 5),
-        "promises": promises[:15],
         "open_questions": _str_list(data.get("open_questions"), 6),
     }
 
 
 async def summarize_chat(lines: str, them: str, today: str) -> dict:
-    """Yozishma xulosasi va va'dalar. {"summary", "topics", "promises", "open_questions", "tokens"}"""
+    """Yozishma xulosasi. {"summary", "topics", "open_questions", "tokens"}"""
     system = SUMMARY_PROMPT.format(owner=OWNER_NAME, them=them or "Suhbatdosh", today=today)
     resp = await _get_client().chat.completions.create(
         model=OPENAI_MODEL,

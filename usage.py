@@ -48,7 +48,7 @@ def should_alert(reason: str, chat_id: int) -> bool:
 
 
 async def owner_ok() -> tuple[bool, str | None]:
-    """Egasining o'z so'rovlari (xulosa, va'dalar) uchun — faqat kunlik umumiy limit tekshiriladi."""
+    """Egasining o'z so'rovlari (xulosa) uchun — faqat kunlik umumiy limit tekshiriladi."""
     if not config.OPENAI_API_KEY:
         return False, "OPENAI_API_KEY yo'q"
     try:

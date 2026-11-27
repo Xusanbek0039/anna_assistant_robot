@@ -28,7 +28,6 @@ DEFAULTS = {
     "archive_alerts": config.ARCHIVE_ALERTS,
     "drive_media": config.DRIVE_MEDIA_ENABLED,
     "edit_alerts": config.EDIT_ALERTS,
-    "promise_scan": config.PROMISE_SCAN,
     "weekly_report": config.WEEKLY_REPORT,
     "drive_backup": config.BACKUP_ENABLED,
     # 📸 Instagram (/ig)

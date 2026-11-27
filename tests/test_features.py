@@ -1,4 +1,4 @@
-"""Tahrir ogohlantirishi, arxivdan qidirish, AI xulosa, va'dalar, haftalik hisobot, zaxira."""
+"""Tahrir ogohlantirishi, arxivdan qidirish, AI xulosa, haftalik hisobot, zaxira."""
 import asyncio
 import gzip
 import os
@@ -12,7 +12,6 @@ import backup
 import config
 import control_bot
 import finder
-import promises
 import restore_backup
 import runtime
 import storage
@@ -98,16 +97,12 @@ def test_archive_results_marked_and_not_forwarded():
     assert "(o'chirilgan xabar)" in finder._ai_line(arch[0], 1)
 
 
-# ---------- 5-6. AI xulosa va va'dalar ----------
+# ---------- 5. AI xulosa ----------
 def test_parse_summary_is_defensive():
-    res = ai.parse_summary({"summary": " Kelishildi ", "topics": ["pul", ""], "promises": [
-        {"who": "Siz", "text": "pul o'tkazaman", "due": "2026-11-20"},
-        {"who": "u", "text": "hujjat yuboraman", "due": "ertaga"},
-        "noto'g'ri", {"who": "men", "text": "  "}]})
-    assert res["summary"] == "Kelishildi" and res["topics"] == ["pul"]
-    assert res["promises"] == [{"who": "men", "text": "pul o'tkazaman", "due": "2026-11-20"},
-                               {"who": "u", "text": "hujjat yuboraman", "due": None}]
-    assert ai.parse_summary({})["promises"] == []
+    res = ai.parse_summary({"summary": " Kelishildi ", "topics": ["pul", ""], "open_questions": ["?", ""],
+                            "promises": [{"who": "men", "text": "x"}]})
+    assert res == {"summary": "Kelishildi", "topics": ["pul"], "open_questions": ["?"]}   # va'dalar yo'q
+    assert ai.parse_summary({})["topics"] == []
 
 
 def test_chat_lines_keep_newest_and_marks():
@@ -118,42 +113,14 @@ def test_chat_lines_keep_newest_and_marks():
     assert "(o'chirilgan)" in text and "Ali" in text and "Siz" in text
 
 
-def test_only_my_promises_saved(monkeypatch):
-    saved = []
-
-    async def add(chat_id, title, text, due, source):
-        saved.append(text)
-        return f"id{len(saved)}"
-    monkeypatch.setattr(storage, "promise_add", add, raising=False)
-    out = run(promises.save_promises(5, "Ali", [{"who": "men", "text": "pul", "due": None},
-                                                {"who": "u", "text": "hujjat", "due": None}], "summary"))
-    assert saved == ["pul"] and out[0]["id"] == "id1"
-
-
-def test_scan_stops_when_ai_limit_reached(monkeypatch):
-    calls = []
-
-    async def active(since, limit):
-        return [{"chat_id": i} for i in range(5)]
-
-    async def summarize(chat_id, days):
-        calls.append(chat_id)
-        raise promises.NoAI("limit")
-    monkeypatch.setattr(storage, "archive_active_chats", active, raising=False)
-    monkeypatch.setattr(promises, "summarize", summarize)
-    assert run(promises.scan_recent()) == [] and calls == [0]
-
-
 def test_summary_text_escapes():
     text = control_bot._summary_text({"chat_id": 5, "title": "<Ali>"}, 7, 10,
-                                     {"summary": "a<b", "topics": ["x"], "open_questions": ["?<"],
-                                      "promises": [{"who": "men", "text": "<pul>", "due": "2026-11-20"}]}, [{}])
-    assert "<Ali>" not in text and "a&lt;b" in text and "&lt;pul&gt;" in text and "2026-11-20" in text
+                                     {"summary": "a<b", "topics": ["x"], "open_questions": ["?<"]})
+    assert "<Ali>" not in text and "a&lt;b" in text and "?&lt;" in text and "va'da" not in text
 
 
 def test_new_buttons_fit_telegram_limit():
-    pid = "a" * 24
-    rows = (control_bot._promise_buttons(pid) + control_bot._summary_buttons(-1001234567890)
+    rows = (control_bot._summary_buttons(-1001234567890)
             + control_bot._watch_panel()[1])
     for row in rows:
         for b in row:

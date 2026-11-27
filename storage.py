@@ -76,8 +76,6 @@ async def _create_indexes(db) -> None:
         ("archive", [("date", DESCENDING)], {}),
         ("archive", [("deleted_at", DESCENDING)], {"sparse": True}),
         ("archive", [("edited_at", DESCENDING)], {"sparse": True}),
-        ("promises", [("done", ASCENDING), ("due", ASCENDING)], {}),
-        ("promises", [("chat_id", ASCENDING), ("key", ASCENDING)], {}),
         ("watches", [("active", ASCENDING), ("created", ASCENDING)], {}),
         ("ig_archive", [("thread_id", ASCENDING), ("msg_id", ASCENDING)], {"unique": True}),
         ("ig_archive", [("thread_id", ASCENDING), ("date", ASCENDING)], {}),
@@ -757,56 +755,6 @@ async def profile_set(user_id: int, **fields) -> None:
 async def profile_add_saved_photo(user_id: int, photo_id: int) -> None:
     await _get_db().profiles.update_one({"_id": user_id}, {"$addToSet": {"saved_photos": photo_id}}, upsert=True)
 
-
-# ---------- va'dalar ----------
-def _prm_out(doc: dict) -> dict:
-    doc["id"] = str(doc.pop("_id"))
-    return doc
-
-
-async def promise_add(chat_id: int, title: str, text: str, due: str | None, source: str) -> str | None:
-    """Yangi va'da. Shu chatda xuddi shu (normallashtirilgan) matnli ochiq va'da bo'lsa — qo'shilmaydi."""
-    import re
-    key = re.sub(r"\W+", " ", text.lower()).strip()
-    if not key:
-        return None
-    db = _get_db()
-    if await db.promises.find_one({"chat_id": chat_id, "key": key, "done": False}):
-        return None
-    res = await db.promises.insert_one({"chat_id": chat_id, "title": title, "text": text, "key": key,
-                                        "due": due, "done": False, "created": time.time(), "source": source})
-    return str(res.inserted_id)
-
-
-async def promise_list(open_only: bool = True, due_until: str | None = None, limit: int = 30) -> list[dict]:
-    query: dict = {}
-    if open_only:
-        query["done"] = False
-    if due_until:
-        query["due"] = {"$ne": None, "$lte": due_until}
-    rows = await _get_db().promises.find(query).sort([("due", ASCENDING), ("created", ASCENDING)]) \
-        .limit(limit).to_list()
-    return [_prm_out(r) for r in rows]
-
-
-async def promise_update(promise_id: str, **fields) -> bool:
-    from bson import ObjectId
-    from bson.errors import InvalidId
-    try:
-        res = await _get_db().promises.update_one({"_id": ObjectId(promise_id)}, {"$set": fields})
-    except InvalidId:
-        return False
-    return res.matched_count > 0
-
-
-async def promise_delete(promise_id: str) -> bool:
-    from bson import ObjectId
-    from bson.errors import InvalidId
-    try:
-        res = await _get_db().promises.delete_one({"_id": ObjectId(promise_id)})
-    except InvalidId:
-        return False
-    return res.deleted_count > 0
 
 
 # ---------- eslatmalar (watchers.py): raqam Telegram'da paydo bo'lsa / odam online bo'lsa ----------
