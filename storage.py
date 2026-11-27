@@ -649,9 +649,43 @@ async def archive_last_msg_id(chat_id: int) -> int:
     return int(doc["msg_id"]) if doc else 0
 
 
+ARCHIVE_MEDIA_QUOTA = 150 * 1024 * 1024   # MongoDB 512 MB limitidan oshmasligi uchun (eng eskilari tozalanadi)
+ARCHIVE_MEDIA_TARGET = 120 * 1024 * 1024
+_media_puts = 0
+
+
+async def _prune_archive_media() -> None:
+    """archive_media hajmi kvotadan oshsa, eng eski fayllarni o'chiradi (matn va Drive havolalari saqlanadi)."""
+    try:
+        db = _real_db()
+        st = await db.command("collStats", "archive_media")
+        total = int(st.get("size") or 0)
+        if total <= ARCHIVE_MEDIA_QUOTA:
+            return
+        to_del, freed = [], 0
+        need = total - ARCHIVE_MEDIA_TARGET
+        async for doc in db.archive_media.find({}, {"sz": {"$binarySize": "$data"}}).sort("ts", ASCENDING):
+            to_del.append(doc["_id"])
+            freed += int(doc.get("sz") or 0)
+            if freed >= need:
+                break
+        if to_del:
+            await db.archive_media.delete_many({"_id": {"$in": to_del}})
+            sids = [str(x) for x in to_del]
+            for col in (db.archive, db.archive2):
+                await col.update_many({"media_id": {"$in": sids}}, {"$unset": {"media_id": ""}})
+            log.info("MongoDB joy tejash: %d ta eski media tozalandi (~%.1f MB)", len(to_del), freed / 1024 / 1024)
+    except Exception:
+        pass
+
+
 async def archive_media_put(data: bytes, mime: str) -> str:
+    global _media_puts
     from bson import Binary
-    res = await _get_db().archive_media.insert_one({"data": Binary(data), "mime": mime, "ts": time.time()})
+    res = await _get_db().archive_media.insert_one({"data": Binary(data), "mime": mime, "size": len(data), "ts": time.time()})
+    _media_puts += 1
+    if _media_puts % 25 == 0:
+        await _prune_archive_media()
     return str(res.inserted_id)
 
 
@@ -1028,14 +1062,48 @@ async def ig_media_pending(limit: int = 10) -> list[dict]:
     return rows
 
 
+IG_MEDIA_QUOTA = 80 * 1024 * 1024
+IG_MEDIA_TARGET = 60 * 1024 * 1024
+_ig_media_puts = 0
+
+
+async def _prune_ig_media() -> None:
+    try:
+        db = _real_db()
+        st = await db.command("collStats", "ig_media")
+        total = int(st.get("size") or 0)
+        if total <= IG_MEDIA_QUOTA:
+            return
+        to_del, freed = [], 0
+        need = total - IG_MEDIA_TARGET
+        async for doc in db.ig_media.find({}, {"size": 1, "thread_id": 1, "msg_id": 1}).sort("ts", ASCENDING):
+            to_del.append(doc)
+            freed += int(doc.get("size") or 0)
+            if freed >= need:
+                break
+        if to_del:
+            await db.ig_media.delete_many({"_id": {"$in": [d["_id"] for d in to_del]}})
+            for d in to_del:
+                await db.ig_archive.update_one({"thread_id": d["thread_id"], "msg_id": d["msg_id"]},
+                                               {"$set": {"media_saved": False}})
+            log.info("MongoDB joy tejash: %d ta eski Instagram media tozalandi (~%.1f MB)",
+                     len(to_del), freed / 1024 / 1024)
+    except Exception:
+        pass
+
+
 async def ig_media_save(thread_id: str, msg_id: str, data: bytes, mime: str) -> None:
     """Media faylni bazaga saqlaydi (HTML ichida ochilishi uchun)."""
+    global _ig_media_puts
     from bson import Binary
     await _get_db().ig_media.update_one(
         {"_id": f"{thread_id}:{msg_id}"},
         {"$set": {"thread_id": thread_id, "msg_id": msg_id, "data": Binary(data),
                   "mime": mime, "size": len(data), "ts": time.time()}},
         upsert=True)
+    _ig_media_puts += 1
+    if _ig_media_puts % 20 == 0:
+        await _prune_ig_media()
 
 
 async def ig_media_get(thread_id: str, msg_ids: list[str]) -> dict[str, tuple[bytes, str]]:

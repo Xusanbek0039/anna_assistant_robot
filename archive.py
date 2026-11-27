@@ -158,17 +158,23 @@ async def _save_blob(msg, limit_kb: int | None = None) -> str | None:
         return None
 
 
+PHOTO_THUMB_THRESHOLD = 250 * 1024   # 250 KB dan katta rasmlar bazaga kichikroq nusxada (asli Drive'da)
+EXPORT_MONGO_MAX_KB = 300            # HTML eksportda MongoDB'ga bitta fayl ko'pi bilan 300 KB (512 MB kvota uchun)
+
+
 async def _save_blob_inner(msg, limit_kb: int | None) -> str | None:
     limit = min((config.ARCHIVE_MEDIA_MAX_KB if limit_kb is None else limit_kb) * 1024, MONGO_BLOB_MAX)
     mime = _blob_mime(msg) if limit > 0 else None
-    if not mime:
-        return None
+    if not mime or mime.startswith("video/"):
+        return None   # videolar MongoDB 512 MB kvotasini tez to'ldiradi — ular Google Drive'ga yuklanadi
     size = getattr(msg.file, "size", 0) or 0
     try:
-        if size <= limit:
+        if msg.photo and size > min(limit, PHOTO_THUMB_THRESHOLD):
+            data = await msg.download_media(file=bytes, thumb=-2)  # katta rasm — ixcham nusxa
+        elif size <= limit:
             data = await msg.download_media(file=bytes)
         elif msg.photo:
-            data = await msg.download_media(file=bytes, thumb=-2)  # katta rasm — kichikroq nusxasi
+            data = await msg.download_media(file=bytes, thumb=-2)
         else:
             return None
     except Exception as e:
@@ -738,10 +744,11 @@ async def fill_media(user, chat_id: int) -> int:
     user = await client_for(chat_id, user)
     docs = await storage.archive_messages(chat_id, limit=config.ARCHIVE_EXPORT_LIMIT)
     need = [d for d in docs
-            if d.get("media") in EMBED_KINDS and not d.get("media_id") and not d.get("deleted") and not d.get("media_tried")]
-    need.sort(key=lambda d: (d.get("media") not in LIGHT_EMBED_KINDS, -(d.get("date") or 0)))
+            if d.get("media") in LIGHT_EMBED_KINDS and not d.get("media_id") and not d.get("deleted") and not d.get("media_tried")]
+    need.sort(key=lambda d: -(d.get("date") or 0))
     if not need or config.EXPORT_MEDIA_MAX_KB <= 0:
         return 0
+    blob_limit_kb = min(config.EXPORT_MEDIA_MAX_KB, EXPORT_MONGO_MAX_KB)
     user, entity = await _resolve_peer(user, chat_id)
     if entity is None:
         return 0
@@ -752,10 +759,10 @@ async def fill_media(user, chat_id: int) -> int:
         for d, m in zip(chunk, msgs):
             if total >= HTML_MEDIA_BUDGET:
                 break
-            media_id = await _save_blob(m, config.EXPORT_MEDIA_MAX_KB) if m is not None and m.media else None
+            media_id = await _save_blob(m, blob_limit_kb) if m is not None and m.media else None
             if media_id:
                 await storage.archive_msg_set(chat_id, d["msg_id"], media_id=media_id)
-                total += min(getattr(m.file, "size", 0) or 0, config.EXPORT_MEDIA_MAX_KB * 1024)
+                total += min(getattr(m.file, "size", 0) or 0, blob_limit_kb * 1024)
                 saved += 1
             else:  # o'chirilgan yoki juda katta — keyingi safar qayta urinmaymiz
                 await storage.archive_msg_set(chat_id, d["msg_id"], media_tried=True)
@@ -841,12 +848,6 @@ async def drive_sync_chat(chat_id: int, info: dict | None = None) -> str:
     path = os.path.join(tmp, "chat.html")
     try:
         async with _drive_lock:
-            cli = _clients.get(storage.arc_slot()) or _clients.get(1)
-            if cli is not None:
-                try:
-                    await fill_media(cli, chat_id)
-                except Exception as e:
-                    log.debug("Drive HTML media to'ldirilmadi (%s)", type(e).__name__)
             info2, _ = await _render_to_file(chat_id, False, path)
             res = await _in_folder(chat_id, info, lambda folder: gdrive.upload(
                 _drive_name(info2), mime="text/html", file_id=info.get("drive_file_id"),
