@@ -179,6 +179,8 @@ def drive(monkeypatch):
         return f"folder-{name}"
 
     async def upload(name, data=None, mime="text/html", file_id=None, parent=None, path=None):
+        if data is None and path is not None:
+            data = open(path, "rb").read()
         up.append({"name": name, "data": data, "file_id": file_id, "parent": parent})
         return {"id": f"file{len(up)}", "webViewLink": f"https://drive.google.com/file/d/file{len(up)}/view"}
 
