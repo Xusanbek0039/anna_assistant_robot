@@ -1138,7 +1138,7 @@ async def _send_archive_html(chat_id: int, only_deleted: bool) -> None:
         await status.edit(f"❌ Tayyorlab bo'lmadi: {type(e).__name__}")
 
 
-# ---------- kuzatuv: tahrir va profil ----------
+# ---------- kuzatuv: tahrir ----------
 async def edited_alert(chat_id: int, old: dict, new_text: str) -> None:
     """Suhbatdosh xabarini tahrirladi — avvalgi va yangi matni bilan."""
     info = await storage.archive_chat(chat_id) or {}
@@ -1152,30 +1152,6 @@ async def edited_alert(chat_id: int, old: dict, new_text: str) -> None:
         await ctx.bot.send_message(ctx.owner_id, body, parse_mode="html", buttons=_html_buttons(chat_id)[:1])
     except Exception:
         log.exception("Tahrir haqida ogohlantirish yuborilmadi")
-
-
-async def profile_alert(user_id: int, info: dict, changes: list[str], photo: bytes | None,
-                        link: str | None) -> None:
-    """Kontakt profilini o'zgartirdi."""
-    lines = [f"👤 <b>Profil o'zgardi</b>: {_who(info.get('title') or '', info.get('username'), user_id)}", ""]
-    lines += [html.escape(c) for c in changes]
-    buttons = [[Button.inline("📄 Yozishma (HTML)", f"arc:html:{user_id}:a".encode())]]
-    if link:
-        buttons[0].append(Button.url("☁️ Rasmlar Drive'da", link))
-    text = "\n".join(lines)
-    try:
-        if photo:
-            f = io.BytesIO(photo)
-            f.name = "profil.jpg"
-            if len(text) <= 1000:   # rasm izohi 1024 belgigacha — kesib HTML'ni buzmaslik uchun alohida yuboramiz
-                await ctx.bot.send_file(ctx.owner_id, f, caption=text, parse_mode="html", buttons=buttons)
-                return
-            await ctx.bot.send_file(ctx.owner_id, f)
-            await ctx.bot.send_message(ctx.owner_id, text, parse_mode="html", buttons=buttons)
-        else:
-            await ctx.bot.send_message(ctx.owner_id, text, parse_mode="html", buttons=buttons)
-    except Exception:
-        log.exception("Profil ogohlantirishi yuborilmadi")
 
 
 # ---------- AI chat xulosasi ----------
@@ -1271,8 +1247,6 @@ async def send_weekly(text: str, chat_ids: list[int]) -> None:
 # ---------- kuzatuv sozlamalari ----------
 WATCH_KEYS = {
     "edit_alerts": "✏️ Tahrir ogohlantirishi",
-    "profile_watch": "👤 Profil o'zgarishi",
-    "profile_photos": "🖼 Profil rasmlari tarixi (Drive)",
     "promise_scan": "📌 Va'dalarni har kech topish (AI)",
     "weekly_report": "📊 Haftalik chat hisoboti",
     "drive_backup": "💾 Bazani har kuni Drive'ga zaxiralash",

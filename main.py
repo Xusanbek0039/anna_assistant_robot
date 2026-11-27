@@ -15,7 +15,6 @@ import groups
 import health
 import instagram
 import instance
-import profiles
 import promises
 import report
 import runtime
@@ -125,7 +124,6 @@ async def main() -> None:
     userbot.setup(user, me_id=me.id)
     # o'chirilgan / tahrirlangan yozishmalar
     archive.setup(user, me.id, control_bot.deleted_alert, control_bot.edited_alert)
-    profiles.setup(user, control_bot.profile_alert)  # ism, username, bio, rasm o'zgarishlari
     if config.WATCH_ENABLED:  # 🔔 eslatmalar: raqam Telegram'da paydo bo'lsa / odam online bo'lsa
         watchers.setup(user, control_bot.watch_alert)
     # 📸 Instagram: bir martalik media, avtojavob, arxiv
@@ -166,7 +164,6 @@ async def main() -> None:
     else:
         log.info("Google Drive arxivi o'chiq - .env da yo'q: %s", ", ".join(gdrive.missing()))
     background += [
-        supervise("Profil kuzatuvi", profiles.run(user)),
         *([supervise("Eslatmalar", watchers.run(user))] if config.WATCH_ENABLED else []),
         *([supervise("Instagram", instagram.run()),
            supervise("Instagram arxivi", instagram.backfill_loop(control_bot.alert)),

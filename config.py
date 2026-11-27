@@ -163,11 +163,8 @@ DRIVE_MEDIA_ENABLED = _bool("DRIVE_MEDIA_ENABLED", True)
 DRIVE_MEDIA_MAX_MB = _int("DRIVE_MEDIA_MAX_MB", 300)  # bundan katta fayl yuklanmaydi
 DRIVE_MEDIA_HISTORY = _bool("DRIVE_MEDIA_HISTORY", True)  # mavjud chatlardagi eski rasm/videolar ham
 
-# --- Kuzatuv: tahrir va profil o'zgarishlari ---
+# --- Kuzatuv: tahrir ---
 EDIT_ALERTS = _bool("EDIT_ALERTS", True)              # suhbatdosh xabarini tahrirlasa — ogohlantirish
-PROFILE_WATCH = _bool("PROFILE_WATCH", True)          # ism, username, bio, rasm o'zgarsa — ogohlantirish
-PROFILE_CHECK_HOURS = max(1, _int("PROFILE_CHECK_HOURS", 6))
-PROFILE_PHOTOS = _bool("PROFILE_PHOTOS", True)        # profil rasmlari tarixi Drive'dagi chat papkasiga
 
 # --- 🔔 Eslatmalar: raqam Telegram'da paydo bo'lsa / odam online bo'lsa — xabar (watchers.py) ---
 WATCH_ENABLED = _bool("WATCH_ENABLED", True)

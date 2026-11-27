@@ -1,11 +1,10 @@
-"""Tahrir ogohlantirishi, profil kuzatuvi, arxivdan qidirish, AI xulosa, va'dalar, haftalik hisobot, zaxira."""
+"""Tahrir ogohlantirishi, arxivdan qidirish, AI xulosa, va'dalar, haftalik hisobot, zaxira."""
 import asyncio
 import gzip
 import os
 from datetime import datetime, timezone
 
 import pytest
-from telethon.tl.types import User, UserProfilePhoto
 
 import ai
 import archive
@@ -13,7 +12,6 @@ import backup
 import config
 import control_bot
 import finder
-import profiles
 import promises
 import restore_backup
 import runtime
@@ -81,117 +79,6 @@ def test_edited_alert_message(monkeypatch, arc):  # noqa: F811
     monkeypatch.setattr(control_bot.ctx, "owner_id", 1, raising=False)
     run(control_bot.edited_alert(5, {"text": "<eski>", "date": 1.7e9}, "yangi"))
     assert "&lt;eski&gt;" in sent[0] and "yangi" in sent[0] and "tahrirlandi" in sent[0]
-
-
-# ---------- 2-3. profil kuzatuvi ----------
-def _user(**kw):
-    base = dict(id=5, first_name="Ali", last_name=None, username="ali")
-    base.update(kw)
-    return User(**base)
-
-
-def test_profile_diff():
-    old = profiles.snapshot(_user(photo=UserProfilePhoto(photo_id=1, dc_id=2)), "dasturchi")
-    assert profiles.diff(old, dict(old)) == []
-    new = profiles.snapshot(_user(first_name="Alisher", username="alisher",
-                                  photo=UserProfilePhoto(photo_id=2, dc_id=2)), "dizayner")
-    changes = profiles.diff(old, new)
-    assert any("«Ali» → «Alisher»" in c for c in changes)
-    assert any("@ali → @alisher" in c for c in changes)
-    assert any("Bio" in c for c in changes) and any("Yangi profil rasmi" in c for c in changes)
-    assert profiles.diff(old, profiles.snapshot(_user(deleted=True))) == ["❌ Akkauntini o'chirdi"]
-    gone = profiles.diff(old, profiles.snapshot(_user()))
-    assert any("yashirdi" in c for c in gone)
-    # bio getUsers'da kelmaydi — "o'zgardi" deb hisoblanmaydi
-    same_photo = profiles.snapshot(_user(photo=UserProfilePhoto(photo_id=1, dc_id=2)))   # about yo'q
-    assert profiles.diff(old, same_photo) == []
-
-
-@pytest.fixture
-def prof(monkeypatch, rt):
-    db, alerts, saved = {}, [], []
-
-    async def get(uid):
-        return dict(db[uid]) if uid in db else None
-
-    async def set_(uid, **f):
-        db.setdefault(uid, {}).update(f)
-
-    async def add_photo(uid, pid):
-        db.setdefault(uid, {}).setdefault("saved_photos", []).append(pid)
-
-    async def chat(uid):
-        return {"chat_id": uid, "title": "Ali", "kind": "user"}
-
-    async def alert(uid, info, changes, photo, link):
-        alerts.append((uid, changes, photo))
-
-    async def save_photo(uid, pid, data, when=None):
-        saved.append(pid)
-        return "https://drive/p"
-
-    for name, fn in [("profile_get", get), ("profile_set", set_), ("profile_add_saved_photo", add_photo),
-                     ("archive_chat", chat)]:
-        monkeypatch.setattr(storage, name, fn, raising=False)
-    monkeypatch.setattr(profiles, "_alert", alert)
-    monkeypatch.setattr(profiles, "_save_photo", save_photo)
-    return db, alerts, saved
-
-
-class _Tg:
-    async def download_profile_photo(self, user, file=None):
-        return b"JPEG"
-
-    async def iter_profile_photos(self, user, limit=None):
-        return
-        yield
-
-
-def test_first_snapshot_silent_then_changes_alerted(prof):
-    db, alerts, saved = prof
-    assert run(profiles.check_user(_Tg(), _user())) == []           # birinchi ko'rish — jim
-    assert alerts == [] and db[5]["first"] == "Ali"
-    run(profiles.check_user(_Tg(), _user(first_name="Alisher", photo=UserProfilePhoto(photo_id=9, dc_id=2))))
-    (uid, changes, photo), = alerts
-    assert uid == 5 and photo == b"JPEG" and saved == [9]
-    assert any("Alisher" in c for c in changes)
-    run(profiles.check_user(_Tg(), _user(first_name="Alisher", photo=UserProfilePhoto(photo_id=9, dc_id=2))))
-    assert len(alerts) == 1                                         # o'zgarmagan — qayta xabar yo'q
-
-
-def test_profile_alert_off_and_bots_ignored(prof):
-    db, alerts, _ = prof
-    run(profiles.check_user(_Tg(), _user()))
-    run(runtime.update(profile_watch=False))
-    run(profiles.check_user(_Tg(), _user(first_name="X")))
-    assert alerts == [] and db[5]["first"] == "X"                   # snapshot yangilanadi, xabar yo'q
-    assert run(profiles.check_user(_Tg(), _user(id=9, bot=True))) == []
-    assert 9 not in db
-
-
-def test_profile_photo_saved_once_to_drive(google, monkeypatch, rt):  # noqa: F811
-    db, chat = {}, {"chat_id": 5, "title": "Ali", "username": None}
-
-    async def get(uid):
-        return dict(db.get(uid, {}))
-
-    async def add_photo(uid, pid):
-        db.setdefault(uid, {}).setdefault("saved_photos", []).append(pid)
-
-    async def get_chat(cid):
-        return dict(chat)
-
-    async def chat_set(cid, **f):
-        chat.update(f)
-
-    for name, fn in [("profile_get", get), ("profile_add_saved_photo", add_photo),
-                     ("archive_chat", get_chat), ("archive_chat_set", chat_set)]:
-        monkeypatch.setattr(storage, name, fn, raising=False)
-    assert run(profiles._save_photo(5, 77, b"IMG")).startswith("https://drive/")
-    assert run(profiles._save_photo(5, 77, b"IMG")) is None          # bir rasm bir marta
-    f, = google.files.values()
-    folder = google.folders[f["parents"][0]]
-    assert folder["name"] == "profil_rasmlari" and f["name"].endswith("_77.jpg")
 
 
 # ---------- 4. arxivdan qidirish ----------
