@@ -138,8 +138,9 @@ MENU_PROMISES = "📌 Va'dalar"
 MENU_WATCH = "🔔 Eslatmalar"
 MENU_IG = "📸 Instagram"
 MENU_GROUPS = "👥 Guruhlar"
+MENU_CHANNELS = "📢 Kanallar"
 MENU_TEXTS = {MENU_PANEL, MENU_INBOX, MENU_ARCHIVE, MENU_FIN, MENU_FIND, MENU_REPORT, MENU_HELP, MENU_PROMISES,
-              MENU_WATCH, MENU_IG, MENU_GROUPS}
+              MENU_WATCH, MENU_IG, MENU_GROUPS, MENU_CHANNELS}
 
 
 def main_keyboard() -> list:
@@ -147,7 +148,7 @@ def main_keyboard() -> list:
         [Button.text(MENU_PANEL, resize=True, persistent=True), Button.text(MENU_INBOX), Button.text(MENU_WATCH)],
         [Button.text(MENU_ARCHIVE), Button.text(MENU_PROMISES), Button.text(MENU_FIN)],
         [Button.text(MENU_FIND), Button.text(MENU_REPORT), Button.text(MENU_HELP)],
-        [Button.text(MENU_IG), Button.text(MENU_GROUPS)],
+        [Button.text(MENU_IG), Button.text(MENU_GROUPS), Button.text(MENU_CHANNELS)],
     ]
 
 MODE_NAMES = {"on": "🟢 doim yoqiq (/on)", "off": "⚪️ o'chirilgan (/off)", "auto": "🤖 aqlli (/auto)"}
@@ -339,6 +340,38 @@ def new_msg_panel() -> tuple[str, list]:
             [[Button.inline("🔔 Yoqish", b"newmsg:on")]])
 
 
+# ---------- «Qaysi akkaunt uchun?» ----------
+PICK_TITLES = {"panel": "⚙️ Boshqaruv", "chn": "📢 Kanallar arxivi", "find": "🔎 Qidirish"}
+_find_slot = 1   # oxirgi qidiruv qaysi akkauntdan (natija tugmalari ham shu akkauntdan ishlaydi)
+
+
+def _fu():
+    """Qidiruv uchun Telegram client: tanlangan akkaunt (ulanmagan bo'lsa — asosiy)."""
+    return ctx.users.get(_find_slot) or ctx.user
+
+
+def _acc_title(slot: int) -> str:
+    name = ctx.names.get(slot, "")
+    return f"{slot}-akkaunt" + (f" ({name})" if name else "")
+
+
+async def _ask_account(event, feature: str) -> bool:
+    """2 ta akkaunt ulangan bo'lsa — «qaysi akkaunt uchun?» tugmalari. Savol berilgan bo'lsa True."""
+    if 2 not in ctx.users:
+        return False
+    if not ctx.names.get(1):
+        try:
+            me = await ctx.user.get_me()
+            ctx.names[1] = " ".join(p for p in (me.first_name, me.last_name) if p) + (
+                f" (@{me.username})" if me.username else "")
+        except Exception:
+            pass
+    rows = [[Button.inline(f"{n}️⃣ {(ctx.names.get(s) or f'{s}-akkaunt')[:40]}", f"pick:{feature}:{s}".encode())]
+            for n, s in (("1", 1), ("2", 2))]
+    await event.respond(f"{PICK_TITLES[feature]} — <b>qaysi akkaunt uchun?</b>", parse_mode="html", buttons=rows)
+    return True
+
+
 # ---------- 📱 2-akkaunt ----------
 _login2_task: asyncio.Task | None = None
 _acc_tasks: dict[int, dict] = {}   # akkaunt -> {"online": Task, "bio": Task, "bio_obj": BioUpdater}
@@ -365,7 +398,10 @@ def acc_panel(slot: int = 2, first_time: bool = False) -> tuple[str, list]:
         rows.append([Button.inline(("✅ " if on else "▫️ ") + label, f"acc:t:{slot}:{key}".encode())])
     if config.DRY_RUN and runtime.get(f"acc{slot}_bio"):
         lines += ["", "ℹ️ DRY_RUN=true — bio Telegram'da o'zgarmaydi (faqat logda)."]
-    lines += ["", "Faqat asosiy akkauntda: chat arxivi, eslatmalar, qidirish, kanallar arxivi."]
+    lines += ["", "📢 Kanallar arxivi va 🔎 qidiruv — pastdagi tugmalar (shu akkaunt uchun).",
+              "Faqat asosiy akkauntda: shaxsiy chatlar arxivi, eslatmalar."]
+    rows.append([Button.inline("📢 Kanallar arxivi", f"pick:chn:{slot}".encode()),
+                 Button.inline("🔎 Qidirish", f"pick:find:{slot}".encode())])
     rows.append([Button.inline("✔️ Tayyor", f"acc:done:{slot}".encode()),
                  Button.inline("🚪 Akkauntdan chiqish", b"tg:logout2_ask")])
     return "\n".join(lines), rows
@@ -442,6 +478,7 @@ async def connect_second(client, slot: int = 2) -> str | None:
         f" (@{me.username})" if me.username else "")
     userbot.setup(client, me.id, slot=slot)
     groups.setup(client, group_clone_text, send_media, slot=slot)
+    archive.setup_channels(client, slot)   # 📢 2-akkaunt kanallari ham arxivlanadi (belgilanganlari)
     _acc_apply(slot)
     log.info("%d-akkaunt ulandi: %s (id %s)", slot, me.first_name, me.id)
     return None
@@ -503,6 +540,7 @@ async def _login_second(bot) -> None:
 
 async def logout_second(slot: int = 2) -> str:
     await _acc_stop(slot)
+    archive.forget_client(slot)
     client = ctx.users.pop(slot, None)
     name = ctx.names.pop(slot, "")
     groups.forget_client(slot)
@@ -870,10 +908,16 @@ async def _drive_finish(event) -> None:
         asyncio.get_running_loop().call_later(2, os._exit, 0)
 
 
-async def _send_channels_panel(event, page: int = 0, edit: bool = False, refresh: bool = False) -> None:
+async def _send_channels_panel(event, page: int = 0, edit: bool = False, refresh: bool = False,
+                               slot: int = 1) -> None:
+    client = ctx.users.get(slot) or (ctx.user if slot == 1 else None)
+    if client is None:
+        await event.respond(f"{slot}-akkaunt ulanmagan — /tglogin{slot}")
+        return
     try:
-        text, rows = channels.panel(await channels.my_channels(ctx.user, refresh=refresh), page,
-                                    runtime.get("archive_enabled"))
+        text, rows = channels.panel(await channels.my_channels(client, refresh=refresh, slot=slot), page,
+                                    runtime.get("archive_enabled"), slot=slot,
+                                    acc_name=html.escape(ctx.names.get(slot, "")) if 2 in ctx.users else "")
     except Exception as e:
         log.exception("Kanallar ro'yxati olinmadi")
         text, rows = f"❌ Kanallar ro'yxatini olib bo'lmadi: {type(e).__name__}", None
@@ -888,11 +932,13 @@ async def _send_channels_panel(event, page: int = 0, edit: bool = False, refresh
     await event.respond(text, parse_mode="html", buttons=_inline(rows))
 
 
-async def _channel_backfill(chat_id: int, title: str) -> None:
+async def _channel_backfill(chat_id: int, title: str, slot: int = 1) -> None:
     """Kanal yoqilgan zahoti — oxirgi postlari ham arxivga (fon vazifasi)."""
     limit = config.ARCHIVE_SYNC_LIMIT or 1000
+    client = ctx.users.get(slot) or ctx.user
     try:
-        added = await archive.backfill(ctx.user, chat_id, limit)
+        added = await archive.backfill(client, chat_id, limit)
+        await archive.mark_via(chat_id, slot)   # backfill chat yozuvini yaratdi — endi «via» saqlanadi
     except Exception as e:
         log.exception("Kanal tarixi arxivga olinmadi")
         await alert(f"⚠️ «{title}» kanalining eski postlari arxivga olinmadi: {type(e).__name__}")
@@ -1313,7 +1359,7 @@ async def _archive_panel() -> tuple[str, list]:
     buttons = [
         [Button.inline("💬 Chatlar", b"arc:list:0"), Button.inline("🗑 O'chirilgan bor chatlar", b"arc:dlist:0")],
         [Button.inline("👻 O'chirilgan akkauntlar", b"arc:gone:0"),
-         Button.inline(f"📢 Kanallar ({channels.enabled_count()})", b"chn:p:0")],
+         Button.inline(f"📢 Kanallar ({channels.enabled_count()})", b"chn:ask")],
         [Button.inline("⏸ Arxivni to'xtatish" if on else "▶️ Arxivni yoqish", b"arc:set:archive_enabled"),
          Button.inline("🔕 Xabar bermasin" if alerts else "🔔 Xabar bersin", b"arc:set:archive_alerts")],
         [Button.inline("⚪️ Guruhlarsiz" if groups else "👥 Guruhlar ham", b"arc:set:archive_groups")],
@@ -1836,14 +1882,14 @@ async def _find_in(event, chat_id: int | None, title: str, username: str | None,
                 await status.edit(f"🔎 {where} qidiryapman... {n:,} ta xabar ko'rildi".replace(",", " "))
 
             # butun tarix bir marta o'qiladi; «menga tashlagan» bo'lsa keyin ajratiladi
-            hits, scanned = await finder.search_chat(ctx.user, chat_id, q.kind, progress=progress)
+            hits, scanned = await finder.search_chat(_fu(), chat_id, q.kind, progress=progress)
             hits, only_them = finder.only_from_them(hits, q.only_them)
             if hits or not use_ai:
                 await status.edit(finder.format_hits(title, hits, q.kind, scanned, only_them), parse_mode="html")
                 return
         # 2) istalgan narsa: Telegram qidiruvi nomzodlarni yig'adi, AI javobni tanlaydi
         keywords = finder.keywords_for(q, title if chat_id is not None else "", username)
-        if chat_id is not None and not keywords and not q.media and finder.wants_chat(q.text):
+        if chat_id is not None and not keywords and not q.media and finder.wants_chat(q.text) and _find_slot == 1:
             # «Aziz bilan chatni top» — xabar emas, yozishmaning o'zi kerak
             text, buttons = await _archive_chat_view(chat_id)
             await status.edit(text, parse_mode="html", buttons=buttons)
@@ -1851,12 +1897,13 @@ async def _find_in(event, chat_id: int | None, title: str, username: str | None,
         if chat_id is None and not keywords and not q.media:
             await status.edit("Nimani qidiray? Masalan: «Ali yuborgan manzilni top» yoki «wifi parolini qidir».")
             return
-        items = await finder.collect(ctx.user, chat_id, q, keywords)
+        items = await finder.collect(_fu(), chat_id, q, keywords)
         if not items and q.only_them:
             q.only_them = False
-            items = await finder.collect(ctx.user, chat_id, q, keywords)
-        # Arxivdan: Telegram'da endi yo'q (o'chirilgan) va tahrirlangan xabarlar ham
-        items = finder.merge_archive(items, await _archive_hits(chat_id, q, keywords))
+            items = await finder.collect(_fu(), chat_id, q, keywords)
+        # Arxivdan: Telegram'da endi yo'q (o'chirilgan) va tahrirlangan xabarlar ham (arxiv — 1-akkauntda)
+        if _find_slot == 1:
+            items = finder.merge_archive(items, await _archive_hits(chat_id, q, keywords))
         if chat_id is None:
             await _fill_titles(items)
         answer, picked, ai_done = "", [], False
@@ -1882,6 +1929,9 @@ async def _find_in(event, chat_id: int | None, title: str, username: str | None,
 
 
 async def _run_find(event, text: str) -> None:
+    global _find_slot
+    slot = _awaiting_slot.pop("find", 1)
+    _find_slot = slot if ctx.users.get(slot) else 1
     q = finder.parse_query(text)
     if await _ai_ok():
         try:
@@ -1893,13 +1943,14 @@ async def _run_find(event, text: str) -> None:
         await _find_in(event, None, "", None, q)
         return
     try:
-        cands = await finder.find_chats(ctx.user, q.name)
+        cands = await finder.find_chats(_fu(), q.name)
     except Exception as e:
         log.warning("Chatlar ro'yxati olinmadi (%s)", type(e).__name__)
         await event.respond(f"❌ Chatlar ro'yxatini olib bo'lmadi: {type(e).__name__}")
         return
     # Akkaunti o'chirilganlar Telegram'da nomsiz — arxivdagi eski/taxminiy ismi bo'yicha qo'shamiz
-    cands = sorted(cands + await _archive_candidates(q.name, {c.id for c in cands}), key=lambda c: -c.score)
+    if _find_slot == 1:   # arxiv — 1-akkauntniki
+        cands = sorted(cands + await _archive_candidates(q.name, {c.id for c in cands}), key=lambda c: -c.score)
     if not cands:
         await event.respond(f"🤷 «{html.escape(q.name)}» nomli chat topilmadi — barcha chatlardan qidiraman.",
                             parse_mode="html")
@@ -1945,7 +1996,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     async def _menu_button(event):
         choice = event.raw_text.strip()
         if choice == MENU_PANEL:
-            await _status(event)
+            if not await _ask_account(event, "panel"):
+                await _status(event)
         elif choice == MENU_INBOX:
             await _inbox(event)
         elif choice == MENU_ARCHIVE:
@@ -1954,6 +2006,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         elif choice == MENU_FIN:
             await event.respond(await finance.make_report("today"), parse_mode="html",
                                 buttons=_fin_panel_buttons())
+        elif choice == MENU_FIND and await _ask_account(event, "find"):
+            pass
         elif choice == MENU_FIND:
             await event.respond("🔎 Nimani topay? Shunchaki yozing yoki ovozli ayting:\n"
                                 "«Ali yuborgan manzilni top», «Vali tashlagan pdf faylni qidir», "
@@ -1969,6 +2023,9 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await _send_ig_panel(event)
         elif choice == MENU_GROUPS:
             await _send_groups_panel(event)
+        elif choice == MENU_CHANNELS:
+            if not await _ask_account(event, "chn"):
+                await _send_channels_panel(event)
         elif choice == MENU_HELP:
             await send_long(event.respond, HELP, parse_mode="html", buttons=main_keyboard())
 
@@ -2167,30 +2224,57 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     # ---------- 📢 Kanallar arxivi: faqat belgilangan kanallar ----------
     @bot.on(events.NewMessage(pattern=r"^/kanallar(?:@\w+)?$", func=is_owner))
     async def _channels_cmd(event):
-        await _send_channels_panel(event)
+        if not await _ask_account(event, "chn"):
+            await _send_channels_panel(event)
 
     @bot.on(events.CallbackQuery(pattern=rb"^chn:", func=is_owner))
     async def _channels_callback(event):
         parts = event.data.decode().split(":")
         action = parts[1]
-        if action == "t" and len(parts) == 4:
+        if action == "t" and len(parts) in (4, 5):
             chat_id, page = int(parts[2]), int(parts[3])
-            title = next((c["title"] for c in await channels.my_channels(user) if c["id"] == chat_id), "")
+            slot = int(parts[4]) if len(parts) == 5 else 1
+            client = ctx.users.get(slot) or user
+            title = next((c["title"] for c in await channels.my_channels(client, slot=slot)
+                          if c["id"] == chat_id), "")
             on = await channels.toggle(chat_id, title)
             if on:
                 await event.answer("✅ Arxivlanadi: " + title[:150] + " — eski postlari ham olinmoqda")
-                asyncio.create_task(_channel_backfill(chat_id, title))
+                asyncio.create_task(_channel_backfill(chat_id, title, slot))
             else:
                 await event.answer("⏸ To'xtatildi: " + title[:120] + " (saqlanganlari arxivda qoladi)")
-            await _send_channels_panel(event, page, edit=True)
-        elif action == "p":
+            await _send_channels_panel(event, page, edit=True, slot=slot)
+        elif action == "ask":
             await event.answer()
-            await _send_channels_panel(event, int(parts[2]), edit=True)
-        elif action == "r":
-            await event.answer("🔄 Yangilanyapti...")
-            await _send_channels_panel(event, int(parts[2]), edit=True, refresh=True)
+            if not await _ask_account(event, "chn"):
+                await _send_channels_panel(event)
+        elif action in ("p", "r"):
+            slot = int(parts[3]) if len(parts) > 3 else 1
+            await event.answer("🔄 Yangilanyapti..." if action == "r" else None)
+            await _send_channels_panel(event, int(parts[2]), edit=True, refresh=action == "r", slot=slot)
         else:
             await event.answer()
+
+    # ---------- «Qaysi akkaunt uchun?» — 2 ta akkaunt ulangan bo'lsa ----------
+    @bot.on(events.CallbackQuery(pattern=rb"^pick:(panel|chn|find):(\d)$", func=is_owner))
+    async def _pick_account(event):
+        feature, slot = event.data.decode().split(":")[1], int(event.data.decode().split(":")[2])
+        await event.answer()
+        if slot != 1 and slot not in ctx.users:
+            await event.respond(f"{slot}-akkaunt ulanmagan — /tglogin{slot}")
+            return
+        if feature == "panel":
+            if slot == 1:
+                await _status(event)
+            else:
+                text, rows = acc_panel(slot)
+                await event.respond(text, parse_mode="html", buttons=rows)
+        elif feature == "chn":
+            await _send_channels_panel(event, slot=slot)
+        elif feature == "find":
+            _awaiting_slot["find"] = slot
+            await event.respond(f"🔎 {_acc_title(slot)} — nimani topay? Yozing: «Ali yuborgan manzilni top», "
+                                "«wifi parolini qidir».")
 
     # ---------- 👥 Guruhlar: tanlangan guruh xabarlarini klonlash ----------
     @bot.on(events.NewMessage(pattern=r"^/guruhlar(?:@\w+)?$", func=is_owner))
@@ -2509,7 +2593,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         ok, failed = 0, 0
         for cid, ids in by_chat.items():
             try:
-                await ctx.user.forward_messages("me", ids, from_peer=cid)
+                await _fu().forward_messages("me", ids, from_peer=cid)
                 ok += len(ids)
             except Exception as e:
                 log.warning("Xabar Saqlanganlarga yuborilmadi (%s)", type(e).__name__)
@@ -2901,6 +2985,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     async def _plain(event):
         if tg_login.busy():
             return   # bot orqali Telegram login (telefon, kod, parol) davom etyapti — tg_login o'zi ishlaydi
+        # «🔎 Qidirish» → akkaunt tanlangan: keyingi matn — shu akkauntdan qidiruv
+        if "find" in _awaiting_slot and not event.is_reply:
+            await _run_find(event, event.text)
+            return
         # ☁️ Google Drive'ni qayta ulash: brauzer manzil qatoridagi http://127.0.0.1:8765/?...code=...
         if gdrive.parse_redirect(event.text):
             await _drive_finish(event)

@@ -240,3 +240,11 @@ def fast_sleep(monkeypatch):
 
 def run(coro):
     return asyncio.run(coro)
+
+
+@pytest.fixture
+def ig_no_grace(monkeypatch):
+    """Instagram «sessiya tugadi» xatosida kutmasdan darhol uziladi (eski xatti-harakatni sinash uchun)."""
+    import instagram
+    monkeypatch.setattr(instagram, "AUTH_STRIKES", 1)
+    monkeypatch.setattr(instagram, "AUTH_GRACE", 0)

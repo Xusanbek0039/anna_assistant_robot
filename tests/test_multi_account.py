@@ -158,3 +158,46 @@ def test_second_bio_uses_its_own_backup(tmp_path, monkeypatch):
     upd = bio_updater.BioUpdater(object(), slot=2)
     assert upd.flag == "acc2_bio" and upd.backup_file.endswith("bio_backup2.json")
     assert bio_updater.INSTANCE is not upd       # /bio buyrug'i 1-akkauntni boshqaradi
+
+
+class Ask:
+    def __init__(self):
+        self.sent = []
+
+    async def respond(self, text, **kw):
+        self.sent.append((text, kw))
+
+
+def test_asks_which_account_only_when_two(two):
+    ev = Ask()
+    assert run(control_bot._ask_account(ev, "chn")) is True
+    text, kw = ev.sent[0]
+    assert "qaysi akkaunt" in text
+    assert _datas(kw) == [b"pick:chn:1", b"pick:chn:2"]
+    control_bot.ctx.users.pop(2)
+    assert run(control_bot._ask_account(Ask(), "chn")) is False   # bitta akkaunt — so'ramaydi
+
+
+def test_find_uses_chosen_account(two, monkeypatch):
+    _, c1, c2 = two
+    control_bot._awaiting_slot["find"] = 2
+    seen = []
+
+    async def find_chats(client, name):
+        seen.append(client)
+        return []
+
+    async def find_in(*a, **kw):
+        seen.append(control_bot._fu())
+
+    monkeypatch.setattr(control_bot.finder, "find_chats", find_chats)
+    monkeypatch.setattr(control_bot, "_find_in", find_in)
+    monkeypatch.setattr(control_bot, "_ai_ok", lambda: _false())
+    run(control_bot._run_find(Ask(), "Ali yuborgan manzilni top"))
+    assert seen and all(c is c2 for c in seen) and "find" not in control_bot._awaiting_slot
+    run(control_bot._run_find(Ask(), "Ali yuborgan manzilni top"))      # keyingisi — yana 1-akkaunt
+    assert seen[-1] is c1
+
+
+async def _false():
+    return False

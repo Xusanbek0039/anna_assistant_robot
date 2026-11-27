@@ -28,7 +28,7 @@ def chn(monkeypatch):
     for name in ("channel_archive_list", "channel_archive_add", "channel_archive_remove"):
         monkeypatch.setattr(storage, name, getattr(st, name), raising=False)
     monkeypatch.setattr(channels, "_enabled", {})
-    monkeypatch.setattr(channels, "_cache", (0.0, []))
+    monkeypatch.setattr(channels, "_cache", {})
     return st
 
 
@@ -76,6 +76,41 @@ def test_panel(chn):
     items = [{"id": -100 - i, "title": f"Kanal {i}", "username": None} for i in range(12)]
     text, rows = channels.panel(items, 0)
     assert "12 ta" in text and "arxivlanyapti: <b>1</b>" in text
-    assert rows[0][0] == ("✅ Kanal 5", "chn:t:-105:0")
-    assert ("➡️", "chn:p:1") in rows[-2] and ("⬅️ Arxiv", "arc:panel") in rows[-1]
+    assert rows[0][0] == ("✅ Kanal 5", "chn:t:-105:0:1")
+    assert ("➡️", "chn:p:1:1") in rows[-2] and ("⬅️ Arxiv", "arc:panel") in rows[-1]
     assert "to'xtatilgan" in channels.panel(items, 0, archive_on=False)[0]
+
+
+class Rec:
+    """2-akkaunt client'i o'rniga: ishlovchilarni yig'adi."""
+
+    def __init__(self):
+        self.handlers = []
+
+    def on(self, ev):
+        def deco(fn):
+            self.handlers.append((ev, fn))
+            return fn
+        return deco
+
+
+def test_second_account_channel_archived_and_media_via_it(arc, chn, monkeypatch):  # noqa: F811
+    import archive
+    monkeypatch.setattr(archive, "_clients", {})
+    monkeypatch.setattr(archive, "_chat_via", {})
+
+    async def chat_set(cid, **f):
+        if cid in arc.chats:          # haqiqiy baza kabi: upsert yo'q
+            arc.chats[cid].update(f)
+
+    monkeypatch.setattr(storage, "archive_chat_set", chat_set)
+    c2 = Rec()
+    archive.setup_channels(c2, 2)
+    new = c2.handlers[0][1]
+    run(channels.toggle(-33, "Kanal 33"))
+    run(new(ChEv(Msg("faqat 2-akkauntda", chat=33, channel=True), _channel(33))))
+    assert [d["text"] for d in arc.msgs.values()] == ["faqat 2-akkauntda"]
+    assert arc.chats[-33]["via"] == 2
+    archive._chat_via.clear()                                     # qayta ishga tushgandek — bazadan o'qiladi
+    assert run(archive.client_for(-33, "acc1")) is c2
+    assert run(archive.client_for(5, "acc1")) == "acc1"           # oddiy chatlar — 1-akkaunt

@@ -497,7 +497,8 @@ Yoqilgan zahoti oxirgi postlari ham olinadi (`ARCHIVE_SYNC_LIMIT` tagacha).
 - Post o'chirilsa yoki tahrirlansa — arxivda asl holati qoladi (o'chirilganda bot xabar beradi).
 - Boshqa chatlar kabi: **💬 Chatlar** ro'yxatida, HTML qilib olish va Google Drive'ga yuklash.
 - Yana bosilsa — to'xtaydi, saqlanganlari arxivda qoladi. Haftalik hisobotga kanallar kirmaydi.
-- Faqat asosiy akkaunt kanallari; chat arxivi yoqiq bo'lishi kerak.
+- 2 ta akkaunt bo'lsa — qaysi akkaunt kanallari ekanini so'raydi. Chat arxivi yoqiq bo'lishi kerak.
+- Asosiy menyuda ham **📢 Kanallar** tugmasi bor.
 
 ## 6.5. 📱 2-Telegram akkaunt (bitta botda ikkita akkaunt)
 
@@ -515,7 +516,11 @@ Keyin ham: **⚙️ Boshqaruv → 📱 2-akkaunt sozlamalari** (yoki `/tglogin2`
 | 🕒 Avtomatik bio | o'chiq | soat va ob-havo; o'chirsangiz (yoki chiqsangiz) asl bio qaytadi. Asl bio alohida saqlanadi (`bio_backup2.json`) |
 | 👥 Guruhlari | yoqiq | guruhlari «👥 Guruhlar» ro'yxatida |
 
-Faqat asosiy akkauntda: chat arxivi va Drive, kanallar arxivi, eslatmalar, qidirish.
+**Qaysi akkaunt uchun?** 2 ta akkaunt ulangan bo'lsa, ⚙️ Boshqaruv, 📢 Kanallar va 🔎 Qidirish avval so'raydi:
+«1️⃣ … / 2️⃣ …». 2-akkaunt kanallari ham arxivlanadi (media o'sha akkauntdan yuklanadi), qidiruv o'sha akkaunt
+chatlaridan qiladi.
+
+Faqat asosiy akkauntda: shaxsiy chatlar arxivi, eslatmalar.
 
 > Bitta odam ikkala akkauntingizga yozsa, AI suhbat tarixi, istisno va «AI jim» holati ular uchun umumiy.
 

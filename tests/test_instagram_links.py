@@ -217,7 +217,7 @@ def test_private_or_deleted_post_explained(ig):
     assert result.startswith("❌") and ig.sent == []
 
 
-def test_session_error_disconnects(ig):
+def test_session_error_disconnects(ig, ig_no_grace):
     connect(LinkCl(error=type("LoginRequired", (Exception,), {})()))
     link = instagram.parse_media_links("instagram.com/p/X3abcdefghi/")[0]
     run(instagram.download_link(link))

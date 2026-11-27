@@ -511,7 +511,7 @@ def test_owner_reply_from_bot(ig):
 
 
 # ---------- xatolar ----------
-def test_session_expired_disconnects_and_alerts(ig):
+def test_session_expired_disconnects_and_alerts(ig, ig_no_grace):
     connect(FakeCl(error=type("LoginRequired", (Exception,), {})()))
     ig.fs.session = {"settings": "{}", "active": True}
     try:
@@ -520,6 +520,44 @@ def test_session_expired_disconnects_and_alerts(ig):
         run(instagram._on_error(e))
     assert instagram.st.client is None and ig.fs.session["active"] is False
     assert "sessiyasi tugadi" in ig.alerts[0]
+
+
+def test_temporary_session_error_keeps_session(ig, monkeypatch):
+    """Bitta «LoginRequired» — uzilmaydi: kutib, bazadagi sessiyadan qayta uriniladi; o'tsa — davom etadi."""
+    connect(FakeCl(error=type("LoginRequired", (Exception,), {})()))
+    ig.fs.session = {"settings": '{"cookies": {"sessionid": "x"}}', "active": True}
+    fresh = FakeCl([thread("t1", [raven("a")])])
+    monkeypatch.setattr(instagram, "_new_client", lambda settings=None: fresh)
+    try:
+        run(instagram.check_once())
+    except Exception as e:
+        run(instagram._on_error(e))
+    assert instagram.st.client is fresh and ig.fs.session["active"] is True   # sessiya saqlandi
+    assert instagram.st.paused_until > time.time() and instagram.st.auth_strikes == 1
+    assert not any("sessiyasi tugadi" in a for a in ig.alerts)
+    run(instagram.check_once())                                              # Instagram yana ishladi
+    assert instagram.st.auth_strikes == 0
+
+
+def test_challenge_asks_to_confirm_in_app(ig, monkeypatch):
+    connect(FakeCl())
+    monkeypatch.setattr(instagram, "_new_client", lambda settings=None: FakeCl())
+    run(instagram._on_error(type("ChallengeRequired", (Exception,), {})()))
+    assert instagram.st.client is not None and "Bu men edim" in ig.alerts[0]
+
+
+def test_session_dropped_only_after_grace(ig, monkeypatch):
+    connect(FakeCl())
+    ig.fs.session = {"settings": "{}", "active": True}
+    monkeypatch.setattr(instagram, "_new_client", lambda settings=None: FakeCl())
+    err = type("LoginRequired", (Exception,), {})()
+    for _ in range(instagram.AUTH_STRIKES):
+        run(instagram._on_error(err))
+    assert instagram.st.client is not None              # vaqt hali o'tmagan — kutilyapti
+    instagram.st.auth_first -= instagram.AUTH_GRACE + 1
+    run(instagram._on_error(err))
+    assert instagram.st.client is None and ig.fs.session["active"] is False
+    assert any("sessiyasi tugadi" in a for a in ig.alerts)
 
 
 def test_throttle_pauses(ig):
@@ -1097,7 +1135,7 @@ def test_second_account_session_and_logout_are_separate(ig):
     assert "/iglogin username parol" in instagram.login_help("1")
 
 
-def test_second_account_auth_error_keeps_first(ig):
+def test_second_account_auth_error_keeps_first(ig, ig_no_grace):
     connect(FakeCl())
     st2 = instagram.st2
     st2.client, st2.username = FakeCl(), "ikkinchi"

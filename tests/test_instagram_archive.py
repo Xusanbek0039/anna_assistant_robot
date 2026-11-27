@@ -150,7 +150,7 @@ def test_backfill_all_marks_failed_chat_and_continues(ig, monkeypatch):
     assert [r["thread_id"] for r in run(storage.ig_backfill_pending())] == ["t2"]   # (soxta funksiya belgilamaydi)
 
 
-def test_backfill_all_stops_on_auth_error(ig, monkeypatch):
+def test_backfill_all_stops_on_auth_error(ig, monkeypatch, ig_no_grace):
     for i in range(3):
         run(storage.ig_chat_touch(f"t{i}", f"C{i}", [], False, NEW / 1e6, 1))
     connect(FakeCl())

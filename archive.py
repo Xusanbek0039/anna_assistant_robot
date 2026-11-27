@@ -39,6 +39,9 @@ _me_id = 0
 _del_buf: dict[int, list[dict]] = {}
 _del_last: dict[int, float] = {}
 _del_tasks: dict[int, asyncio.Task] = {}
+# 📢 2-akkaunt kanallari: qaysi akkaunt orqali olingan (media/HTML shu akkauntdan yuklanadi)
+_clients: dict[int, object] = {}
+_chat_via: dict[int, int] = {}
 
 
 # ---------- xabar -> arxiv yozuvi ----------
@@ -326,9 +329,69 @@ def setup(user, me_id: int, on_deleted, on_edited=None) -> None:
             log.exception("O'chirilgan xabarlar belgilanmadi")
 
 
+def setup_channels(client, slot: int) -> None:
+    """2-akkaunt: faqat belgilangan 📢 kanallar postlari arxivga (shaxsiy chatlar arxivi — 1-akkauntda)."""
+    _clients[slot] = client
+
+    def selected(e) -> bool:
+        return channels.is_broadcast(e) and channels.is_enabled(e.chat_id)
+
+    @client.on(events.NewMessage(func=selected))
+    async def _ch_new(event):
+        try:
+            await _store(event)
+            await mark_via(event.chat_id, slot)   # chat yozuvi endi bor — «via» saqlanadi
+        except Exception:
+            log.exception("Kanal posti arxivga yozilmadi (%s-akkaunt)", slot)
+
+    @client.on(events.MessageEdited(func=selected))
+    async def _ch_edited(event):
+        try:
+            await _edited(event)
+        except Exception:
+            log.exception("Kanal tahriri arxivga yozilmadi")
+
+    @client.on(events.MessageDeleted())
+    async def _ch_deleted(event):
+        if not runtime.get("archive_enabled") or not channels.is_enabled(event.chat_id):
+            return
+        try:
+            await _deleted(event.chat_id, list(event.deleted_ids or []))
+        except Exception:
+            log.exception("O'chirilgan kanal postlari belgilanmadi")
+
+
+def forget_client(slot: int) -> None:
+    _clients.pop(slot, None)
+
+
+async def mark_via(chat_id: int, slot: int) -> None:
+    """Bu kanal qaysi akkaunt orqali kuzatiladi (1-akkaunt — standart, yozilmaydi)."""
+    if slot == 1 or _chat_via.get(chat_id) == slot:
+        return
+    _chat_via[chat_id] = slot
+    try:
+        await storage.archive_chat_set(chat_id, via=slot)
+    except Exception:
+        pass
+
+
+async def client_for(chat_id: int, default):
+    """Chat (kanal) qaysi akkaunt orqali arxivlangan bo'lsa — o'sha akkaunt client'i."""
+    slot = _chat_via.get(chat_id)
+    if slot is None:
+        try:
+            slot = int((await storage.archive_chat(chat_id) or {}).get("via") or 1)
+        except Exception:
+            slot = 1
+        _chat_via[chat_id] = slot
+    return _clients.get(slot, default) if slot != 1 else default
+
+
 # ---------- eksport ----------
 async def backfill(user, chat_id: int, limit: int) -> int:
     """Telegram'da hali turgan xabarlarni ham arxivga qo'shadi (arxiv yoqilishidan oldingilari uchun)."""
+    user = await client_for(chat_id, user)
     try:
         entity = await user.get_entity(chat_id)
     except Exception as e:
@@ -425,6 +488,7 @@ async def fill_media(user, chat_id: int) -> int:
     """Arxivda faqat nomi bor rasm/ovozli/video-xabarlarni Telegram'dan yuklab, arxivga saqlaydi — HTML'da
     ko'rinadi va keyin xabar o'chirilsa ham qoladi. Eng yangilaridan boshlab, HTML sig'imigacha.
     Saqlanganlar soni."""
+    user = await client_for(chat_id, user)
     docs = await storage.archive_messages(chat_id, limit=config.ARCHIVE_EXPORT_LIMIT)
     need = []
     for d in reversed(docs):  # eng yangilari birinchi
@@ -600,6 +664,7 @@ async def _upload_media(user, doc: dict) -> str:
     import gdrive
     import mimetypes
     cid, mid = doc["chat_id"], doc["msg_id"]
+    user = await client_for(cid, user)   # 2-akkaunt kanali — media o'sha akkauntdan olinadi
     local = doc.get("drive_local")
     if local and os.path.isfile(local):
         # o'chib ketadigan media — kelgan zahoti diskka olingan, Telegram'dan qayta so'ralmaydi

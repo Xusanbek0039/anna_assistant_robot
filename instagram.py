@@ -64,7 +64,13 @@ BACKFILL_IDLE = 3600         # keyin har soatda yangi chat bor-yo'qligi tekshiri
 PENDING_EVERY = 4            # «So'rovlar» (message requests) papkasi har nechta tekshiruvda bir marta
 CODE_TIMEOUT = 5 * 60        # Instagram tasdiqlash kodini kutish (soniya)
 THROTTLE_PAUSE = 15 * 60     # Instagram «biroz kuting» desa — shuncha tekshirilmaydi
-SETTINGS_SAVE_EVERY = 3600   # sessiya (cookie) bazaga shuncha soniyada bir yangilanadi
+SETTINGS_SAVE_EVERY = 600    # sessiya (cookie/token) bazaga shuncha soniyada bir yangilanadi
+# «Sessiya tugadi» xatosini Instagram ko'pincha VAQTINCHA beradi (server IP'si, tez-tez so'rov, «Bu men edim»
+# tasdig'i kutilmoqda). Shuning uchun darhol uzilmaydi: shuncha marta, kamida AUTH_GRACE davomida qayta
+# tekshiriladi; faqat hammasi o'tmasa — sessiya haqiqatan o'lgan deb hisoblanadi
+AUTH_STRIKES = 4
+AUTH_GRACE = 45 * 60
+AUTH_RECHECK = 5 * 60        # har urinish orasidagi kutish (urinish soniga ko'paytiriladi)
 LOGIN_ATTEMPTS = 4           # «ilova eski» xatosida sinaladigan Instagram ilova profillari soni
 LOGIN_PAUSE = 3.0            # urinishlar orasidagi pauza (soniya)
 MISSING_CONFIRM = 2          # xabar ketma-ket shuncha tekshiruvda ko'rinmasa — qaytarib olingan
@@ -585,6 +591,8 @@ class _State:
     paused_until = 0.0
     polls = 0
     fail_streak = 0
+    auth_strikes = 0         # ketma-ket «sessiya tugadi» javoblari (vaqtinchalik bo'lishi mumkin)
+    auth_first = 0.0
     saved_at = 0.0
     started = time.time()    # avtojavob va bildirishnomalar faqat shundan keyin kelgan xabarlarga
 
@@ -893,7 +901,7 @@ async def _connected(cl, typed: str = "", acc: _State | None = None) -> None:
         except Exception:
             name = typed
     acc.client, acc.username, acc.user_id = cl, name, str(getattr(cl, "user_id", "") or "")
-    acc.problem, acc.fail_streak, acc.paused_until = "", 0, 0.0
+    acc.problem, acc.fail_streak, acc.paused_until, acc.auth_strikes = "", 0, 0.0, 0
     if acc.slot != "1":
         # Yangi qo'shilgan akkaunt: eski xabarlar (ulanishdan oldingilari) botga to'kilib kelmasin
         acc.started = time.time()
@@ -1924,6 +1932,9 @@ async def check_once(acc: _State | None = None) -> dict:
             raw = await asyncio.to_thread(_fetch_sync, cl, acc.polls % PENDING_EVERY == 1)
         threads = [parse_thread(t, acc.user_id) for t in raw]
         acc.last_check, acc.problem, acc.fail_streak = time.time(), "", 0
+        if acc.auth_strikes:
+            log.info("Instagram (%s-akkaunt) sessiyasi yana ishlayapti — vaqtinchalik xato ekan", acc.slot)
+            acc.auth_strikes = 0
         res = {"threads": len(threads), "saved": 0, "replied": 0, "sent": 0}
         if runtime.get("ig_save"):
             res["saved"] = await _save_ephemeral(threads, acc)
@@ -1949,13 +1960,46 @@ async def check_once(acc: _State | None = None) -> dict:
         return res
 
 
+async def _auth_grace(e: Exception, acc: _State, who: str) -> bool:
+    """«Sessiya tugadi» — darhol uzmaymiz: kutib, bazadagi sessiyadan yangi client bilan qayta uriniladi.
+    True — hali kutilyapti (sessiya saqlanadi); False — urinishlar tugadi, haqiqatan uzilgan."""
+    now = time.time()
+    acc.auth_strikes += 1
+    if acc.auth_strikes == 1:
+        acc.auth_first = now
+    if acc.auth_strikes >= AUTH_STRIKES and now - acc.auth_first >= AUTH_GRACE:
+        return False
+    challenge = bool(_names(e) & _CHALLENGE_ERRORS)
+    wait = AUTH_RECHECK * acc.auth_strikes
+    acc.paused_until = now + wait
+    acc.problem = (f"Instagram sessiyani tekshiryapti ({acc.auth_strikes}-urinish) — "
+                   f"{_when(acc.paused_until)} da qayta uriniladi")
+    log.warning("Instagram (%s-akkaunt) «%s» dedi — %d-urinish, %d daqiqadan keyin qayta tekshiriladi",
+                acc.slot, type(e).__name__, acc.auth_strikes, wait // 60)
+    # Client ichki holati buzilgan bo'lishi mumkin (masalan challenge'dan keyin) — bazadagi sessiyadan yangisi
+    saved = await _saved_settings(acc)
+    if saved:
+        try:
+            acc.client = await asyncio.to_thread(_new_client, saved)
+        except Exception as err:
+            log.info("Instagram client qayta yaratilmadi (%s)", type(err).__name__)
+    if acc.auth_strikes == 1 and challenge:
+        await _say(f"🔐 Instagram{who} tasdiqlash so'rayapti. Telefoningizda Instagram ilovasini oching — "
+                   "«Bu men edim / This was me» chiqsa bosing. Sessiya saqlanib turibdi, "
+                   f"{wait // 60} daqiqadan keyin o'zim qayta urinaman.")
+    return True
+
+
 async def _on_error(e: Exception, acc: _State | None = None) -> None:
     acc = acc or st
     kind = error_kind(e)
     who = f" ({acc.slot}-akkaunt {acc.name()})" if acc.slot != "1" or multi() else ""
     suffix = "" if acc.slot == "1" else acc.slot
+    if kind == "auth" and await _auth_grace(e, acc, who):
+        return
     if kind == "auth":
         log.warning("Instagram sessiyasi yaroqsiz (%s-akkaunt, %s)", acc.slot, type(e).__name__)
+        acc.auth_strikes = 0
         acc.client = None
         acc.problem = "sessiya tugadi yoki Instagram tasdiqlash so'rayapti — qayta ulaning"
         try:
@@ -2108,6 +2152,9 @@ LOGIN_HELP = (
     "3) <b>sessionid</b> qatoridagi qiymatni nusxalang\n"
     "4) <code>/igsession QIYMAT</code>\n\n"
     "⚠️ Bu norasmiy yo'l. Instagram «yangi qurilmadan kirildi» desa — ilovada «Bu men edim» ni bosing.\n"
+    "⚠️ sessionid olgan brauzerda <b>«Chiqish / Log out» bosmang</b> va cookie'larni tozalamang — sessionid "
+    "o'sha zahoti o'chadi. Eng yaxshisi: alohida (yashirin) oynada kiring, sessionid'ni oling va oynani "
+    "shunchaki yoping.\n"
     "Chiqish: /iglogout\n\n"
     "➕ <b>2-akkaunt</b> (ikkalasi bir vaqtda ishlaydi): xuddi shunday, faqat buyruq oxirida «2» — "
     "<code>/iglogin2 username parol</code>, <code>/igsession2 QIYMAT</code>, chiqish: /iglogout2"

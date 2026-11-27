@@ -20,7 +20,7 @@ PER_PAGE = 10
 CACHE_SECONDS = 300
 
 _enabled: dict[int, str] = {}        # kanal id -> nomi
-_cache: tuple[float, list[dict]] = (0.0, [])
+_cache: dict[int, tuple[float, list[dict]]] = {}   # akkaunt -> (vaqt, kanallar)
 
 
 async def load() -> None:
@@ -57,9 +57,8 @@ def is_broadcast(dialog_or_event) -> bool:
     return bool(getattr(dialog_or_event, "is_channel", False)) and not getattr(dialog_or_event, "is_group", False)
 
 
-async def my_channels(user: TelegramClient, refresh: bool = False) -> list[dict]:
-    global _cache
-    ts, cached = _cache
+async def my_channels(user: TelegramClient, refresh: bool = False, slot: int = 1) -> list[dict]:
+    ts, cached = _cache.get(slot, (0.0, []))
     if cached and not refresh and time.time() - ts < CACHE_SECONDS:
         return cached
     result = []
@@ -67,19 +66,23 @@ async def my_channels(user: TelegramClient, refresh: bool = False) -> list[dict]
         if is_broadcast(d):
             result.append({"id": d.id, "title": d.name or str(d.id),
                            "username": getattr(d.entity, "username", None)})
-    _cache = (time.time(), result)
+    _cache[slot] = (time.time(), result)
     return result
 
 
-def panel(channels: list[dict], page: int = 0, archive_on: bool = True) -> tuple[str, list]:
-    """Matn va tugmalar ([[(matn, data)]]) — control_bot._inline formatida."""
+def panel(channels: list[dict], page: int = 0, archive_on: bool = True, slot: int = 1,
+          acc_name: str = "") -> tuple[str, list]:
+    """Matn va tugmalar ([[(matn, data)]]) — control_bot._inline formatida. slot — qaysi akkaunt kanallari."""
+    sfx = f":{slot}"
     ordered = [c for c in channels if c["id"] in _enabled] + [c for c in channels if c["id"] not in _enabled]
     pages = max(1, -(-len(ordered) // PER_PAGE))
     page = min(max(0, page), pages - 1)
     chunk = ordered[page * PER_PAGE:(page + 1) * PER_PAGE]
     lines = [
-        "📢 <b>Kanallar arxivi</b>", "",
-        f"Obuna bo'lgan kanallar: {len(channels)} ta, arxivlanyapti: <b>{len(_enabled)}</b> ta.",
+        "📢 <b>Kanallar arxivi</b>" + (f" — {slot}-akkaunt {acc_name}".rstrip() if acc_name or slot != 1 else ""),
+        "",
+        f"Obuna bo'lgan kanallar: {len(channels)} ta, arxivlanyapti: "
+        f"<b>{sum(1 for c in channels if c['id'] in _enabled)}</b> ta.",
         "Kanalni bosib yoqing — uning postlari (matn, rasm, video, fayl) chat arxiviga yoziladi: "
         "o'chirilsa ham sizda qoladi, HTML qilib olasiz va Drive'ga yuklanadi.",
     ]
@@ -93,13 +96,13 @@ def panel(channels: list[dict], page: int = 0, archive_on: bool = True) -> tuple
     for c in chunk:
         on = c["id"] in _enabled
         title = c["title"] if len(c["title"]) <= 40 else c["title"][:39] + "…"
-        rows.append([(("✅ " if on else "▫️ ") + title, f"chn:t:{c['id']}:{page}")])
+        rows.append([(("✅ " if on else "▫️ ") + title, f"chn:t:{c['id']}:{page}{sfx}")])
     nav = []
     if page > 0:
-        nav.append(("⬅️", f"chn:p:{page - 1}"))
+        nav.append(("⬅️", f"chn:p:{page - 1}{sfx}"))
     if page < pages - 1:
-        nav.append(("➡️", f"chn:p:{page + 1}"))
+        nav.append(("➡️", f"chn:p:{page + 1}{sfx}"))
     if nav:
         rows.append(nav)
-    rows.append([("🔄 Yangilash", f"chn:r:{page}"), ("⬅️ Arxiv", "arc:panel")])
+    rows.append([("🔄 Yangilash", f"chn:r:{page}{sfx}"), ("⬅️ Arxiv", "arc:panel")])
     return "\n".join(lines), rows
