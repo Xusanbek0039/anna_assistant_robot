@@ -193,9 +193,6 @@ IG_MEDIA_MAX_KB = _int("IG_MEDIA_MAX_KB", 3072)        # bazadagi nusxa (MongoDB
 IG_MEDIA_DRIVE_MAX_MB = _int("IG_MEDIA_DRIVE_MAX_MB", 100)   # Drive'ga shu hajmgacha
 IG_HTML_MEDIA_MB = _int("IG_HTML_MEDIA_MB", 40)        # bitta HTML faylga joylanadigan media hajmi
 
-# --- 👀 Kim qiziqdi (viewers.py, botda /korganlar): storis ko'ruvchilari va profildagi havola ---
-VIEWERS_ENABLED = _bool("VIEWERS_ENABLED", True)
-VIEWERS_CHECK_MINUTES = max(1, _int("VIEWERS_CHECK_MINUTES", 3))
 
 # --- Va'dalar (AI chat yozishmalaridan topadi va eslatadi) ---
 PROMISE_SCAN = _bool("PROMISE_SCAN", True)

@@ -1061,40 +1061,19 @@ async def ig_chat_get(thread_id: str) -> dict | None:
     return doc
 
 
-# ---------- 👀 Kim qiziqdi (viewers.py): storis ko'ruvchilari, istisnolar ----------
-async def story_views_new(story_id: int, rows: list[dict]) -> list[dict]:
-    """Ko'ruvchilarni yozadi va faqat YANGILARINI qaytaradi (oldin ko'rilganlar qayta xabar qilinmaydi)."""
-    from pymongo import UpdateOne
-    if not rows:
-        return []
-    ops = [UpdateOne({"_id": f"{story_id}:{r['user_id']}"},
-                     {"$setOnInsert": {**r, "story_id": story_id, "ts": time.time()}}, upsert=True)
-           for r in rows]
-    res = await _get_db().story_views.bulk_write(ops, ordered=True)
-    return [rows[i] for i in sorted(res.upserted_ids)]
+# ---------- 👥 Guruh xabarlarini klonlash (groups.py) ----------
+async def group_clone_list() -> list[dict]:
+    rows = await _get_db().group_clone.find({}).to_list()
+    return [{"chat_id": r["_id"], "title": r.get("title") or ""} for r in rows]
 
 
-async def story_views_known(story_id: int) -> int:
-    return await _get_db().story_views.count_documents({"story_id": story_id})
+async def group_clone_add(chat_id: int, title: str) -> None:
+    await _get_db().group_clone.update_one({"_id": chat_id}, {"$set": {"title": title, "ts": time.time()}},
+                                           upsert=True)
 
 
-async def viewer_ignored(user_id: int) -> bool:
-    return await _get_db().viewer_ignore.find_one({"_id": user_id}, {"_id": 1}) is not None
-
-
-async def viewer_ignore_add(user_id: int, label: str) -> None:
-    await _get_db().viewer_ignore.update_one({"_id": user_id}, {"$set": {"label": label, "ts": time.time()}},
-                                             upsert=True)
-
-
-async def viewer_ignore_remove(user_id: int) -> bool:
-    res = await _get_db().viewer_ignore.delete_one({"_id": user_id})
-    return res.deleted_count > 0
-
-
-async def viewer_ignore_list() -> list[dict]:
-    rows = await _get_db().viewer_ignore.find({}).sort("ts", DESCENDING).limit(100).to_list()
-    return [{"user_id": r["_id"], "label": r.get("label") or str(r["_id"])} for r in rows]
+async def group_clone_remove(chat_id: int) -> None:
+    await _get_db().group_clone.delete_one({"_id": chat_id})
 
 
 # ---------- zaxira ----------

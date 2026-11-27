@@ -24,7 +24,7 @@ def test_help_is_long_but_fits_in_parts():
         assert control_bot._tags_balanced(p), p[:120]
     joined = "\n\n".join(parts)
     assert joined.replace("\n", "") == control_bot.HELP.replace("\n", "")   # hech narsa yo'qolmadi
-    for cmd in ("/auto", "/ig", "/korganlar", "/eslatma", "/fin", "/arxiv"):
+    for cmd in ("/auto", "/ig", "/guruhlar", "/eslatma", "/fin", "/arxiv"):
         assert cmd in joined
 
 
@@ -167,8 +167,8 @@ def test_instagram_unsent_alert_splits(monkeypatch):
     assert sent[-1][1]["buttons"] and control_bot._ig_notif_map == {7: "t1"}
 
 
-def test_story_viewers_alert_splits(monkeypatch):
-    """60 kishilik storis ro'yxati ham sig'adi (tugmalar oxirgi bo'lakda)."""
+def test_long_watch_alert_splits(monkeypatch):
+    """60 qatorli ro'yxat ham sig'adi (tugmalar oxirgi bo'lakda)."""
     sent = []
 
     class Msg:

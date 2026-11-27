@@ -30,7 +30,7 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `profiles.py` | Profil kuzatuvi: yozishgan odamlar ism, username, bio, rasmini o'zgartirsa yoki akkauntini o'chirsa — xabar; profil rasmlari tarixi Drive'ga |
 | `watchers.py` | 🔔 Eslatmalar: «95 446 68 86 raqami tg ga qo'shilsa xabar ber», «@ali online bo'lsa xabar ber» — hodisa ro'y berganda bot xabar beradi; panelda «➕ Yangi eslatma» tugmasi va Telegram cheklovi holati ko'rinadi |
 | `instagram.py` | 📸 Instagram (`/ig`): bir marta ko'riladigan rasm/videolarni ochmasdan saqlash, Direct'ga avtojavob, yozishmalar arxivi (eski tarix bilan) va Google Drive'ga HTML nusxasi, qaytarib olingan (unsend) xabarlar, chatni botda o'qish |
-| `viewers.py` | 👀 Kim qiziqdi (`/korganlar`): storis'ingizni kim ko'rgani va profildagi havola orqali botni kim ochgani — ism, familiya, ID, username, istisnolar bilan |
+| `groups.py` | 👥 Guruhlar (`/guruhlar`): akkauntingizdagi guruhlar ro'yxati — yoqilgan guruhga kelgan xabarlar (matn, rasm, video, ovozli, fayl) botga nusxalanadi |
 | `promises.py` | AI chat xulosasi (/xulosa) va va'dalar kuzatuvi (/vadalar): kechqurun yangi va'dalarni topadi, ertalab muddati kelganlarini eslatadi |
 | `weekly.py` | Haftalik chat hisoboti: faol suhbatlar, kim o'chirdi/tahrirladi, kim javob kutyapti |
 | `backup.py`, `restore_backup.py` | Bazani har kuni Drive'ga zaxiralash (`Anna zaxira/<sana>/`) va undan tiklash: `python restore_backup.py <papka> --yes` |
@@ -475,26 +475,17 @@ Bilish kerak:
 | `IG_HTML_MEDIA_MB` | `40` | Bitta HTML faylga joylanadigan media hajmi |
 | `IG_PROXY` | — | Faqat sotib olingan **proksi** ma'lumoti (Instagram paroli emas): `http://login:parol@ip:port` |
 
-## 6.4. 👀 Kim qiziqdi (storis ko'ruvchilari, profildagi havola)
+## 6.4. 👥 Guruhlar — xabarlarni klonlash
 
-> ❗️ Telegram profilingizni yoki profil rasmingizni **kim ochganini hech kimga bermaydi** — na botga, na
-> userbotga, na Premium'ga. Bu ma'lumot Telegram serveridan umuman chiqmaydi; «profilingizni kim ko'rdi»
-> deydigan botlar aldaydi. Shunga eng yaqin, haqiqatan ishlaydigan ikki yo'l bor:
+Botda **👥 Guruhlar** tugmasi (yoki `/guruhlar`) — akkauntingiz a'zo bo'lgan guruhlar ro'yxati chiqadi (kanallar
+emas). Guruhni bosing — **✅** bo'ladi va shu guruhga kelgan har bir yangi xabar botga nusxalanib keladi:
 
-- **📖 Storis ko'ruvchilari** — storis qo'ysangiz, uni kim ko'rganini bot yuboradi: **ism, familiya, ID,
-  username** va reaksiyasi. Har 3 daqiqada tekshiriladi, faqat yangi ko'ruvchilar haqida xabar keladi
-  (bir yo'la 5 tadan ko'p bo'lsa — bitta ro'yxat). Ko'ruvchiga hech narsa bildirilmaydi.
-- **🔗 Profildagi havola** — bio'ga `https://t.me/<bot>?start=profil` yoki `@<bot>` qo'ying (bio avtomatik
-  yangilansa — `.env` dagi `BIO_TEMPLATE` ga, masalan `{prefix} | 🕒 {time} | @AnnaBot`). Kim bosib botni
-  ochsa yoki botga yozsa — kim ekani keladi. Buni odamning o'zi bosadi, shuning uchun faqat qiziqqanlar tushadi.
+- guruh nomi, kim yozgani (ism, @username), qaysi xabarga javob ekani;
+- matn, rasm, video, ovozli xabar, fayl — asl ko'rinishida (`MAX_MEDIA_MB` dan kattasi — faqat izoh);
+- **🔗 Guruhda ochish** tugmasi (ochiq guruh va superguruhlarda).
 
-Har bir xabarda **«🚫 Xabar kelmasin»** tugmasi bor — o'sha odam haqida boshqa xabar kelmaydi.
-Ro'yxat va qaytarish: **👀 Kim qiziqdi** → «🚫 Istisnolar» (yoki `/korganlar`).
-
-| Sozlama | Standart | Izoh |
-|---|---|---|
-| `VIEWERS_ENABLED` | `true` | O'chirish: `false` |
-| `VIEWERS_CHECK_MINUTES` | `3` | Storislar tekshiruvi oralig'i |
+Yana bosilsa — o'chadi. Tanlov bazada saqlanadi. Yoqilganlar ro'yxat tepasida turadi; yangi qo'shilgan guruh
+ko'rinmasa — **🔄 Yangilash**. Nusxaga reply qilib yozsangiz, javob guruhga **ketmaydi**.
 
 ## 7. Ishga tushirish va to'xtatish
 

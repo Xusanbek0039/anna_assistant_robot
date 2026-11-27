@@ -20,6 +20,7 @@ import deleted_accounts
 import finance
 import finder
 import gdrive
+import groups
 import health
 import instagram
 import progress
@@ -28,7 +29,6 @@ import report
 import runtime
 import saver
 import storage
-import viewers
 import voicelab
 import watchers
 import weekly
@@ -86,9 +86,9 @@ HELP = (
     "Instagram bildirishnomasiga reply qilib yozsangiz — javob Instagram'ga ketadi.\n"
     "📥 <b>Havoladan yuklash:</b> post, reels yoki storis havolasini botga tashlang — rasm/videoni yuklab "
     "beradi (albom bo'lsa hammasini). Buyruq bilan: /igyukla &lt;havola&gt;\n\n"
-    "<b>👀 Kim qiziqdi</b>\n"
-    "/korganlar — storis'ingizni kim ko'rgani va profilingizdagi havola orqali botni kim ochgani "
-    "(ism, familiya, ID, username), istisnolar. Telegram profilni kim ochganini hech kimga bermaydi.\n\n"
+    "<b>👥 Guruhlar</b>\n"
+    "/guruhlar — akkauntingizdagi guruhlar ro'yxati. Guruhni yoqsangiz, unga kelgan har bir xabar "
+    "(matn, rasm, video, ovozli xabar, fayl) botga nusxalanib keladi.\n\n"
     "<b>Profil</b>\n"
     "/bio — joriy bio va holat\n"
     "/bio on | off | now | restore — yoqish, to'xtatish, hozir yangilash, asl bio'ni qaytarish\n"
@@ -129,9 +129,9 @@ MENU_HELP = "❓ Yordam"
 MENU_PROMISES = "📌 Va'dalar"
 MENU_WATCH = "🔔 Eslatmalar"
 MENU_IG = "📸 Instagram"
-MENU_VIEWERS = "👀 Kim qiziqdi"
+MENU_GROUPS = "👥 Guruhlar"
 MENU_TEXTS = {MENU_PANEL, MENU_INBOX, MENU_ARCHIVE, MENU_FIN, MENU_FIND, MENU_REPORT, MENU_HELP, MENU_PROMISES,
-              MENU_WATCH, MENU_IG, MENU_VIEWERS}
+              MENU_WATCH, MENU_IG, MENU_GROUPS}
 
 
 def main_keyboard() -> list:
@@ -139,7 +139,7 @@ def main_keyboard() -> list:
         [Button.text(MENU_PANEL, resize=True, persistent=True), Button.text(MENU_INBOX), Button.text(MENU_WATCH)],
         [Button.text(MENU_ARCHIVE), Button.text(MENU_PROMISES), Button.text(MENU_FIN)],
         [Button.text(MENU_FIND), Button.text(MENU_REPORT), Button.text(MENU_HELP)],
-        [Button.text(MENU_IG), Button.text(MENU_VIEWERS)],
+        [Button.text(MENU_IG), Button.text(MENU_GROUPS)],
     ]
 
 MODE_NAMES = {"on": "🟢 doim yoqiq (/on)", "off": "⚪️ o'chirilgan (/off)", "auto": "🤖 aqlli (/auto)"}
@@ -175,7 +175,6 @@ class Ctx:
     user: TelegramClient
     owner_id: int
     monitor = None  # health.Monitor (main.py o'rnatadi)
-    bot_username: str | None = None  # profildagi havola uchun (main.py o'rnatadi)
 
 
 ctx = Ctx()
@@ -425,7 +424,7 @@ _MEDIA_ICONS = {"rasm": "📸", "video": "🎬", "ovozli xabar": "🎤", "video-
 async def send_media(chat_id: int, name: str, data: bytes, filename: str | None = None, *,
                      kind: str = "media", username: str | None = None, caption: str = "",
                      view_once: bool = False, mime: str = "", attributes=None,
-                     thumb: bytes | None = None) -> int | None:
+                     thumb: bytes | None = None, link_reply: bool = True) -> int | None:
     """Suhbatdosh yuborgan mediani egasiga ASL ko'rinishida yuboradi: rasm — rasm, video — video,
     ovozli xabar — ovozli xabar. Bir marta ko'riladigan media ham oddiy (saqlasa bo'ladigan) holda keladi.
     Yuborilgan xabar id sini qaytaradi (bildirishnoma shunga reply bo'lib keladi)."""
@@ -456,10 +455,12 @@ async def send_media(chat_id: int, name: str, data: bytes, filename: str | None 
             log.exception("Media asl ko'rinishida yuborilmadi — fayl sifatida yuboriladi")
             msg = await ctx.bot.send_file(ctx.owner_id, _file(), caption=None if is_round else cap,
                                           parse_mode="html", force_document=True)
-        _notif_map[msg.id] = chat_id
+        if link_reply:  # guruh nusxasiga reply qilinsa, javob guruhga ketmasin (link_reply=False)
+            _notif_map[msg.id] = chat_id
         if is_round:  # dumaloq videoga izoh yozib bo'lmaydi — alohida xabar
             note = await ctx.bot.send_message(ctx.owner_id, cap, parse_mode="html", reply_to=msg.id)
-            _notif_map[note.id] = chat_id
+            if link_reply:
+                _notif_map[note.id] = chat_id
         return msg.id
     except Exception:
         log.exception("Media botga yuborilmadi")
@@ -551,17 +552,30 @@ async def _send_ig_panel(event, extra: str = "", edit: bool = False) -> None:
     await send_long(event.respond, text, parse_mode="html", buttons=_inline(rows), link_preview=False)
 
 
-async def _send_viewers_panel(event, edit: bool = False) -> None:
-    text, rows = await viewers.panel(ctx.bot_username)
+async def _send_groups_panel(event, page: int = 0, edit: bool = False, refresh: bool = False) -> None:
+    try:
+        text, rows = groups.panel(await groups.my_groups(ctx.user, refresh=refresh), page)
+    except Exception as e:
+        log.exception("Guruhlar ro'yxati olinmadi")
+        text, rows = f"❌ Guruhlar ro'yxatini olib bo'lmadi: {type(e).__name__}", None
     if edit:
         try:
-            await event.edit(text, parse_mode="html", buttons=_inline(rows), link_preview=False)
+            await event.edit(text, parse_mode="html", buttons=_inline(rows))
             return
-        except errors.MessageTooLongError:
-            pass
+        except errors.MessageNotModifiedError:
+            return
         except Exception:
             pass
-    await send_long(event.respond, text, parse_mode="html", buttons=_inline(rows), link_preview=False)
+    await event.respond(text, parse_mode="html", buttons=_inline(rows))
+
+
+async def group_clone_text(text: str, link: str | None) -> None:
+    """👥 Guruhdan nusxalangan matnli xabar (groups.py)."""
+    buttons = [[Button.url("🔗 Guruhda ochish", link)]] if link else None
+    parts = split_message(text)
+    for part in parts[:-1]:
+        await ctx.bot.send_message(ctx.owner_id, part, parse_mode="html", link_preview=False)
+    await ctx.bot.send_message(ctx.owner_id, parts[-1], parse_mode="html", buttons=buttons, link_preview=False)
 
 
 USER_REF_RE = re.compile(r"(?<![\w@.])@([A-Za-z][A-Za-z0-9_]{3,31})\b|(?<![\w@/])\+?\d[\d \-().]{5,22}\d(?!\w)")
@@ -749,7 +763,7 @@ BOT_COMMANDS = [
     ("ig", "📸 Instagram: bir martalik media, avtojavob, arxiv"),
     ("tglogin", "🔑 Telegram akkaunt: holati va boshqasini ulash"),
     ("iglogin", "🔑 Instagram'ni ulash: /iglogin username parol"),
-    ("korganlar", "👀 Storis'ni kim ko'rdi, havola orqali kim keldi"),
+    ("guruhlar", "👥 Guruhlar: tanlangan guruh xabarlarini botga nusxalash"),
     ("igyukla", "📥 Instagram post/reels/storis mediasini yuklash"),
     ("find", "🔎 Chatlardan istalgan narsani topish"),
     ("save", "💾 Havoladagi mediani Saqlangan xabarlarga joylash"),
@@ -1634,8 +1648,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.respond(text, parse_mode="html", buttons=_inline(buttons))
         elif choice == MENU_IG:
             await _send_ig_panel(event)
-        elif choice == MENU_VIEWERS:
-            await _send_viewers_panel(event)
+        elif choice == MENU_GROUPS:
+            await _send_groups_panel(event)
         elif choice == MENU_HELP:
             await send_long(event.respond, HELP, parse_mode="html", buttons=main_keyboard())
 
@@ -1818,46 +1832,27 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         else:
             await event.answer()
 
-    # ---------- 👀 Kim qiziqdi: storis ko'ruvchilari, havola orqali kelganlar ----------
-    @bot.on(events.NewMessage(pattern=r"^/korganlar(?:@\w+)?$", func=is_owner))
-    async def _viewers_cmd(event):
-        await _send_viewers_panel(event)
+    # ---------- 👥 Guruhlar: tanlangan guruh xabarlarini klonlash ----------
+    @bot.on(events.NewMessage(pattern=r"^/guruhlar(?:@\w+)?$", func=is_owner))
+    async def _groups_cmd(event):
+        await _send_groups_panel(event)
 
-    @bot.on(events.CallbackQuery(pattern=rb"^vw:", func=is_owner))
-    async def _viewers_callback(event):
+    @bot.on(events.CallbackQuery(pattern=rb"^grp:", func=is_owner))
+    async def _groups_callback(event):
         parts = event.data.decode().split(":")
-        action, arg = parts[1], parts[2] if len(parts) > 2 else ""
-        if action == "set":
-            await event.answer((await viewers.toggle(arg))[:190])
-            await _send_viewers_panel(event, edit=True)
-        elif action == "panel":
+        action = parts[1]
+        if action == "t" and len(parts) == 4:
+            chat_id, page = int(parts[2]), int(parts[3])
+            title = next((g["title"] for g in await groups.my_groups(user) if g["id"] == chat_id), "")
+            on = await groups.toggle(chat_id, title)
+            await event.answer(("✅ Klonlash yoqildi: " if on else "⏸ Klonlash o'chirildi: ") + title[:150])
+            await _send_groups_panel(event, page, edit=True)
+        elif action == "p":
             await event.answer()
-            await _send_viewers_panel(event, edit=True)
-        elif action == "check":
-            await event.answer((await viewers.check_now(user))[:190])
-        elif action == "list":
-            await event.answer()
-            text, rows = await viewers.ignore_view()
-            await event.respond(text, parse_mode="html", buttons=_inline(rows))
-        elif action == "ign" and arg.isdigit():
-            uid = int(arg)
-            label = str(uid)
-            try:
-                ent = await user.get_entity(uid)
-                label = (_display_name(ent) or label) + (f" (@{ent.username})" if getattr(ent, "username", None)
-                                                         else f" ({uid})")
-            except Exception:
-                pass
-            await storage.viewer_ignore_add(uid, label)
-            await event.answer(f"🚫 {label[:150]} — endi bu odam haqida xabar kelmaydi", alert=True)
-        elif action == "unign" and arg.isdigit():
-            ok = await storage.viewer_ignore_remove(int(arg))
-            await event.answer("↩️ Istisnodan chiqarildi" if ok else "Ro'yxatda yo'q")
-            text, rows = await viewers.ignore_view()
-            try:
-                await event.edit(text, parse_mode="html", buttons=_inline(rows))
-            except Exception:
-                pass
+            await _send_groups_panel(event, int(parts[2]), edit=True)
+        elif action == "r":
+            await event.answer("🔄 Yangilanyapti...")
+            await _send_groups_panel(event, int(parts[2]), edit=True, refresh=True)
         else:
             await event.answer()
 
@@ -2014,10 +2009,6 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return  # bir odamga (yoki boshqa botga) qayta-qayta yozmaymiz
         _stranger_replied[event.sender_id] = now
         await event.respond("Bu shaxsiy bot.")
-        try:  # 👀 kim botni ochdi (profildagi havola orqali) — egasiga ism, ID, username bilan
-            await viewers.bot_visitor(await event.get_sender(), event.raw_text or "")
-        except Exception:
-            log.exception("Bot tashrifchisi haqida xabar berilmadi")
 
     @bot.on(events.NewMessage(pattern=r"^/on$", func=is_owner))
     async def _on(event):

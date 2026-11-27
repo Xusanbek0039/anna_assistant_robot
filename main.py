@@ -11,6 +11,7 @@ import control_bot
 import deleted_accounts
 import finance
 import gdrive
+import groups
 import health
 import instagram
 import instance
@@ -21,7 +22,6 @@ import runtime
 import storage
 import tg_login
 import userbot
-import viewers
 import voicelab
 import watchers
 import weekly
@@ -121,7 +121,6 @@ async def main() -> None:
     log.info("Nazorat boti: @%s — botga /start bosishni unutmang", bot_me.username)
 
     control_bot.setup(bot, user, owner_id=me.id)
-    control_bot.ctx.bot_username = bot_me.username  # 👀 profildagi havola: t.me/<bot>?start=profil
     await control_bot.set_commands(bot, me.id)  # "/" bosilganda chiqadigan menyu
     userbot.setup(user, me_id=me.id)
     # o'chirilgan / tahrirlangan yozishmalar
@@ -129,9 +128,10 @@ async def main() -> None:
     profiles.setup(user, control_bot.profile_alert)  # ism, username, bio, rasm o'zgarishlari
     if config.WATCH_ENABLED:  # 🔔 eslatmalar: raqam Telegram'da paydo bo'lsa / odam online bo'lsa
         watchers.setup(user, control_bot.watch_alert)
-    # 📸 Instagram: bir martalik media, avtojavob, arxiv; 👀 storis ko'ruvchilari va havola orqali kelganlar
+    # 📸 Instagram: bir martalik media, avtojavob, arxiv
     instagram.setup(control_bot.alert, control_bot.send_ig_media, control_bot.ig_notify)
-    viewers.setup(control_bot.watch_alert)
+    # 👥 tanlangan guruhlarga kelgan xabarlar botga nusxalanadi (/guruhlar)
+    groups.setup(user, control_bot.group_clone_text, control_bot.send_media)
     monitor = health.Monitor(user, control_bot.alert)
     control_bot.ctx.monitor = monitor
 
@@ -173,7 +173,7 @@ async def main() -> None:
            supervise("Instagram media", instagram.media_loop()),
            *([supervise("Instagram Drive", instagram.drive_loop(control_bot.alert))] if gdrive.enabled() else []),
            ] if config.INSTAGRAM_ENABLED else []),
-        *([supervise("Storis ko'ruvchilari", viewers.run(user))] if config.VIEWERS_ENABLED else []),
+        supervise("Guruh xabarlarini klonlash", groups.run()),
         supervise("Va'dalar tekshiruvi", promises.run_scan(control_bot.send_promises)),
         supervise("Va'dalar eslatmasi", promises.run_remind(control_bot.send_promises)),
         supervise("Haftalik chat hisoboti", weekly.run(control_bot.send_weekly)),

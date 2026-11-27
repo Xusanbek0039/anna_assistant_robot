@@ -39,9 +39,6 @@ DEFAULTS = {
     "ig_media": config.IG_MEDIA_ENABLED,   # rasm/video/ovozni yuklab olib arxivda saqlash
     # 🔔 Eslatmalar: Telegram raqam tekshiruvini cheklaganda (FloodWait) qachongacha kutish
     "watch_phone_pause": 0.0,
-    # 👀 Kim qiziqdi (/korganlar)
-    "story_viewers": True,
-    "bot_visitors": True,
 }
 
 _values: dict = dict(DEFAULTS)
