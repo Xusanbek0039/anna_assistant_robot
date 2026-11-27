@@ -198,16 +198,22 @@ class FakeStorage:
     async def set_runtime(self, **values):
         self.d_runtime.update(values)
 
-    async def get_bio_state(self):
-        return dict(self.d_bio)
+    def _bio(self, slot):
+        if slot == 1:
+            return self.d_bio
+        return self.__dict__.setdefault(f"d_bio{slot}", {})
 
-    async def save_bio_state(self, **fields):
-        self.d_bio.update(fields)
+    async def get_bio_state(self, slot=1):
+        return dict(self._bio(slot))
 
-    async def save_original_bio_once(self, about, saved_at):
-        if "original_bio" in self.d_bio:
+    async def save_bio_state(self, slot=1, **fields):
+        self._bio(slot).update(fields)
+
+    async def save_original_bio_once(self, about, saved_at, slot=1):
+        st = self._bio(slot)
+        if "original_bio" in st:
             return False
-        self.d_bio.update(original_bio=about, original_saved_at=saved_at)
+        st.update(original_bio=about, original_saved_at=saved_at)
         return True
 
 

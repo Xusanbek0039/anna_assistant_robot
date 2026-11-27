@@ -13,6 +13,7 @@ from telethon.tl.types import User
 import ai
 import availability
 import control_bot
+import runtime
 import saver
 import storage
 import usage
@@ -259,6 +260,8 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
 
     @user.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     async def on_incoming(event):
+        if slot != 1 and not runtime.get(f"acc{slot}_autoreply"):
+            return   # 2-akkauntda kotiba o'chirilgan (⚙️ Boshqaruv → 📱 2-akkaunt)
         sender = await event.get_sender()
         chat_id = event.chat_id
         if not isinstance(sender, User) or sender.bot or sender.id == TELEGRAM_SERVICE_ID:

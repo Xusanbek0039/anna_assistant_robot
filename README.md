@@ -488,15 +488,34 @@ ko'rinmasa — **🔄 Yangilash**. Nusxaga reply qilib yozsangiz, javob guruhga 
 2-akkaunt ulangan bo'lsa, uning guruhlari ham ro'yxatda (faqat unda bo'lsa — nomi yonida «· 2-akk»);
 ikkala akkaunt bir guruhda bo'lsa, xabar bir marta keladi.
 
+## 6.4.1. 📢 Kanallar arxivi (faqat belgilangan kanallar)
+
+**🗂 Chat arxivi → 📢 Kanallar** (yoki `/kanallar`) — obuna bo'lgan kanallaringiz ro'yxati (guruhlar emas).
+Kanalni bosing — **✅** bo'ladi: uning postlari (matn, rasm, video, fayl) chat arxiviga yozib boriladi.
+Yoqilgan zahoti oxirgi postlari ham olinadi (`ARCHIVE_SYNC_LIMIT` tagacha).
+
+- Post o'chirilsa yoki tahrirlansa — arxivda asl holati qoladi (o'chirilganda bot xabar beradi).
+- Boshqa chatlar kabi: **💬 Chatlar** ro'yxatida, HTML qilib olish va Google Drive'ga yuklash.
+- Yana bosilsa — to'xtaydi, saqlanganlari arxivda qoladi. Haftalik hisobotga kanallar kirmaydi.
+- Faqat asosiy akkaunt kanallari; chat arxivi yoqiq bo'lishi kerak.
+
 ## 6.5. 📱 2-Telegram akkaunt (bitta botda ikkita akkaunt)
 
 Botga `/tglogin2` yuboring — telefon raqam → kod (**bo'sh joy bilan**: `1 2 3 4 5`) → 2FA parol shu botda
 so'raladi. Kirilgach darhol ishlaydi (qayta ishga tushirish shart emas), sessiya bazada saqlanadi.
 To'xtatish: «bekor». Chiqish: `/tglogout2` (asosiy akkaunt ishlashda davom etadi).
 
-2-akkauntda ishlaydi: **kotiba** (avtojavob, 📩/🔴/📞 bildirishnomalar — boshida «📱 2-akkaunt» belgisi),
-**«✍️ Javob berish» / reply** — javob aynan **shu akkauntdan** ketadi, **👥 guruh klonlash**.
-Faqat asosiy akkauntda: avtomatik bio, chat arxivi va Drive, eslatmalar, qidirish, online holat.
+Ulangach bot darhol so'raydi: **«Bu akkauntda qaysi funksiyalar ishlasin?»** — tugmalar bilan yoqasiz/o'chirasiz.
+Keyin ham: **⚙️ Boshqaruv → 📱 2-akkaunt sozlamalari** (yoki `/tglogin2`):
+
+| Funksiya | Standart | Izoh |
+|---|---|---|
+| 🤖 Kotiba (avtojavob) | yoqiq | AI javob beradi, 📩 bildirishnomalar «📱 2-akkaunt» belgisi bilan; «✍️ Javob berish» shu akkauntdan |
+| 🟢 24 soat online | o'chiq | akkaunt doim online ko'rinadi |
+| 🕒 Avtomatik bio | o'chiq | soat va ob-havo; o'chirsangiz (yoki chiqsangiz) asl bio qaytadi. Asl bio alohida saqlanadi (`bio_backup2.json`) |
+| 👥 Guruhlari | yoqiq | guruhlari «👥 Guruhlar» ro'yxatida |
+
+Faqat asosiy akkauntda: chat arxivi va Drive, kanallar arxivi, eslatmalar, qidirish.
 
 > Bitta odam ikkala akkauntingizga yozsa, AI suhbat tarixi, istisno va «AI jim» holati ular uchun umumiy.
 

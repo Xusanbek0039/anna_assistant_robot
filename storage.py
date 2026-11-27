@@ -257,26 +257,32 @@ async def is_muted(chat_id: int) -> bool:
 
 
 # ---------- avtomatik bio holati ----------
-async def get_bio_state() -> dict:
-    return await _get_db().bio_state.find_one({"_id": "bio"}) or {}
+def _bio_id(slot: int = 1) -> str:
+    """1-akkaunt — «bio», 2-akkaunt — «bio2» (asl bio'lar aralashib ketmasin)."""
+    return "bio" if int(slot) == 1 else f"bio{int(slot)}"
 
 
-async def save_bio_state(**fields) -> None:
-    await _get_db().bio_state.update_one({"_id": "bio"}, {"$set": fields}, upsert=True)
+async def get_bio_state(slot: int = 1) -> dict:
+    return await _get_db().bio_state.find_one({"_id": _bio_id(slot)}) or {}
 
 
-async def save_original_bio_once(about: str, saved_at: float) -> bool:
+async def save_bio_state(slot: int = 1, **fields) -> None:
+    await _get_db().bio_state.update_one({"_id": _bio_id(slot)}, {"$set": fields}, upsert=True)
+
+
+async def save_original_bio_once(about: str, saved_at: float, slot: int = 1) -> bool:
     """Asl bio'ni faqat birinchi marta yozadi; mavjud zaxirani hech qachon ustidan yozmaydi."""
+    bid = _bio_id(slot)
     res = await _get_db().bio_state.update_one(
-        {"_id": "bio", "original_bio": {"$exists": False}},
+        {"_id": bid, "original_bio": {"$exists": False}},
         {"$set": {"original_bio": about, "original_saved_at": saved_at}},
         upsert=False,
     )
     if res.matched_count:
         return True
-    if await _get_db().bio_state.find_one({"_id": "bio"}) is None:
+    if await _get_db().bio_state.find_one({"_id": bid}) is None:
         await _get_db().bio_state.insert_one(
-            {"_id": "bio", "original_bio": about, "original_saved_at": saved_at}
+            {"_id": bid, "original_bio": about, "original_saved_at": saved_at}
         )
         return True
     return False
@@ -695,16 +701,18 @@ async def archive_week_stats(since: float) -> dict:
         cursor = await db.archive.aggregate(pipeline)
         return await cursor.to_list()
 
+    # 📢 kanal postlari haftalik hisobotga kirmaydi (faol kanal odamlarni siqib chiqarardi)
+    skip = [c["_id"] for c in await db.archive_chats.find({"kind": "channel"}, {"_id": 1}).to_list()]
     active = await agg([
-        {"$match": {"date": {"$gte": since}}},
+        {"$match": {"date": {"$gte": since}, "chat_id": {"$nin": skip}}},
         {"$group": {"_id": "$chat_id", "inc": {"$sum": {"$cond": ["$out", 0, 1]}},
                     "out": {"$sum": {"$cond": ["$out", 1, 0]}}}},
         {"$sort": {"inc": -1}}, {"$limit": 50}])
     deleted = await agg([
-        {"$match": {"deleted_at": {"$gte": since}, "out": False}},
+        {"$match": {"deleted_at": {"$gte": since}, "out": False, "chat_id": {"$nin": skip}}},
         {"$group": {"_id": "$chat_id", "n": {"$sum": 1}}}, {"$sort": {"n": -1}}, {"$limit": 10}])
     edited = await agg([
-        {"$match": {"edited_at": {"$gte": since}, "out": False}},
+        {"$match": {"edited_at": {"$gte": since}, "out": False, "chat_id": {"$nin": skip}}},
         {"$group": {"_id": "$chat_id", "n": {"$sum": 1}}}, {"$sort": {"n": -1}}, {"$limit": 10}])
     last = await agg([
         {"$match": {"date": {"$gte": since - 30 * 86400}, "deleted": {"$ne": True}}},
@@ -1075,6 +1083,21 @@ async def ig_chat_get(thread_id: str) -> dict | None:
     if doc:
         doc["thread_id"] = doc.pop("_id")
     return doc
+
+
+# ---------- 📢 Kanallar arxivi (channels.py) ----------
+async def channel_archive_list() -> list[dict]:
+    rows = await _get_db().channel_archive.find({}).to_list()
+    return [{"chat_id": r["_id"], "title": r.get("title") or ""} for r in rows]
+
+
+async def channel_archive_add(chat_id: int, title: str) -> None:
+    await _get_db().channel_archive.update_one({"_id": chat_id}, {"$set": {"title": title, "ts": time.time()}},
+                                               upsert=True)
+
+
+async def channel_archive_remove(chat_id: int) -> None:
+    await _get_db().channel_archive.delete_one({"_id": chat_id})
 
 
 # ---------- 👥 Guruh xabarlarini klonlash (groups.py) ----------

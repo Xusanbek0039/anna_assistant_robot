@@ -110,3 +110,51 @@ def test_group_message_from_both_accounts_cloned_once(monkeypatch):
     for h in handlers:
         run(h(ev))
     assert groups._q().qsize() == 1
+
+
+def test_feature_panel_and_toggle(two, monkeypatch):
+    applied = []
+    monkeypatch.setattr(control_bot, "_acc_apply", lambda slot: applied.append(slot))
+    text, rows = control_bot.acc_panel(2, first_time=True)
+    assert "qaysi funksiyalar ishlasin" in text
+    datas = [d for row in rows for d in _datas({"buttons": [row]})]
+    assert b"acc:t:2:autoreply" in datas and b"acc:t:2:bio" in datas and b"acc:t:2:online" in datas
+    assert all(len(d) <= 64 for d in datas)
+    assert runtime.get("acc2_online") is False
+    run(control_bot.acc_toggle(2, "online"))
+    assert runtime.get("acc2_online") is True and applied == [2]
+    assert "✅ 🟢 24 soat online" in [b.text for row in control_bot.acc_panel(2)[1] for b in row]
+
+
+def test_autoreply_off_silences_second_account(monkeypatch):
+    import userbot
+    handlers = []
+
+    class U:
+        def on(self, ev):
+            def deco(fn):
+                handlers.append(fn)
+                return fn
+            return deco
+
+    monkeypatch.setattr(runtime, "_values", dict(runtime.DEFAULTS, acc2_autoreply=False))
+    userbot.setup(U(), 99, slot=2)
+
+    class Boom:
+        chat_id = 5
+
+        async def get_sender(self):
+            raise AssertionError("kotiba o'chiq bo'lsa xabar o'qilmasligi kerak")
+
+    run(handlers[0](Boom()))    # jim qaytadi
+
+
+def test_second_bio_uses_its_own_backup(tmp_path, monkeypatch):
+    import bio_updater
+    import config
+    monkeypatch.setattr(config, "BIO_BACKUP_FILE", str(tmp_path / "bio_backup.json"))
+    assert bio_updater.backup_file(1).endswith("bio_backup.json")
+    assert bio_updater.backup_file(2).endswith("bio_backup2.json")
+    upd = bio_updater.BioUpdater(object(), slot=2)
+    assert upd.flag == "acc2_bio" and upd.backup_file.endswith("bio_backup2.json")
+    assert bio_updater.INSTANCE is not upd       # /bio buyrug'i 1-akkauntni boshqaradi

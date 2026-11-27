@@ -15,6 +15,7 @@ import archive
 import availability
 import backup
 import bio_updater
+import channels
 import config
 import deleted_accounts
 import finance
@@ -89,6 +90,9 @@ HELP = (
     "beradi (albom bo'lsa hammasini). Buyruq bilan: /igyukla &lt;havola&gt;\n\n"
     "<b>☁️ Google Drive</b>\n"
     "/drive — holati; Google ruxsati eskirsa «🔑 Qayta ulash» (terminal kerak emas)\n\n"
+    "<b>📢 Kanallar arxivi</b>\n"
+    "/kanallar — obuna bo'lgan kanallaringiz ro'yxati. Belgilangan kanallarning postlari chat arxiviga "
+    "yoziladi (o'chirilsa ham qoladi, HTML va Drive'ga).\n\n"
     "<b>👥 Guruhlar</b>\n"
     "/guruhlar — akkauntingizdagi guruhlar ro'yxati. Guruhni yoqsangiz, unga kelgan har bir xabar "
     "(matn, rasm, video, ovozli xabar, fayl) botga nusxalanib keladi.\n\n"
@@ -337,6 +341,82 @@ def new_msg_panel() -> tuple[str, list]:
 
 # ---------- 📱 2-akkaunt ----------
 _login2_task: asyncio.Task | None = None
+_acc_tasks: dict[int, dict] = {}   # akkaunt -> {"online": Task, "bio": Task, "bio_obj": BioUpdater}
+
+# 2-akkauntda yoqib-o'chiriladigan funksiyalar: kalit -> (nomi, izoh)
+ACC_FEATURES = {
+    "autoreply": ("🤖 Kotiba (avtojavob)", "unga yozganlarga AI javob beradi, sizga 📩 bildirishnoma keladi"),
+    "online": ("🟢 24 soat online", "akkaunt doim «online» ko'rinadi"),
+    "bio": ("🕒 Avtomatik bio", "bio'da soat va ob-havo, familiya yonida soat (o'chirsangiz asl bio qaytadi)"),
+    "groups": ("👥 Guruhlari", "guruhlari «👥 Guruhlar» ro'yxatida — klonlash mumkin"),
+}
+
+
+def acc_panel(slot: int = 2, first_time: bool = False) -> tuple[str, list]:
+    name = html.escape(ctx.names.get(slot, ""))
+    lines = [f"📱 <b>{slot}-akkaunt</b>: {name}", ""]
+    if first_time:
+        lines += ["✅ Ulandi! <b>Bu akkauntda qaysi funksiyalar ishlasin?</b> Bosib yoqing/o'chiring — "
+                  "keyin ham ⚙️ Boshqaruv → «📱 2-akkaunt» dan o'zgartirasiz.", ""]
+    rows = []
+    for key, (label, about) in ACC_FEATURES.items():
+        on = bool(runtime.get(f"acc{slot}_{key}"))
+        lines.append(f"{'🟢' if on else '⚪️'} {label} — <i>{about}</i>")
+        rows.append([Button.inline(("✅ " if on else "▫️ ") + label, f"acc:t:{slot}:{key}".encode())])
+    if config.DRY_RUN and runtime.get(f"acc{slot}_bio"):
+        lines += ["", "ℹ️ DRY_RUN=true — bio Telegram'da o'zgarmaydi (faqat logda)."]
+    lines += ["", "Faqat asosiy akkauntda: chat arxivi, eslatmalar, qidirish, kanallar arxivi."]
+    rows.append([Button.inline("✔️ Tayyor", f"acc:done:{slot}".encode()),
+                 Button.inline("🚪 Akkauntdan chiqish", b"tg:logout2_ask")])
+    return "\n".join(lines), rows
+
+
+def _acc_apply(slot: int) -> None:
+    """Sozlamaga qarab 2-akkaunt fon vazifalarini ishga tushiradi (online, bio)."""
+    import bio_updater as bu
+    from presence import keep_online
+    client = ctx.users.get(slot)
+    if client is None:
+        return
+    tasks = _acc_tasks.setdefault(slot, {})
+    if "online" not in tasks or tasks["online"].done():   # o'chiq bo'lsa o'zi kutib turadi
+        tasks["online"] = asyncio.create_task(keep_online(client, flag=f"acc{slot}_online"))
+    if runtime.get(f"acc{slot}_bio") and ("bio" not in tasks or tasks["bio"].done()):
+        upd = bu.BioUpdater(client, slot=slot)
+        tasks["bio_obj"], tasks["bio"] = upd, asyncio.create_task(upd.run())
+    groups.reset_cache()
+
+
+async def _acc_stop(slot: int) -> None:
+    """Chiqishda: bio yoqiq bo'lgan bo'lsa — asl bio qaytariladi, fon vazifalari to'xtaydi."""
+    tasks = _acc_tasks.pop(slot, {})
+    upd = tasks.get("bio_obj")
+    if upd is not None and runtime.get(f"acc{slot}_bio"):
+        try:
+            await upd.restore()
+        except Exception as e:
+            log.warning("%d-akkaunt asl bio'si qaytarilmadi (%s)", slot, type(e).__name__)
+    for key in ("online", "bio"):
+        t = tasks.get(key)
+        if t and not t.done():
+            t.cancel()
+
+
+async def acc_toggle(slot: int, key: str) -> str:
+    """Funksiyani yoqadi/o'chiradi. Javob matni (callback uchun)."""
+    flag = f"acc{slot}_{key}"
+    on = not runtime.get(flag)
+    if key == "bio" and not on:   # o'chirilsa — asl bio va familiya qaytariladi
+        upd = _acc_tasks.get(slot, {}).get("bio_obj")
+        if upd is not None:
+            try:
+                await upd.restore()
+            except Exception as e:
+                log.warning("Asl bio qaytarilmadi (%s)", type(e).__name__)
+    await runtime.update(**{flag: on})
+    _acc_apply(slot)
+    label = ACC_FEATURES[key][0]
+    return f"{label}: {'yoqildi' if on else 'o‘chirildi'}"
 
 
 def _second_status() -> str:
@@ -362,6 +442,7 @@ async def connect_second(client, slot: int = 2) -> str | None:
         f" (@{me.username})" if me.username else "")
     userbot.setup(client, me.id, slot=slot)
     groups.setup(client, group_clone_text, send_media, slot=slot)
+    _acc_apply(slot)
     log.info("%d-akkaunt ulandi: %s (id %s)", slot, me.first_name, me.id)
     return None
 
@@ -413,12 +494,15 @@ async def _login_second(bot) -> None:
             pass
         await alert(f"❌ 2-akkaunt ulanmadi: {problem}")
         return
-    await alert(f"✅ 2-akkaunt ulandi: {ctx.names.get(2, '')}\n"
-                "Endi unga yozganlarga ham kotiba javob beradi, bildirishnomalar «📱 2-akkaunt» belgisi bilan "
-                "keladi, «✍️ Javob berish» shu akkauntdan yuboradi. Guruhlari: 👥 Guruhlar.")
+    text, rows = acc_panel(2, first_time=True)
+    try:
+        await ctx.bot.send_message(ctx.owner_id, text, parse_mode="html", buttons=rows)
+    except Exception:
+        log.exception("2-akkaunt sozlamalari paneli yuborilmadi")
 
 
 async def logout_second(slot: int = 2) -> str:
+    await _acc_stop(slot)
     client = ctx.users.pop(slot, None)
     name = ctx.names.pop(slot, "")
     groups.forget_client(slot)
@@ -786,6 +870,38 @@ async def _drive_finish(event) -> None:
         asyncio.get_running_loop().call_later(2, os._exit, 0)
 
 
+async def _send_channels_panel(event, page: int = 0, edit: bool = False, refresh: bool = False) -> None:
+    try:
+        text, rows = channels.panel(await channels.my_channels(ctx.user, refresh=refresh), page,
+                                    runtime.get("archive_enabled"))
+    except Exception as e:
+        log.exception("Kanallar ro'yxati olinmadi")
+        text, rows = f"❌ Kanallar ro'yxatini olib bo'lmadi: {type(e).__name__}", None
+    if edit:
+        try:
+            await event.edit(text, parse_mode="html", buttons=_inline(rows))
+            return
+        except errors.MessageNotModifiedError:
+            return
+        except Exception:
+            pass
+    await event.respond(text, parse_mode="html", buttons=_inline(rows))
+
+
+async def _channel_backfill(chat_id: int, title: str) -> None:
+    """Kanal yoqilgan zahoti — oxirgi postlari ham arxivga (fon vazifasi)."""
+    limit = config.ARCHIVE_SYNC_LIMIT or 1000
+    try:
+        added = await archive.backfill(ctx.user, chat_id, limit)
+    except Exception as e:
+        log.exception("Kanal tarixi arxivga olinmadi")
+        await alert(f"⚠️ «{title}» kanalining eski postlari arxivga olinmadi: {type(e).__name__}")
+        return
+    archive.drive_wake()
+    await alert(f"📢 «{title}»: {added} ta post arxivga olindi. Bundan keyingi postlar ham yozib boriladi "
+                "(🗂 Chat arxivi → 💬 Chatlar).")
+
+
 async def group_clone_text(text: str, link: str | None) -> None:
     """👥 Guruhdan nusxalangan matnli xabar (groups.py)."""
     buttons = [[Button.url("🔗 Guruhda ochish", link)]] if link else None
@@ -986,7 +1102,8 @@ BOT_COMMANDS = [
     ("tglogin2", "📱 2-Telegram akkauntni ham ulash"),
     ("iglogin", "🔑 Instagram'ni ulash: /iglogin username parol"),
     ("drive", "☁️ Google Drive holati va qayta ulash"),
-    ("guruhlar","👥 Guruhlar: tanlangan guruh xabarlarini botga nusxalash"),
+    ("kanallar", "📢 Kanallar arxivi: belgilangan kanallar postlarini saqlash"),
+    ("guruhlar", "👥 Guruhlar: tanlangan guruh xabarlarini botga nusxalash"),
     ("igyukla", "📥 Instagram post/reels/storis mediasini yuklash"),
     ("find", "🔎 Chatlardan istalgan narsani topish"),
     ("save", "💾 Havoladagi mediani Saqlangan xabarlarga joylash"),
@@ -1100,7 +1217,9 @@ async def _panel() -> tuple[str, list]:
         [Button.inline("⚪️ Online o'chirish" if online else "🟢 Online yoqish",
                        b"cfg:online_off" if online else b"cfg:online_on"),
          Button.inline("↩️ Asl bio", b"cfg:bio_restore")],
-        [Button.inline("🔃 Yangilash", b"cfg:refresh")],
+        [Button.inline("📱 2-akkaunt sozlamalari" if 2 in ctx.users else "📱 2-akkaunt ulash",
+                       b"acc:panel:2" if 2 in ctx.users else b"acc:login"),
+         Button.inline("🔃 Yangilash", b"cfg:refresh")],
     ]
     return text, buttons
 
@@ -1193,7 +1312,8 @@ async def _archive_panel() -> tuple[str, list]:
     )
     buttons = [
         [Button.inline("💬 Chatlar", b"arc:list:0"), Button.inline("🗑 O'chirilgan bor chatlar", b"arc:dlist:0")],
-        [Button.inline("👻 O'chirilgan akkauntlar", b"arc:gone:0")],
+        [Button.inline("👻 O'chirilgan akkauntlar", b"arc:gone:0"),
+         Button.inline(f"📢 Kanallar ({channels.enabled_count()})", b"chn:p:0")],
         [Button.inline("⏸ Arxivni to'xtatish" if on else "▶️ Arxivni yoqish", b"arc:set:archive_enabled"),
          Button.inline("🔕 Xabar bermasin" if alerts else "🔔 Xabar bersin", b"arc:set:archive_alerts")],
         [Button.inline("⚪️ Guruhlarsiz" if groups else "👥 Guruhlar ham", b"arc:set:archive_groups")],
@@ -2044,6 +2164,34 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         else:
             await _drive_panel(event)
 
+    # ---------- 📢 Kanallar arxivi: faqat belgilangan kanallar ----------
+    @bot.on(events.NewMessage(pattern=r"^/kanallar(?:@\w+)?$", func=is_owner))
+    async def _channels_cmd(event):
+        await _send_channels_panel(event)
+
+    @bot.on(events.CallbackQuery(pattern=rb"^chn:", func=is_owner))
+    async def _channels_callback(event):
+        parts = event.data.decode().split(":")
+        action = parts[1]
+        if action == "t" and len(parts) == 4:
+            chat_id, page = int(parts[2]), int(parts[3])
+            title = next((c["title"] for c in await channels.my_channels(user) if c["id"] == chat_id), "")
+            on = await channels.toggle(chat_id, title)
+            if on:
+                await event.answer("✅ Arxivlanadi: " + title[:150] + " — eski postlari ham olinmoqda")
+                asyncio.create_task(_channel_backfill(chat_id, title))
+            else:
+                await event.answer("⏸ To'xtatildi: " + title[:120] + " (saqlanganlari arxivda qoladi)")
+            await _send_channels_panel(event, page, edit=True)
+        elif action == "p":
+            await event.answer()
+            await _send_channels_panel(event, int(parts[2]), edit=True)
+        elif action == "r":
+            await event.answer("🔄 Yangilanyapti...")
+            await _send_channels_panel(event, int(parts[2]), edit=True, refresh=True)
+        else:
+            await event.answer()
+
     # ---------- 👥 Guruhlar: tanlangan guruh xabarlarini klonlash ----------
     @bot.on(events.NewMessage(pattern=r"^/guruhlar(?:@\w+)?$", func=is_owner))
     async def _groups_cmd(event):
@@ -2499,13 +2647,45 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     async def _tg_login2(event):
         global _login2_task
         if 2 in ctx.users:
-            await event.respond(_second_status() + "\n\nChiqish: /tglogout2", parse_mode="html")
+            text, rows = acc_panel(2)
+            await event.respond(text, parse_mode="html", buttons=rows)
             return
         if _login2_task and not _login2_task.done():
             await event.respond("⏳ 2-akkaunt ulanishi davom etyapti — so'ralgan ma'lumotni yuboring "
                                 "(to'xtatish: «bekor»).")
             return
         _login2_task = asyncio.create_task(_login_second(bot))
+
+    @bot.on(events.CallbackQuery(pattern=rb"^acc:", func=is_owner))
+    async def _acc_callback(event):
+        parts = event.data.decode().split(":")
+        action = parts[1]
+        if action == "login":
+            await event.answer()
+            await _tg_login2(event)
+            return
+        slot = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 2
+        if slot not in ctx.users:
+            await event.answer("Akkaunt ulanmagan — /tglogin2", alert=True)
+            return
+        if action == "t" and len(parts) == 4 and parts[3] in ACC_FEATURES:
+            await event.answer(await acc_toggle(slot, parts[3]))
+        elif action == "done":
+            await event.answer("✔️ Saqlandi")
+        else:
+            await event.answer()
+        text, rows = acc_panel(slot)
+        try:
+            await event.edit(text, parse_mode="html", buttons=rows)
+        except errors.MessageNotModifiedError:
+            pass
+        except Exception:
+            await event.respond(text, parse_mode="html", buttons=rows)
+
+    @bot.on(events.CallbackQuery(pattern=rb"^tg:logout2_ask$", func=is_owner))
+    async def _tg_logout2_ask(event):
+        await event.answer()
+        await _tg_logout2(event)
 
     @bot.on(events.NewMessage(pattern=r"^/tglogout2(?:@\w+)?$", func=is_owner))
     async def _tg_logout2(event):

@@ -15,6 +15,7 @@ import time
 from telethon import TelegramClient, errors, events
 
 import config
+import runtime
 import storage
 
 log = logging.getLogger("groups")
@@ -85,6 +86,8 @@ async def my_groups(refresh: bool = False) -> list[dict]:
         return cached
     groups: dict[int, dict] = {}
     for slot, client in sorted(_clients.items()):
+        if not slot_enabled(slot):
+            continue
         try:
             async for d in client.iter_dialogs():
                 if not d.is_group:
@@ -137,6 +140,16 @@ def panel(groups: list[dict], page: int = 0) -> tuple[str, list]:
     return "\n".join(lines), rows
 
 
+def slot_enabled(slot: int) -> bool:
+    """2-akkaunt guruhlari faqat «acc2_groups» yoqilganda."""
+    return slot == 1 or bool(runtime.get(f"acc{slot}_groups"))
+
+
+def reset_cache() -> None:
+    global _cache
+    _cache = (0.0, [])
+
+
 def forget_client(slot: int) -> None:
     """Akkauntdan chiqilganda — uning guruhlari ro'yxatdan olib tashlanadi."""
     global _cache
@@ -173,6 +186,8 @@ def setup(user: TelegramClient, send_text, send_media, slot: int = 1) -> None:
     @user.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and e.chat_id in _enabled))
     async def _on_group_message(event):
         global _dropped
+        if not slot_enabled(slot):
+            return
         key = (event.chat_id, event.message.id)
         if key in _seen:
             return   # ikkinchi akkaunt ham shu guruhda — xabar allaqachon navbatda

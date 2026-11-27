@@ -6,6 +6,7 @@ import sys
 import ai
 import archive
 import backup
+import channels
 import config
 import control_bot
 import deleted_accounts
@@ -86,6 +87,7 @@ async def main() -> None:
         log.info("3/6 Nusxa qulfi olinyapti (xotira %s)", health.memory_note())
         await instance.wait_until_only()  # boshqa nusxa ishlayotgan bo'lsa, Telegram'ga ulanmasdan kutadi
     await runtime.load()
+    await channels.load()       # 📢 arxivlanadigan kanallar (/kanallar)
     await gdrive.load_token()   # botdan (/drive) qayta ulangan bo'lsa — yangi token bazada
 
     problem = await ai.check_key()

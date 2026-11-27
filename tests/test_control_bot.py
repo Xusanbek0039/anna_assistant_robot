@@ -65,7 +65,10 @@ def test_panel_buttons_valid(fake_storage, fresh_runtime):
     for row in rows:
         for btn in row:
             data = getattr(btn, "data", None) or btn.type.data  # Telethon versiyasiga qarab
-            assert data.startswith(b"cfg:") and len(data) <= 64  # Telegram cheklovi
+            assert len(data) <= 64  # Telegram cheklovi
+            if data.startswith(b"acc:"):   # 📱 2-akkaunt tugmasi — alohida ishlovchi
+                continue
+            assert data.startswith(b"cfg:")
             action = data.decode()[4:]
             assert run(control_bot._do_action(action)) != "Noma'lum amal", action
 

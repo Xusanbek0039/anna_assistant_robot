@@ -8,8 +8,8 @@
 *.session-journal
 
 # Asl bio zaxirasi (shaxsiy ma'lumot)
-bio_backup.json
-bio_backup.json.tmp
+bio_backup*.json
+bio_backup*.json.tmp
 
 # Eski SQLite baza
 anna.db

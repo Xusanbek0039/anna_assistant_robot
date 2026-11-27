@@ -147,38 +147,48 @@ async def _safe_db(coro, what: str):
 
 
 # ---------- asl bio zaxirasi (mahalliy fayl + MongoDB) ----------
-def _read_local_backup() -> dict | None:
+def backup_file(slot: int = 1) -> str:
+    """1-akkaunt — BIO_BACKUP_FILE, 2-akkaunt — bio_backup2.json (asl bio'lar aralashmasin)."""
+    if slot == 1:
+        return config.BIO_BACKUP_FILE
+    root, ext = os.path.splitext(config.BIO_BACKUP_FILE)
+    return f"{root}{slot}{ext or '.json'}"
+
+
+def _read_local_backup(path: str | None = None) -> dict | None:
+    path = path or config.BIO_BACKUP_FILE
     try:
-        with open(config.BIO_BACKUP_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) and "original_bio" in data else None
     except FileNotFoundError:
         return None
     except (OSError, json.JSONDecodeError):
-        log.warning("%s o'qib bo'lmadi", config.BIO_BACKUP_FILE)
+        log.warning("%s o'qib bo'lmadi", path)
         return None
 
 
-def _write_local_backup(original: str, saved_at: float, **extra) -> bool:
+def _write_local_backup(original: str, saved_at: float, path: str | None = None, **extra) -> bool:
     """Zaxira faylini yozadi. `extra` — mavjud faylga qo'shiladigan maydonlar (masalan asl ism)."""
-    tmp = config.BIO_BACKUP_FILE + ".tmp"
-    data = {**(_read_local_backup() or {}), "original_bio": original, "saved_at": saved_at, **extra}
+    path = path or config.BIO_BACKUP_FILE
+    tmp = path + ".tmp"
+    data = {**(_read_local_backup(path) or {}), "original_bio": original, "saved_at": saved_at, **extra}
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, config.BIO_BACKUP_FILE)
+        os.replace(tmp, path)
         return True
     except OSError as e:
         log.error("Mahalliy zaxira yozilmadi: %s", type(e).__name__)
         return False
 
 
-async def get_original_bio() -> str | None:
+async def get_original_bio(slot: int = 1) -> str | None:
     """Zaxiradagi asl bio: avval mahalliy fayldan, bo'lmasa MongoDB'dan."""
-    local = _read_local_backup()
+    local = _read_local_backup(backup_file(slot))
     if local is not None:
         return local["original_bio"]
-    state = await _safe_db(storage.get_bio_state(), "bio zaxirasi") or {}
+    state = await _safe_db(storage.get_bio_state(slot=slot), "bio zaxirasi") or {}
     return state.get("original_bio")
 
 
@@ -199,8 +209,12 @@ def load_quotes() -> list[str]:
 
 
 class BioUpdater:
-    def __init__(self, client: TelegramClient, dry_run: bool = config.DRY_RUN) -> None:
+    def __init__(self, client: TelegramClient, dry_run: bool = config.DRY_RUN, slot: int = 1) -> None:
+        """slot 2 — 2-akkaunt: o'z asl bio zaxirasi (bio_backup2.json, bazada «bio2») va «acc2_bio» sozlamasi."""
         self.client = client
+        self.slot = slot
+        self.backup_file = backup_file(slot)
+        self.flag = "bio_enabled" if slot == 1 else f"acc{slot}_bio"
         self.dry_run = dry_run
         self.tz = ZoneInfo(config.TIMEZONE)
         self.max_len = config.BIO_MAX_LENGTH or BIO_LIMIT_DEFAULT
@@ -211,7 +225,8 @@ class BioUpdater:
         self.quotes = load_quotes()
         self._wake = runtime.listener()
         global INSTANCE
-        INSTANCE = self  # nazorat boti /bio buyrug'i uchun
+        if slot == 1:
+            INSTANCE = self  # nazorat boti /bio buyrug'i uchun
         self.current_first = ""
         self.current_last = ""
         self.orig_first: str | None = None
@@ -228,7 +243,7 @@ class BioUpdater:
         self.current_last = me.last_name or ""
         await self.ensure_backup()
 
-        state = await _safe_db(storage.get_bio_state(), "bio holati") or {}
+        state = await _safe_db(storage.get_bio_state(slot=self.slot), "bio holati") or {}
         lw = state.get("last_weather")
         if lw:
             try:
@@ -246,8 +261,8 @@ class BioUpdater:
 
     async def ensure_backup(self) -> bool:
         """Asl bio'ni birinchi marta saqlaydi. Zaxira bo'lmasa, haqiqiy yangilash qilinmaydi."""
-        local = _read_local_backup()
-        state = await _safe_db(storage.get_bio_state(), "bio zaxirasi")
+        local = _read_local_backup(self.backup_file)
+        state = await _safe_db(storage.get_bio_state(slot=self.slot), "bio zaxirasi")
         remote_original = (state or {}).get("original_bio")
 
         if local is not None:
@@ -262,9 +277,9 @@ class BioUpdater:
                 log.warning("Diqqat: joriy bio avtomatik formatga o'xshaydi — u asl bio sifatida saqlandi. "
                             "Kerak bo'lsa %s faylini tahrirlang.", config.BIO_BACKUP_FILE)
 
-        local_ok = local is not None or _write_local_backup(original, saved_at)
+        local_ok = local is not None or _write_local_backup(original, saved_at, path=self.backup_file)
         remote_ok = remote_original is not None or bool(
-            await _safe_db(storage.save_original_bio_once(original, saved_at), "asl bio")
+            await _safe_db(storage.save_original_bio_once(original, saved_at, slot=self.slot), "asl bio")
         )
         self.backup_ok = local_ok or remote_ok
         if not self.backup_ok:
@@ -275,12 +290,12 @@ class BioUpdater:
 
     async def ensure_name_backup(self) -> None:
         """Asl ism/familiyani birinchi marta saqlaydi (keyin hech qachon ustidan yozmaydi)."""
-        local = _read_local_backup() or {}
+        local = _read_local_backup(self.backup_file) or {}
         if "original_last_name" in local:
             self.orig_first = local.get("original_first_name") or self.current_first
             self.orig_last = local["original_last_name"]
             return
-        state = await _safe_db(storage.get_bio_state(), "ism zaxirasi") or {}
+        state = await _safe_db(storage.get_bio_state(slot=self.slot), "ism zaxirasi") or {}
         if "original_last_name" in state:
             self.orig_first = state.get("original_first_name") or self.current_first
             self.orig_last = state["original_last_name"]
@@ -291,10 +306,10 @@ class BioUpdater:
             if "🕒" in self.orig_last:
                 log.warning("Diqqat: familiyada allaqachon vaqt bor — %s faylida original_last_name ni "
                             "to'g'rilang", config.BIO_BACKUP_FILE)
-            await _safe_db(storage.save_bio_state(original_first_name=self.orig_first,
+            await _safe_db(storage.save_bio_state(slot=self.slot, original_first_name=self.orig_first,
                                                   original_last_name=self.orig_last), "asl ism")
         if local:
-            _write_local_backup(local["original_bio"], local.get("saved_at", time.time()),
+            _write_local_backup(local["original_bio"], local.get("saved_at", time.time()), path=self.backup_file,
                                 original_first_name=self.orig_first, original_last_name=self.orig_last)
 
     def build_last_name(self, now: datetime) -> str | None:
@@ -402,9 +417,9 @@ class BioUpdater:
             log.info("✅ Bio yangilandi: %s (%s)%s", text, length, name_info)
 
         if weather_changed and self.weather:
-            await _safe_db(storage.save_bio_state(last_weather=asdict(self.weather)), "ob-havo")
+            await _safe_db(storage.save_bio_state(slot=self.slot, last_weather=asdict(self.weather)), "ob-havo")
         if updated:
-            await _safe_db(storage.save_bio_state(last_bio=text, last_bio_at=time.time()), "oxirgi bio")
+            await _safe_db(storage.save_bio_state(slot=self.slot, last_bio=text, last_bio_at=time.time()), "oxirgi bio")
 
     def _seconds_to_next_slot(self) -> float:
         """Yangilashni daqiqa boshiga moslaydi (masalan 300s -> 14:30, 14:35, ...)."""
@@ -435,7 +450,7 @@ class BioUpdater:
         paused_logged = False
         while True:
             try:
-                if not runtime.get("bio_enabled"):
+                if not runtime.get(self.flag):
                     if not paused_logged:
                         log.info("Bio yangilash to'xtatilgan (/bio off). Yoqish: /bio on")
                         paused_logged = True
@@ -472,13 +487,13 @@ class BioUpdater:
 
     # ----- tiklash -----
     async def restore(self) -> None:
-        original = await get_original_bio()
+        original = await get_original_bio(self.slot)
         if original is None:
             log.error("Asl bio zaxirasi topilmadi (%s ham, MongoDB ham bo'sh)", config.BIO_BACKUP_FILE)
             return
-        local = _read_local_backup() or {}
+        local = _read_local_backup(self.backup_file) or {}
         state = {} if "original_last_name" in local else (
-            await _safe_db(storage.get_bio_state(), "ism zaxirasi") or {})
+            await _safe_db(storage.get_bio_state(slot=self.slot), "ism zaxirasi") or {})
         orig_last = local.get("original_last_name", state.get("original_last_name"))
         if self.dry_run:
             log.info("[DRY_RUN] Telegram'da o'zgartirilmadi. Asl bio qaytarilardi: %r, familiya: %r",

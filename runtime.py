@@ -16,6 +16,11 @@ DEFAULTS = {
     "quote_mode": "auto",   # auto — quotes.txt dan har kuni; fixed — quote_text; off — iqtibossiz
     "quote_text": "",
     "online": config.KEEP_ONLINE,
+    # 📱 2-akkaunt funksiyalari (ulangach bot so'raydi; ⚙️ Boshqaruv → 📱 2-akkaunt)
+    "acc2_autoreply": True,     # kotiba: avtojavob va bildirishnomalar
+    "acc2_online": False,       # 24 soat online
+    "acc2_bio": False,          # avtomatik bio (soat, ob-havo) va ismdagi soat
+    "acc2_groups": True,        # 👥 guruhlari klonlash ro'yxatida
     # «📩 Yangi xabar» bildirishnomalari (🔴 SHOSHILINCH va 📞 chaqiruv doim keladi)
     "new_msg_alerts": config.NEW_MSG_ALERTS,
     "archive_enabled": config.ARCHIVE_ENABLED,

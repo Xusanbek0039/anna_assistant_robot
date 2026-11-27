@@ -259,7 +259,7 @@ def test_archive_buttons_fit_telegram_limit(arc):
     for row in rows + list_rows + control_bot._html_buttons(-1001234567890):
         for btn in row:
             data = getattr(btn, "data", None) or btn.type.data
-            assert data.startswith(b"arc:") and len(data) <= 64
+            assert data.startswith((b"arc:", b"chn:")) and len(data) <= 64
 
 
 def test_deleted_alert_text(arc, monkeypatch):

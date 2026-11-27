@@ -35,7 +35,7 @@ async def check_privacy(client: TelegramClient) -> None:
                     "So'nggi faollik va online -> Hamma")
 
 
-async def keep_online(client: TelegramClient) -> None:
+async def keep_online(client: TelegramClient, flag: str = "online") -> None:
     """Har ONLINE_INTERVAL_SECONDS da "online" signalini yuboradi.
 
     Telefondagi Telegram yopilib "offline" yuborsa — darhol qayta "online" qiladi.
@@ -63,7 +63,7 @@ async def keep_online(client: TelegramClient) -> None:
     was_ok, first, paused = True, True, False
     try:
         while True:
-            if not runtime.get("online"):
+            if not runtime.get(flag):
                 if not paused:
                     paused = True
                     log.info("Online holat o'chirildi (/online off)")

@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 from telethon import events
 from telethon.tl.types import Message, MessageMediaWebPage, PeerChannel, User
 
+import channels
 import config
 import runtime
 import storage
@@ -185,6 +186,8 @@ async def _eligible(event) -> tuple[object, str] | None:
         return chat, "user"
     if event.is_group and runtime.get("archive_groups"):
         return await event.get_chat(), "group"
+    if channels.is_broadcast(event) and channels.is_enabled(event.chat_id):   # 📢 faqat belgilangan kanallar
+        return await event.get_chat(), "channel"
     return None
 
 
@@ -332,6 +335,7 @@ async def backfill(user, chat_id: int, limit: int) -> int:
         log.info("Chat %s Telegram'dan olinmadi (%s) — faqat arxivdagilar", chat_id, type(e).__name__)
         return 0
     group = not isinstance(entity, User)
+    kind = "user" if not group else ("channel" if getattr(entity, "broadcast", False) else "group")
     docs = []
     try:
         async for m in user.iter_messages(entity, limit=limit):
@@ -342,7 +346,7 @@ async def backfill(user, chat_id: int, limit: int) -> int:
     added = await storage.archive_add_many(docs)
     if docs or await storage.archive_chat(chat_id) is None:
         await storage.archive_touch_chat(chat_id, display_name(entity) or str(chat_id),
-                                         getattr(entity, "username", None), "group" if group else "user",
+                                         getattr(entity, "username", None), kind,
                                          max((d["date"] for d in docs), default=0), added,
                                          account_deleted=is_deleted_account(entity))
     return added
@@ -364,6 +368,8 @@ def _dialog_kind(dialog) -> str | None:
         return "user"
     if dialog.is_group and runtime.get("archive_groups"):
         return "group"
+    if channels.is_broadcast(dialog) and channels.is_enabled(dialog.id):
+        return "channel"
     return None
 
 
