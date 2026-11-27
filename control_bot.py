@@ -29,6 +29,7 @@ import report
 import runtime
 import saver
 import storage
+import tg_login
 import voicelab
 import watchers
 import weekly
@@ -158,6 +159,9 @@ STRANGER_REPLY_COOLDOWN = 3600
 
 # notification message id -> chat_id  (reply orqali javob berish uchun)
 _notif_map: dict[int, int] = {}
+# bildirishnoma id -> akkaunt (faqat 2-akkaunt; yo'q bo'lsa — 1-akkaunt)
+_notif_slot: dict[int, int] = {}
+_awaiting_slot: dict[str, int] = {}   # «✍️ Javob berish» bosilgan chat qaysi akkauntdan
 # egasi "Javob berish" tugmasini bosgandan keyin kutilayotgan chat
 _awaiting_reply: dict[str, int] = {}
 # chatlardan qidirish: tanlov kutayotgan so'rovlar va topilgan xabarlar (tugmalar uchun)
@@ -177,6 +181,8 @@ class Ctx:
     user: TelegramClient
     owner_id: int
     monitor = None  # health.Monitor (main.py o'rnatadi)
+    users: dict = {}   # akkaunt raqami -> TelegramClient (1 — asosiy, 2 — ikkinchi)
+    names: dict = {}   # akkaunt raqami -> ko'rinadigan nom
 
 
 ctx = Ctx()
@@ -286,19 +292,36 @@ def _who(name: str, username: str | None, chat_id: int) -> str:
     return who + f"  <code>{chat_id}</code>"
 
 
-def _buttons(chat_id: int):
-    return [
-        [Button.inline("✍️ Javob berish", f"reply:{chat_id}".encode()),
-         Button.inline("✅ Ko'rildi", f"done:{chat_id}".encode())],
-        [Button.inline("🔇 Bu chatda AI jim", f"mute:{chat_id}".encode()),
-         Button.inline("🚫 Istisnoga qo'shish", f"ignore:{chat_id}".encode())],
-        [Button.inline("📄 Yozishmani yuklab olish (HTML)", f"arc:html:{chat_id}:a".encode())],
+def _buttons(chat_id: int, slot: int = 1):
+    """slot 2 — 2-akkaunt: tugma ma'lumotiga «:2» qo'shiladi (javob o'sha akkauntdan ketadi)."""
+    sfx = "" if slot == 1 else f":{slot}"
+    rows = [
+        [Button.inline("✍️ Javob berish", f"reply:{chat_id}{sfx}".encode()),
+         Button.inline("✅ Ko'rildi", f"done:{chat_id}{sfx}".encode())],
+        [Button.inline("🔇 Bu chatda AI jim", f"mute:{chat_id}{sfx}".encode()),
+         Button.inline("🚫 Istisnoga qo'shish", f"ignore:{chat_id}{sfx}".encode())],
     ]
+    if slot == 1:   # chat arxivi faqat 1-akkauntda
+        rows.append([Button.inline("📄 Yozishmani yuklab olish (HTML)", f"arc:html:{chat_id}:a".encode())])
+    return rows
 
 
-def _notify_buttons(chat_id: int):
+def _notify_buttons(chat_id: int, slot: int = 1):
     """«📩 Yangi xabar» tugmalari: odatdagilar + bildirishnomani o'chirish."""
-    return _buttons(chat_id) + [[Button.inline("🔕 «Yangi xabar» kelmasin", b"newmsg:off")]]
+    return _buttons(chat_id, slot) + [[Button.inline("🔕 «Yangi xabar» kelmasin", b"newmsg:off")]]
+
+
+def _acc_head(slot: int) -> str:
+    """2-akkauntdan kelgan bildirishnoma boshida qaysi akkaunt ekani."""
+    if slot == 1:
+        return ""
+    return f"📱 <b>{slot}-akkaunt</b>: {html.escape(ctx.names.get(slot, ''))}\n"
+
+
+def _remember(msg_id: int, chat_id: int, slot: int) -> None:
+    _notif_map[msg_id] = chat_id
+    if slot != 1:
+        _notif_slot[msg_id] = slot
 
 
 def new_msg_panel() -> tuple[str, list]:
@@ -340,13 +363,14 @@ async def tg_logout(exit_after: float = 2.0) -> None:
 
 
 async def notify(chat_id: int, name: str, username: str | None, text: str,
-                 summary: str, urgent: bool, ai_reply: str | None, reply_to: int | None = None) -> None:
+                 summary: str, urgent: bool, ai_reply: str | None, reply_to: int | None = None,
+                 slot: int = 1) -> None:
     """reply_to: shu xabar bilan kelgan media (bot xabari) id si — bildirishnoma uning tagiga bog'lanadi."""
     if not urgent and not runtime.get("new_msg_alerts"):
         return  # egasi «📩 Yangi xabar»ni o'chirgan (/yangixabar); xabar /inbox ga baribir yoziladi
     head ="🔴 <b>SHOSHILINCH</b>\n" if urgent else "📩 <b>Yangi xabar</b>\n"
     body = (
-        f"{head}👤 {_who(name, username, chat_id)}\n\n"
+        f"{head}{_acc_head(slot)}👤 {_who(name, username, chat_id)}\n\n"
         f"💬 <i>{html.escape(text[:1000])}</i>\n"
     )
     if summary:
@@ -355,17 +379,18 @@ async def notify(chat_id: int, name: str, username: str | None, text: str,
         body += f"\n🤖 <b>Anna javobi:</b> {html.escape(ai_reply)}"
     try:
         msg = await ctx.bot.send_message(ctx.owner_id, body, parse_mode="html",
-                                         buttons=_buttons(chat_id) if urgent else _notify_buttons(chat_id),
-                                         reply_to=reply_to)
-        _notif_map[msg.id] = chat_id
+                                         buttons=_buttons(chat_id, slot) if urgent
+                                         else _notify_buttons(chat_id, slot), reply_to=reply_to)
+        _remember(msg.id, chat_id, slot)
     except Exception:
         log.exception("Egasiga xabar yuborilmadi (botga /start bosganmisiz?)")
 
 
-async def call_owner(chat_id: int, name: str, username: str | None, text: str, summary: str) -> None:
+async def call_owner(chat_id: int, name: str, username: str | None, text: str, summary: str,
+                     slot: int = 1) -> None:
     """Suhbatdosh egasini chaqirishni so'radi — alohida, ko'zga tashlanadigan xabar."""
     body = (
-        "📞 <b>SIZNI CHAQIRISHYAPTI!</b>\n"
+        "📞 <b>SIZNI CHAQIRISHYAPTI!</b>\n" + _acc_head(slot) +
         f"👤 {_who(name, username, chat_id)}\n\n"
         f"💬 <i>{html.escape(text[:1000])}</i>\n"
     )
@@ -373,8 +398,8 @@ async def call_owner(chat_id: int, name: str, username: str | None, text: str, s
         body += f"\n📝 <b>Xulosa:</b> {html.escape(summary)}"
     try:
         msg = await ctx.bot.send_message(ctx.owner_id, body, parse_mode="html",
-                                         buttons=_buttons(chat_id))
-        _notif_map[msg.id] = chat_id
+                                         buttons=_buttons(chat_id, slot))
+        _remember(msg.id, chat_id, slot)
     except Exception:
         log.exception("Chaqiruv xabari yuborilmadi (botga /start bosganmisiz?)")
 
@@ -426,11 +451,11 @@ _MEDIA_ICONS = {"rasm": "📸", "video": "🎬", "ovozli xabar": "🎤", "video-
 async def send_media(chat_id: int, name: str, data: bytes, filename: str | None = None, *,
                      kind: str = "media", username: str | None = None, caption: str = "",
                      view_once: bool = False, mime: str = "", attributes=None,
-                     thumb: bytes | None = None, link_reply: bool = True) -> int | None:
+                     thumb: bytes | None = None, link_reply: bool = True, slot: int = 1) -> int | None:
     """Suhbatdosh yuborgan mediani egasiga ASL ko'rinishida yuboradi: rasm — rasm, video — video,
     ovozli xabar — ovozli xabar. Bir marta ko'riladigan media ham oddiy (saqlasa bo'ladigan) holda keladi.
     Yuborilgan xabar id sini qaytaradi (bildirishnoma shunga reply bo'lib keladi)."""
-    cap = f"{_MEDIA_ICONS.get(kind, '📎')} {_who(name, username, chat_id)} — {html.escape(kind)}"
+    cap = _acc_head(slot) + f"{_MEDIA_ICONS.get(kind, '📎')} {_who(name, username, chat_id)} — {html.escape(kind)}"
     if view_once:
         cap += "\n🔥 <b>Bir marta ko'riladigan (o'chib ketadigan) media</b> — siz uchun saqlab olindi"
     if caption:
@@ -458,11 +483,11 @@ async def send_media(chat_id: int, name: str, data: bytes, filename: str | None 
             msg = await ctx.bot.send_file(ctx.owner_id, _file(), caption=None if is_round else cap,
                                           parse_mode="html", force_document=True)
         if link_reply:  # guruh nusxasiga reply qilinsa, javob guruhga ketmasin (link_reply=False)
-            _notif_map[msg.id] = chat_id
+            _remember(msg.id, chat_id, slot)
         if is_round:  # dumaloq videoga izoh yozib bo'lmaydi — alohida xabar
             note = await ctx.bot.send_message(ctx.owner_id, cap, parse_mode="html", reply_to=msg.id)
             if link_reply:
-                _notif_map[note.id] = chat_id
+                _remember(note.id, chat_id, slot)
         return msg.id
     except Exception:
         log.exception("Media botga yuborilmadi")
@@ -699,10 +724,14 @@ async def _dont_understand(event) -> None:
         "Yoki pastdagi tugmali menyudan foydalaning (/menu).", parse_mode="html")
 
 
-async def _send_as_owner(chat_id: int, text: str, event) -> None:
+async def _send_as_owner(chat_id: int, text: str, event, slot: int = 1) -> None:
+    client = ctx.users.get(slot) or (ctx.user if slot == 1 else None)
+    if client is None:
+        await event.respond(f"❌ {slot}-akkaunt ulanmagan — /tglogin{slot}")
+        return
     try:
         # Egasi nomidan yuboriladi; userbot buni "egasi o'zi yozdi" deb ko'radi va AI jim bo'ladi
-        await ctx.user.send_message(chat_id, text)
+        await client.send_message(chat_id, text)
         await event.respond(f"✅ Yuborildi. Bu chatda AI {OWNER_TAKEOVER_MINUTES} daqiqa jim turadi.")
     except Exception as e:
         await event.respond(f"❌ Yuborilmadi: {e}")
@@ -2560,6 +2589,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     @bot.on(events.NewMessage(func=lambda e: is_owner(e) and e.text and not e.text.startswith("/")
                               and e.raw_text.strip() not in MENU_TEXTS))
     async def _plain(event):
+        if tg_login.busy():
+            return   # bot orqali Telegram login (telefon, kod, parol) davom etyapti — tg_login o'zi ishlaydi
         # ☁️ Google Drive'ni qayta ulash: brauzer manzil qatoridagi http://127.0.0.1:8765/?...code=...
         if gdrive.parse_redirect(event.text):
             await _drive_finish(event)
@@ -2595,12 +2626,13 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         if ig_thread:
             await event.respond(await instagram.send_text(ig_thread, event.text))
             return
-        chat_id = None
+        chat_id, slot = None, 1
         if event.is_reply:
             chat_id = _notif_map.get(event.reply_to_msg_id)
+            slot = _notif_slot.get(event.reply_to_msg_id, 1)
         # Bildirishnomaga reply: «shu user online bo'lsa menga xabar ber» — suhbatdoshga yuborilmaydi,
         # o'sha odamga eslatma qo'yiladi
-        if (chat_id is not None and watchers.about_this(event.text)
+        if (chat_id is not None and slot == 1 and watchers.about_this(event.text)
                 and (req := watchers.parse(event.text)) is not None):
             if not (req.user_ref or req.number):
                 req.kind, req.user_ref, req.name = "online", str(chat_id), ""
@@ -2618,6 +2650,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                 return
         if chat_id is None:
             chat_id = _awaiting_reply.pop("chat", None)
+            slot = _awaiting_slot.pop("chat", 1) if chat_id is not None else 1
         # Faqat ID raqami yuborildi -> o'sha odamning lichkasiga o'tish tugmasi
         if chat_id is None and (m := USER_ID_RE.match(event.text)):
             await _open_dm(event, m.group(1))
@@ -2645,17 +2678,20 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await _dont_understand(event)
             return
         _awaiting_reply.pop("chat", None)
-        await _send_as_owner(chat_id, event.text, event)
+        await _send_as_owner(chat_id, event.text, event, slot)
 
     @bot.on(events.CallbackQuery(pattern=rb"^(reply|done|mute|ignore):", func=is_owner))
     async def _callback(event):
         action, _, raw = event.data.decode().partition(":")
-        chat_id = int(raw)
+        raw_id, _, raw_slot = raw.partition(":")
+        chat_id, slot = int(raw_id), int(raw_slot or 1)
         if action == "reply":
             _awaiting_reply.pop("ig", None)
             _awaiting_reply["chat"] = chat_id
+            _awaiting_slot["chat"] = slot
             await event.answer()
-            await event.respond(f"✍️ <code>{chat_id}</code> ga javob matnini yozing:", parse_mode="html")
+            via = f" ({slot}-akkauntdan)" if slot != 1 else ""
+            await event.respond(f"✍️ <code>{chat_id}</code> ga javob matnini yozing{via}:", parse_mode="html")
         elif action == "done":
             await storage.mark_handled(chat_id)
             await event.answer("Ko'rildi deb belgilandi")
