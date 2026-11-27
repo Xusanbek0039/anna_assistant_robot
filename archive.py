@@ -9,9 +9,13 @@ bot orqali uni HTML fayl qilib qayta yuklab olish mumkin.
 """
 import asyncio
 import base64
+import gc
 import html
 import logging
+import os
 import re
+import shutil
+import tempfile
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -520,11 +524,55 @@ async def sync_existing(user, per_chat: int, pause: float = 0.5) -> tuple[int, i
     return chats, added_total
 
 
+async def _fetch_media_budget(docs: list[dict], budget: int) -> tuple[dict[str, tuple[bytes, str]], set[int]]:
+    """HTML sig'imiga (budget) kiradigan media'ni kichik bo'laklarda bazadan oladi (xotirani tejash uchun)."""
+    ordered = sorted(
+        (d for d in docs if d.get("media") and d.get("media_id")),
+        key=lambda x: (not x.get("deleted"), -(x.get("date") or 0)),
+    )
+    media: dict[str, tuple[bytes, str]] = {}
+    embed: set[int] = set()
+    left = budget
+    for i in range(0, len(ordered), 20):
+        if left <= 0:
+            break
+        batch = ordered[i:i + 20]
+        need_ids = list(dict.fromkeys(d["media_id"] for d in batch if d["media_id"] not in media))
+        fetched = await storage.archive_media_get(need_ids) if need_ids else {}
+        for d in batch:
+            mid = d["media_id"]
+            blob = media.get(mid) or fetched.get(mid)
+            if blob and len(blob[0]) <= left:
+                left -= len(blob[0])
+                embed.add(d["msg_id"])
+                media[mid] = blob
+    return media, embed
+
+
 async def _render(chat_id: int, only_deleted: bool) -> tuple[bytes, dict, int]:
     docs = await storage.archive_messages(chat_id, only_deleted, limit=config.ARCHIVE_EXPORT_LIMIT)
     info = await storage.archive_chat(chat_id) or {"chat_id": chat_id, "title": str(chat_id)}
-    media = await storage.archive_media_get([d["media_id"] for d in docs if d.get("media_id")])
-    return build_html(info, docs, media, only_deleted).encode("utf-8"), info, len(docs)
+    media, embed = await _fetch_media_budget(docs, HTML_MEDIA_BUDGET)
+    data = await asyncio.to_thread(lambda: build_html(info, docs, media, only_deleted, embed=embed).encode("utf-8"))
+    return data, info, len(docs)
+
+
+async def _render_to_file(chat_id: int, only_deleted: bool, path: str) -> tuple[dict, int]:
+    """Chat HTML'ini to'g'ridan-to'g'ri diskdagi faylga yozadi (katta chatlarda xotirani tejash uchun)."""
+    docs = await storage.archive_messages(chat_id, only_deleted, limit=config.ARCHIVE_EXPORT_LIMIT)
+    info = await storage.archive_chat(chat_id) or {"chat_id": chat_id, "title": str(chat_id)}
+    media, embed = await _fetch_media_budget(docs, HTML_MEDIA_BUDGET)
+    n = len(docs)
+
+    def _write() -> None:
+        with open(path, "w", encoding="utf-8", buffering=65536) as f:
+            for chunk in _iter_html(info, docs, media, only_deleted, embed=embed):
+                f.write(chunk)
+
+    await asyncio.to_thread(_write)
+    del docs, media, embed
+    gc.collect()
+    return info, n
 
 
 def _safe(title: str) -> str:
@@ -636,10 +684,17 @@ async def drive_sync_chat(chat_id: int, info: dict | None = None) -> str:
     import gdrive
     info = info or await storage.archive_chat(chat_id) or {"chat_id": chat_id}
     changed = info.get("changed")
-    async with _drive_lock:
-        data, info2, _ = await _render(chat_id, False)
-        res = await _in_folder(chat_id, info, lambda folder: gdrive.upload(
-            _drive_name(info2), data, "text/html", info.get("drive_file_id"), parent=folder))
+    tmp = tempfile.mkdtemp(prefix="anna_html_")
+    path = os.path.join(tmp, "chat.html")
+    try:
+        async with _drive_lock:
+            info2, _ = await _render_to_file(chat_id, False, path)
+            res = await _in_folder(chat_id, info, lambda folder: gdrive.upload(
+                _drive_name(info2), mime="text/html", file_id=info.get("drive_file_id"),
+                parent=folder, path=path))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        gc.collect()
     link = _link(res)
     await storage.archive_drive_done(chat_id, changed, res["id"], link)
     return link
@@ -943,7 +998,8 @@ def _snippet(d: dict | None) -> str:
     return s[:90] + ("…" if len(s) > 90 else "")
 
 
-def build_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]], only_deleted: bool) -> str:
+def _iter_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]], only_deleted: bool,
+               embed: set[int] | None = None):
     tz = ZoneInfo(config.TIMEZONE)
     title = info.get("title") or str(info.get("chat_id", ""))
     group = info.get("kind") == "group"
@@ -951,33 +1007,34 @@ def build_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]]
     n_del = sum(1 for d in docs if d.get("deleted"))
     n_edit = sum(1 for d in docs if d.get("edits"))
     # Hammasi sig'masa: avval o'chirilganlarining mediasi (boshqa joyda qolmagan), keyin eng yangilari
-    embed, budget = set(), HTML_MEDIA_BUDGET
-    for d in sorted(docs, key=lambda x: (not x.get("deleted"), -(x.get("date") or 0))):
-        blob = media.get(d.get("media_id") or "") if d.get("media") else None
-        if blob and len(blob[0]) <= budget:
-            budget -= len(blob[0])
-            embed.add(d["msg_id"])
+    if embed is None:
+        embed, budget = set(), HTML_MEDIA_BUDGET
+        for d in sorted(docs, key=lambda x: (not x.get("deleted"), -(x.get("date") or 0))):
+            blob = media.get(d.get("media_id") or "") if d.get("media") else None
+            if blob and len(blob[0]) <= budget:
+                budget -= len(blob[0])
+                embed.add(d["msg_id"])
 
     sub = [f"@{_text(info['username'])}" if info.get("username") else "",
            f"id {_text(str(info.get('chat_id', '')))}",
            f"{len(docs)} ta xabar", f"🗑 {n_del} ta o'chirilgan", f"✏️ {n_edit} ta tahrirlangan"]
-    out = [
-        "<!DOCTYPE html><html lang='uz'><head><meta charset='utf-8'>",
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>",
-        f"<title>{_text(title)} — chat arxivi</title><style>{_CSS}</style></head><body>",
-        f"<header><h1>{'🗑 O‘chirilgan xabarlar — ' if only_deleted else '💬 '}{_text(title)}</h1>",
-        f"<div class='sub'>{' · '.join(s for s in sub if s)}</div>",
+    yield (
+        "<!DOCTYPE html><html lang='uz'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>{_text(title)} — chat arxivi</title><style>{_CSS}</style></head><body>"
+        f"<header><h1>{'🗑 O‘chirilgan xabarlar — ' if only_deleted else '💬 '}{_text(title)}</h1>"
+        f"<div class='sub'>{' · '.join(s for s in sub if s)}</div>"
         "<div class='sub legend'><span><span class='tag tdel'>o‘chirilgan</span></span>"
-        "<span><span class='tag tedit'>tahrirlangan</span> — eski variantlari ostida</span></div></header><main>",
-    ]
+        "<span><span class='tag tedit'>tahrirlangan</span> — eski variantlari ostida</span></div></header><main>"
+    )
     if not docs:
-        out.append("<p class='day'><span>Arxivda xabar yo‘q</span></p>")
+        yield "<p class='day'><span>Arxivda xabar yo‘q</span></p>"
     day = None
     for d in docs:
         dkey = _fmt(d.get("date"), "%d.%m.%Y", tz)
         if dkey != day:
             day = dkey
-            out.append(f"<div class='day'><span>{dkey}</span></div>")
+            yield f"<div class='day'><span>{dkey}</span></div>"
         cls = "msg del" if d.get("deleted") else "msg"
         parts = []
         if group and not d.get("out") and d.get("sender"):
@@ -985,7 +1042,7 @@ def build_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]]
         if d.get("reply_to"):
             parts.append(f"<div class='reply'>↩️ {_text(_snippet(by_id.get(d['reply_to'])))}</div>")
         if d.get("media"):
-            if d["msg_id"] in embed:
+            if d["msg_id"] in embed and d.get("media_id") in media:
                 data, mime = media[d["media_id"]]
                 src = f"data:{mime};base64,{base64.b64encode(data).decode()}"
                 if mime.startswith("image/"):
@@ -1021,7 +1078,11 @@ def build_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]]
                             for e in d["edits"])
             parts.append(f"<details><summary>Oldingi variantlar ({len(d['edits'])})</summary><ul>{items}</ul></details>")
         side = "out" if d.get("out") else "in"
-        out.append(f"<div class='row {side}'><div class='{cls}'>{''.join(parts)}</div></div>")
+        yield f"<div class='row {side}'><div class='{cls}'>{''.join(parts)}</div></div>"
     made = datetime.now(tz).strftime("%d.%m.%Y %H:%M")
-    out.append(f"</main><footer>Anna chat arxivi · {made} da tayyorlandi</footer></body></html>")
-    return "".join(out)
+    yield f"</main><footer>Anna chat arxivi · {made} da tayyorlandi</footer></body></html>"
+
+
+def build_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]], only_deleted: bool,
+               embed: set[int] | None = None) -> str:
+    return "".join(_iter_html(info, docs, media, only_deleted, embed=embed))

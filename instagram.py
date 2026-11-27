@@ -1442,20 +1442,35 @@ def drive_file_name(info: dict) -> str:
 
 async def drive_sync_thread(thread_id: str, info: dict | None = None) -> str:
     """Bitta Instagram chatini Drive'ga yuklaydi (bor fayl yangilanadi). Havolani qaytaradi."""
+    import gc
+    import os
+    import shutil
+    import tempfile
     import gdrive
     info = info or await storage.ig_chat_get(thread_id) or {"thread_id": thread_id}
     changed = info.get("changed")
-    async with _drive_lock:
-        data, _, _ = await export_html(thread_id)
-        name = drive_file_name(info)
-        try:
-            res = await gdrive.upload(name, data, "text/html", info.get("drive_file_id"),
-                                      parent=await _drive_dir())
-        except gdrive.DriveError as e:
-            if e.status != 404:
-                raise
-            log.info("Instagram papkasi yoki fayli Drive'da topilmadi — qaytadan yaratiladi")
-            res = await gdrive.upload(name, data, "text/html", None, parent=await _drive_dir(fresh=True))
+    tmp = tempfile.mkdtemp(prefix="anna_ig_html_")
+    path = os.path.join(tmp, "chat.html")
+    try:
+        async with _drive_lock:
+            data, _, _ = await export_html(thread_id)
+            with open(path, "wb") as f:
+                f.write(data)
+            del data
+            gc.collect()
+            name = drive_file_name(info)
+            try:
+                res = await gdrive.upload(name, mime="text/html", file_id=info.get("drive_file_id"),
+                                          parent=await _drive_dir(), path=path)
+            except gdrive.DriveError as e:
+                if e.status != 404:
+                    raise
+                log.info("Instagram papkasi yoki fayli Drive'da topilmadi — qaytadan yaratiladi")
+                res = await gdrive.upload(name, mime="text/html", file_id=None,
+                                          parent=await _drive_dir(fresh=True), path=path)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        gc.collect()
     link = res.get("webViewLink") or f"https://drive.google.com/file/d/{res['id']}/view"
     await storage.ig_drive_done(thread_id, changed, res["id"], link)
     return link
