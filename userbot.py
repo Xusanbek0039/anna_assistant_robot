@@ -1,5 +1,6 @@
 """Shaxsiy akkaunt (userbot): kiruvchi shaxsiy xabarlarga AI orqali javob beradi."""
 import asyncio
+import functools
 import io
 import logging
 import random
@@ -261,6 +262,7 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
 
     def _reg(ev):
         def deco(fn):
+            @functools.wraps(fn)
             async def wrapped(event):
                 with storage.use_slot(slot):
                     return await fn(event)

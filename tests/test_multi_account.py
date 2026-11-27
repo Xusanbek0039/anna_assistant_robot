@@ -145,7 +145,8 @@ def test_autoreply_off_still_notifies_second_account(monkeypatch, fake_storage):
     async def no_ai(*a, **kw):
         raise AssertionError("kotiba o'chiq — AI chaqirilmasligi kerak")
 
-    monkeypatch.setattr(runtime, "_values", dict(runtime.DEFAULTS, acc2_autoreply=False))
+    monkeypatch.setattr(runtime, "_values", dict(runtime.DEFAULTS))
+    fake_storage.d_mode = "off"     # 2-akkaunt rejimi: ⚪️ O'chiq
     monkeypatch.setattr(userbot.control_bot, "notify", notify)
     monkeypatch.setattr(userbot.ai, "generate", no_ai)
     userbot.setup(U(), 99, slot=2)
@@ -286,7 +287,8 @@ def test_second_account_archive_uses_own_collections(monkeypatch):
         db = storage._get_db()
         assert db.archive == "col:archive2" and db.archive_chats == "col:archive_chats2"
         assert db["archive"] == "col:archive2"
-        assert db.inbox == "col:inbox" and db.settings == "col:settings"   # boshqalari umumiy
+        assert db.inbox == "col:inbox2" and db.history == "col:history2"   # Inbox va AI tarixi ham alohida
+        assert db.settings == "col:settings" and db.contacts == "col:contacts"   # sozlamalar umumiy
     assert storage.arc_slot() == 1
 
 
@@ -323,3 +325,75 @@ def test_notification_html_button_points_to_right_archive(two):
     assert b"arc2:html:77:a" in _datas(bot.sent[-1][1])
     run(control_bot.notify(78, "Vali", None, "salom", "", False, None))
     assert b"arc1:html:78:a" in _datas(bot.sent[-1][1])
+
+
+def test_second_account_has_same_control_panel(two, fake_storage, monkeypatch):
+    async def get_status():
+        return type("S", (), {"reply": True, "reason": "doim", "notify": True, "ai_context": ""})()
+
+    monkeypatch.setattr(control_bot.availability, "get_status", get_status)
+    text, rows = run(control_bot._panel(2))
+    datas = _datas({"buttons": rows})
+    assert "Boshqaruv paneli" in text and "2-akkaunt" in text
+    for action in (b"cfg2:mode_auto", b"cfg2:mode_on", b"cfg2:mode_off", b"cfg2:bio_on", b"cfg2:bio_now",
+                   b"cfg2:online_on", b"cfg2:bio_restore", b"cfg2:groups"):
+        assert action in datas, action
+    assert not any(d.startswith(b"cfg:") for d in datas)          # 1-akkaunt sozlamasiga tegmaydi
+
+
+def test_second_account_mode_and_flags_are_separate(two, fake_storage, monkeypatch):
+    import storage
+    modes = {}
+
+    async def set_mode(m):
+        modes[storage.arc_slot()] = m
+
+    monkeypatch.setattr(storage, "set_mode", set_mode)
+    monkeypatch.setattr(control_bot, "_acc_apply", lambda slot: None)
+    run(control_bot._do_action("mode_off", 2))
+    assert modes == {2: "off"} and runtime.get("acc2_autoreply") is False
+    run(control_bot._do_action("online_on", 2))
+    assert runtime.get("acc2_online") is True and runtime.get("online") == runtime.DEFAULTS["online"]
+
+
+def test_settings_keys_per_account():
+    import storage
+    assert storage._sid("mode") == "mode"
+    with storage.use_slot(2):
+        assert storage._sid("mode") == "mode2" and storage._sid("owner_active") == "owner_active2"
+
+
+def test_watch_alert_from_second_account_is_marked(monkeypatch):
+    import storage
+    import watchers
+    got = []
+
+    async def alert(text, buttons=None):
+        got.append((text, buttons))
+
+    monkeypatch.setattr(watchers, "_alert", alert)
+    with storage.use_slot(2):
+        run(watchers._send("🔔 Eslatma!", [[("🛑 To'xtatish", "wch:del:abc")]]))
+    text, buttons = got[0]
+    assert text.startswith("📱 <b>2-akkaunt</b>") and buttons == [[("🛑 To'xtatish", "wch2:del:abc")]]
+
+
+def test_reports_sent_for_each_account(monkeypatch):
+    import report
+    import storage
+    import weekly
+    sent = []
+
+    async def make():
+        return f"hafta {storage.arc_slot()}", []
+
+    async def send(text, ids):
+        sent.append(text)
+
+    async def daily(name, at, key, job, **kw):
+        await job()
+
+    monkeypatch.setattr(weekly, "make", make)
+    monkeypatch.setattr(weekly.schedule, "daily", daily)
+    run(weekly.run(send, lambda: [1, 2]))
+    assert sent == ["hafta 1", "📱 <b>2-akkaunt</b>\nhafta 2"]

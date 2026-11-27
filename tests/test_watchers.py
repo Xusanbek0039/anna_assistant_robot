@@ -82,7 +82,7 @@ def alerts(monkeypatch, fake_storage, fast_sleep):
     async def alert(text, buttons=None):
         sent.append((text, buttons))
     monkeypatch.setattr(watchers, "_alert", alert)
-    monkeypatch.setattr(watchers, "_online", {})
+    monkeypatch.setattr(watchers, "_online_by", {})
     monkeypatch.setattr(watchers, "_pending", {})
     monkeypatch.setattr(watchers, "_phone_pause_until", 0.0)
     monkeypatch.setattr(watchers, "_lock", asyncio.Lock())
@@ -240,7 +240,7 @@ def test_online_every_time_with_cooldown(alerts, fake_storage):
     run(watchers.on_status(5, online()))  # 10 daqiqa o'tmagan — takrorlanmaydi
     assert len(alerts) == 1
 
-    watchers._online[5][0]["last_fired"] -= config.WATCH_ONLINE_COOLDOWN_MINUTES * 60 + 1
+    watchers._ol()[5][0]["last_fired"] -= config.WATCH_ONLINE_COOLDOWN_MINUTES * 60 + 1
     run(watchers.on_status(5, offline()))
     run(watchers.on_status(5, online()))
     assert len(alerts) == 2 and fake_storage.d_watches[0]["active"] is True
@@ -334,7 +334,7 @@ def test_list_and_remove(alerts, fake_storage):
     assert "+998 95 446 68 86" in text and "Ali" in text and "har safar" in text
     assert [b[0] for b in buttons[0]] == ["🗑 1", "🗑 2"]
     assert run(watchers.remove(buttons[0][1][1].split(":")[2]))
-    assert 5 not in watchers._online
+    assert 5 not in watchers._ol()
     text, _ = run(watchers.list_view())
     assert "Ali" not in text
 
