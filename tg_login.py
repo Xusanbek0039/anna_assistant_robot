@@ -60,9 +60,17 @@ async def _saved_session(slot: int = 1) -> str | None:
     return (doc or {}).get("string") or None
 
 
+CONNECT_TIMEOUT = 75   # bitta sessiyani tekshirish uchun (Telethon o'zi 10 marta qayta urinadi — cheksiz kutmaymiz)
+
+
 async def _authorized(client: TelegramClient) -> bool:
     await client.connect()
     return await client.is_user_authorized()
+
+
+DUPLICATE_HELP = ("Telegram bu sessiyani bekor qildi: u bir vaqtda IKKI joydan ishlatilgan (masalan serverda va "
+                  "kompyuterda, yoki deploy paytida eski va yangi nusxa birga). Bitta nusxani qoldiring, .env/Render'da "
+                  "SINGLE_INSTANCE=true qiling va akkauntni qayta ulang (botda so'raladi).")
 
 
 async def open_client() -> TelegramClient:
@@ -80,16 +88,35 @@ async def open_client() -> TelegramClient:
     if saved:
         candidates.append(("bazadagi sessiya", lambda: create_user_client(StringSession(saved))))
 
+    if not candidates:
+        log.info("Saqlangan Telegram sessiyasi yo'q")
     for name, make in candidates:
         try:
             client = make()
         except ValueError:   # StringSession buzilgan / noto'liq nusxalangan
             log.warning("Telegram sessiyasi (%s) yaroqsiz matn — e'tiborsiz qoldirildi", name)
             continue
+        log.info("Telegram sessiyasi tekshirilyapti: %s", name)
         try:
-            if await _authorized(client):
+            if await asyncio.wait_for(_authorized(client), timeout=CONNECT_TIMEOUT):
                 log.info("Telegram sessiyasi: %s", name)
                 return client
+        except asyncio.TimeoutError:
+            log.error("Telegram %d soniyada javob bermadi (%s). Ko'pincha sabab: shu sessiya boshqa joyda ham "
+                      "ishlab turibdi (kompyuterda yoki eski nusxa) — bitta nusxani qoldiring va "
+                      "SINGLE_INSTANCE=true qiling. Keyingi sessiya sinaladi", CONNECT_TIMEOUT, name)
+            try:
+                await asyncio.wait_for(client.disconnect(), timeout=10)
+            except Exception:
+                pass
+            continue
+        except errors.AuthKeyDuplicatedError:
+            log.error("Telegram sessiyasi (%s): %s", name, DUPLICATE_HELP)
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            continue
         except sqlite3.OperationalError as e:
             if "locked" in str(e).lower():
                 sys.exit(f"[telegram] '{config.USER_SESSION}.session' boshqa jarayonda ochiq. "

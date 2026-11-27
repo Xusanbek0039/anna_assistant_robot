@@ -47,6 +47,17 @@ async def supervise(name: str, coro) -> None:
                                 "Qolgan qismlar ishlashda davom etyapti.")
 
 
+async def supervise_once(name: str, coro) -> None:
+    """Bir martalik fon vazifasi: tugashi normal; xato bo'lsa — logga, qolganlar ishlashda davom etadi."""
+    try:
+        await coro
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.exception("%s bo'lmadi", name)
+        await control_bot.alert(f"⚠️ {name} bo'lmadi: {type(e).__name__}. Asosiy akkaunt ishlayapti.")
+
+
 async def _archive_sync(user) -> None:
     """Mavjud chatlardagi yozishmalarni arxivga nusxalash (bir martalik fon vazifasi)."""
     await asyncio.sleep(20)  # avval kotiba va bot to'liq ishga tushib olsin
@@ -85,6 +96,10 @@ async def main() -> None:
     if config.SINGLE_INSTANCE:
         log.info("3/6 Nusxa qulfi olinyapti (xotira %s)", health.memory_note())
         await instance.wait_until_only()  # boshqa nusxa ishlayotgan bo'lsa, Telegram'ga ulanmasdan kutadi
+    else:
+        log.warning("3/6 SINGLE_INSTANCE=false — nusxa qulfi O'CHIQ. Deploy paytida eski va yangi nusxa (yoki "
+                    "kompyuter va server) bir vaqtda bitta Telegram sessiyasini ishlatsa, Telegram uni bloklaydi va "
+                    "bot qotib qoladi. Tavsiya: SINGLE_INSTANCE=true")
     await runtime.load()
     await channels.load()       # 📢 arxivlanadigan kanallar (/kanallar)
     await gdrive.load_token()   # botdan (/drive) qayta ulangan bo'lsa — yangi token bazada
@@ -132,7 +147,6 @@ async def main() -> None:
     instagram.setup(control_bot.alert, control_bot.send_ig_media, control_bot.ig_notify)
     # 👥 tanlangan guruhlarga kelgan xabarlar botga nusxalanadi (/guruhlar)
     groups.setup(user, control_bot.group_clone_text, control_bot.send_media)
-    await control_bot.restore_second()  # 📱 2-akkaunt (bazada sessiyasi bo'lsa) — /tglogin2
     gdrive.set_auth_hook(control_bot.drive_auth_alert)  # token o'lsa — bitta xabar + qayta ulash tugmasi
     monitor = health.Monitor(user, control_bot.alert)
     control_bot.ctx.monitor = monitor
@@ -145,6 +159,8 @@ async def main() -> None:
 
     # Online holat doim ishga tushadi: /online on|off uni botdan boshqaradi (standart — KEEP_ONLINE)
     background = [
+        # 📱 2-akkaunt fonda ulanadi — u qotib qolsa ham asosiy akkaunt va bot ishlayveradi
+        supervise_once("2-akkauntni ulash", control_bot.restore_second()),
         supervise("Online holat", keep_online(user)),
         supervise("Holat nazorati", monitor.run()),
     ]

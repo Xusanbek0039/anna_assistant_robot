@@ -198,3 +198,33 @@ def test_open_client_skips_broken_string(store, monkeypatch, tmp_path):
     monkeypatch.setattr(tg_login, "has_terminal", lambda: False)
     client = run(tg_login.open_client())      # ValueError bilan yiqilmaydi — bo'sh sessiya (bot login)
     assert isinstance(client.session, tg_login.StringSession) and client.session.auth_key is None
+
+
+def test_hanging_session_is_skipped(store, monkeypatch, tmp_path):
+    """Telegram javob bermasa — cheksiz kutilmaydi, keyingi sessiya sinaladi."""
+    import asyncio
+    store.session = "DB"
+    made = []
+
+    class Client:
+        def __init__(self, session):
+            self.session = session
+            made.append(self)
+
+        async def connect(self):
+            if self.session == ("string", "ENV"):
+                await asyncio.sleep(3600)        # qotib qolgan ulanish
+
+        async def is_user_authorized(self):
+            return True
+
+        async def disconnect(self):
+            self.closed = True
+
+    monkeypatch.setattr(tg_login, "create_user_client", Client)
+    monkeypatch.setattr(tg_login, "StringSession", lambda s=None: ("string", s))
+    monkeypatch.setattr(tg_login, "CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(config, "SESSION_STRING", "ENV")
+    monkeypatch.setattr(config, "USER_SESSION", str(tmp_path / "anna"))
+    client = run(tg_login.open_client())
+    assert client.session == ("string", "DB") and made[0].closed

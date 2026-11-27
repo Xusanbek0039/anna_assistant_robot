@@ -482,6 +482,9 @@ async def connect_second(client, slot: int = 2) -> str | None:
     return None
 
 
+SECOND_CONNECT_TIMEOUT = 90
+
+
 async def restore_second() -> None:
     """Ishga tushishda bazadagi 2-akkaunt sessiyasi bilan ulanadi (login so'ralmaydi)."""
     try:
@@ -490,8 +493,14 @@ async def restore_second() -> None:
         had = None
     if not had:
         return
+    await asyncio.sleep(5)   # avval asosiy akkaunt va bot to'liq ishga tushsin
     try:
-        client = await tg_login.connect_saved(2)
+        client = await asyncio.wait_for(tg_login.connect_saved(2), timeout=SECOND_CONNECT_TIMEOUT)
+    except asyncio.TimeoutError:
+        log.warning("2-akkauntga %d soniyada ulanib bo'lmadi", SECOND_CONNECT_TIMEOUT)
+        await alert("⚠️ 2-akkauntga ulanib bo'lmadi (Telegram javob bermadi). Asosiy akkaunt ishlayapti. "
+                    "Qayta urinish: /tglogin2")
+        return
     except Exception as e:
         log.warning("2-akkauntga ulanib bo'lmadi (%s)", type(e).__name__)
         return
