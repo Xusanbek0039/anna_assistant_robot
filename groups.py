@@ -238,7 +238,7 @@ async def clone(event) -> None:
                             reply_msg_id = await _send_media(
                                 event.chat_id, f"👥 {group} · ↩️ {rname}", rdata,
                                 userbot._media_filename(r, rlabel), kind=rlabel, username=rusername,
-                                caption=(r.message or "").strip(),
+                                caption=(r.message or "").strip(), view_once=userbot._is_view_once(r),
                                 mime=(getattr(getattr(r, "file", None), "mime_type", None) or "").lower(),
                                 attributes=getattr(getattr(r.media, "document", None), "attributes", None),
                                 link_reply=False,
@@ -258,7 +258,7 @@ async def clone(event) -> None:
             if data:
                 cap = f"{plain_quote}\n{text}".strip() if plain_quote else text
                 media_kw = dict(
-                    kind=label, username=username, caption=cap,
+                    kind=label, username=username, caption=cap, view_once=userbot._is_view_once(msg),
                     mime=(getattr(msg.file, "mime_type", None) or "").lower(),
                     attributes=getattr(getattr(msg.media, "document", None), "attributes", None),
                     link_reply=False,

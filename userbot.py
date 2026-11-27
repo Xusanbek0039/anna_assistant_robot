@@ -256,9 +256,116 @@ def _display_name(u: User) -> str:
     return " ".join(p for p in (u.first_name, u.last_name) if p) or "Nomaʼlum"
 
 
+async def _forward_second_message(event, slot: int, me_id: int, *, outgoing: bool) -> None:
+    """2-akkaunt yuborgan (yoki tanlangan kanaldan olgan) har bir xabarni — chat, guruh, kanal,
+    Saqlangan xabarlar, rasm/video va o'chib ketadigan media bilan birga — botga yuboradi."""
+    import html as _html
+    import groups as _groups
+
+    msg = event.message
+    chat_id = event.chat_id
+    try:
+        chat = await event.get_chat()
+    except Exception:
+        chat = None
+    username = getattr(chat, "username", None)
+    if chat_id == me_id:
+        dest = "🔖 Saqlangan xabarlar"
+        dest_plain = "🔖 Saqlangan xabarlar"
+        link = None
+    elif getattr(event, "is_private", False) or isinstance(chat, User):
+        cname = _display_name(chat) if isinstance(chat, User) else str(chat_id)
+        dest = f"👤 <b>{_html.escape(cname)}</b>" + (f" (@{_html.escape(username)})" if username else "")
+        dest_plain = f"👤 {cname}"
+        link = None
+    elif getattr(chat, "broadcast", False):
+        title = getattr(chat, "title", None) or str(chat_id)
+        dest = f"📢 <b>{_html.escape(title)}</b>" + (f" (@{_html.escape(username)})" if username else "")
+        dest_plain = f"📢 {title}"
+        link = f"https://t.me/{username}/{msg.id}" if username else (
+            f"https://t.me/c/{chat.id}/{msg.id}" if getattr(chat, "id", None) else None)
+    else:
+        title = getattr(chat, "title", None) or str(chat_id)
+        dest = f"👥 <b>{_html.escape(title)}</b>" + (f" (@{_html.escape(username)})" if username else "")
+        dest_plain = f"👥 {title}"
+        link = _groups.message_link(chat, msg.id) if chat is not None else None
+
+    quote = ""
+    plain_quote = ""
+    reply_msg_id = None
+    if getattr(msg, "is_reply", False):
+        try:
+            rep = await msg.get_reply_message()
+            if rep is not None:
+                rsender = await rep.get_sender()
+                rname = _display_name(rsender) if isinstance(rsender, User) else (
+                    getattr(rsender, "title", None) or "Xabar")
+                ruser = getattr(rsender, "username", None) if isinstance(rsender, User) else None
+                rlabel = _media_label(rep) if rep.media else None
+                rtext = (rep.message or "").strip() or (f"[{rlabel}]" if rlabel else "")
+                if rtext:
+                    quote = f"↩️ <i>{_html.escape(rname)}: {_html.escape(rtext[:150])}</i>\n"
+                    plain_quote = f"↩️ {rname}: {rtext[:150]}"
+                if rlabel and rlabel != "stiker" and (getattr(rep, "file", None) or getattr(rep, "photo", None)):
+                    rsize = getattr(getattr(rep, "file", None), "size", 0) or 0
+                    if rsize <= MAX_MEDIA_BYTES:
+                        rdata = await rep.download_media(file=bytes)
+                        if rdata:
+                            rvid = bool(getattr(rep, "video", None) or getattr(rep, "video_note", None))
+                            reply_msg_id = await control_bot.send_media(
+                                chat_id, f"{dest_plain} · ↩️ {rname}", rdata, _media_filename(rep, rlabel),
+                                kind=rlabel, username=ruser, caption=(rep.message or "").strip(),
+                                view_once=_is_view_once(rep),
+                                mime=(getattr(getattr(rep, "file", None), "mime_type", None) or "").lower(),
+                                attributes=getattr(getattr(rep.media, "document", None), "attributes", None),
+                                thumb=await _video_thumb(rep) if rvid else None,
+                                link_reply=False, slot=slot,
+                            )
+        except Exception:
+            log.warning("2-akkaunt javob berilgan mediasi yuborilmadi")
+
+    text = msg.message or ""
+    label = _media_label(msg)
+    view_once = _is_view_once(msg)
+    prefix = "📤 " if outgoing else "📥 "
+    if label and label != "stiker" and (getattr(msg, "file", None) or getattr(msg, "photo", None)):
+        size = getattr(getattr(msg, "file", None), "size", 0) or 0
+        if size <= MAX_MEDIA_BYTES:
+            try:
+                data = await msg.download_media(file=bytes)
+            except Exception:
+                data = None
+            if data:
+                cap = f"{plain_quote}\n{text}".strip() if plain_quote else text
+                has_video = bool(getattr(msg, "video", None) or getattr(msg, "video_note", None))
+                media_kw = dict(
+                    kind=label, username=username, caption=cap, view_once=view_once,
+                    mime=(getattr(getattr(msg, "file", None), "mime_type", None) or "").lower(),
+                    attributes=getattr(getattr(msg.media, "document", None), "attributes", None),
+                    thumb=await _video_thumb(msg) if has_video else None,
+                    link_reply=False, slot=slot,
+                )
+                if reply_msg_id is not None:
+                    media_kw["reply_to"] = reply_msg_id
+                await control_bot.send_media(
+                    chat_id, f"{prefix}{dest_plain}", data, _media_filename(msg, label), **media_kw,
+                )
+                return
+        text = (f"[{label}: {size / 1024 / 1024:.0f} MB — yuklanmadi, limit {MAX_MEDIA_MB} MB] " + text).strip()
+    elif label:
+        text = (f"[{label}] " + text).strip()
+    if not text:
+        return
+
+    head = "📤 <b>Yuborildi</b>" if outgoing else "📥 <b>Yangi xabar</b>"
+    arrow = "➡️ " if outgoing else ""
+    body = f"{head}\n{control_bot._acc_head(slot)}{arrow}{dest}\n{quote}\n💬 <i>{_html.escape(text[:3500])}</i>"
+    await control_bot.notify_activity(body, link, reply_to=reply_msg_id)
+
+
 def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
     """slot — akkaunt raqami (1 — asosiy, 2 — ikkinchi): bildirishnomalar va javoblar shu akkauntga bog'lanadi.
-    2-akkaunt o'z bazasida (tarix, Inbox, «AI jim», statistika) va o'z kotiba rejimida (Aqlli/Doim/O'chiq) ishlaydi."""
+    2-akkaunt o'z bazasida (tarix, «AI jim», statistika) va o'z kotiba rejimida (Aqlli/Doim/O'chiq) ishlaydi."""
 
     def _reg(ev):
         def deco(fn):
@@ -364,21 +471,18 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
         # Kontakt turi: oila -> AI javob bermaydi, faqat egasiga xabar
         tag = await storage.get_tag(sender.id)
         if tag == "oila":
-            await storage.upsert_inbox(chat_id, name, username, "", False, content, slot)
             await control_bot.notify(chat_id, f"👨‍👩‍👧 {name}", username, content, "", False, None, reply_to=media_msg_id, slot=slot)
             return
         kind = tag or ("tanish" if sender.contact else "notanish")
 
         if await storage.is_muted(chat_id):
             if slot != 1:   # 2-akkauntda har bir kiruvchi xabar baribir botga keladi
-                await storage.upsert_inbox(chat_id, name, username, "", False, content, slot)
                 await control_bot.notify(chat_id, name, username, content, "", False, None,
                                          reply_to=media_msg_id, slot=slot)
             return  # egasi o'zi shu chatda gaplashyapti
         status = await availability.get_status()
         if not status.reply:
             log.info("%s ga javob berilmadi: %s", chat_id, status.reason)
-            await storage.upsert_inbox(chat_id, name, username, "", False, content, slot)
             if status.notify or slot != 1:
                 await control_bot.notify(chat_id, name, username, content, "", False, None, reply_to=media_msg_id, slot=slot)
             return
@@ -426,8 +530,6 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
             if result["spam"] and kind == "notanish" and slot == 1:
                 await _stat(spam=1)
                 log.info("%s (%s) dan spam — javob berilmadi, bildirishnoma yuborilmadi", name, chat_id)
-                await storage.upsert_inbox(chat_id, name, username, "🚫 spam", False, content, slot)
-                await storage.mark_handled(chat_id)
                 return
 
             reply = result["reply"]
@@ -449,8 +551,6 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
             if result["urgent"]:
                 await _stat(urgent=1)
             notify_content = "\n".join(t for _, t in waiting) if slot != 1 and len(waiting) > 1 else content
-            await storage.upsert_inbox(chat_id, name, username, result["summary"],
-                                       result["urgent"] or calling, notify_content, slot)
             label_name = f"💼 {name}" if kind == "mijoz" else name
             if calling:
                 log.info("%s (%s) egasini chaqiryapti — botga xabar berildi", name, chat_id)
@@ -478,12 +578,28 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
         # Egasi istalgan joyga (guruh, kanal, shaxsiy) o'zi yozdi -> u faol (/auto rejimi uchun)
         await availability.mark_owner_active()
 
+        if slot != 1:
+            try:
+                await _forward_second_message(event, slot, me_id, outgoing=True)
+            except Exception:
+                log.exception("2-akkaunt yuborgan xabari botga uzatilmadi")
+
         if not event.is_private or chat_id == me_id:  # guruhlar va Saved Messages
             return
         # Egasi o'zi shu chatga yozdi -> AI shu chatda vaqtincha jim
         await storage.mute(chat_id, OWNER_TAKEOVER_MINUTES * 60)
-        await storage.mark_handled(chat_id)
         if text:
             await storage.add_history(chat_id, "assistant", f"{ai.OWNER_WROTE_PREFIX} {text}")
         log.info("Egasi %s chatiga o'zi yozdi — AI %d daqiqa jim", chat_id, OWNER_TAKEOVER_MINUTES)
+
+    if slot != 1:
+        import channels as _channels
+
+        @_reg(events.NewMessage(incoming=True, func=lambda e: not e.is_private and _channels.is_broadcast(e)
+                                and _channels.is_enabled(e.chat_id)))
+        async def on_channel_incoming(event):
+            try:
+                await _forward_second_message(event, slot, me_id, outgoing=False)
+            except Exception:
+                log.exception("2-akkaunt kanal posti botga uzatilmadi")
 

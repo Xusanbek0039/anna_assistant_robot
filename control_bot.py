@@ -118,7 +118,6 @@ HELP = (
     "/budget &lt;kategoriya|jami&gt; &lt;summa&gt; — oylik byudjet, /budget — holati\n"
     "/export [7|30|month|all] — Excel (CSV) fayl\n\n"
     "<b>Boshqa</b>\n"
-    "/inbox — javob berilmagan xabarlar\n"
     "/lichka &lt;id yoki @username&gt; — o'sha odamning lichkasiga o'tish tugmasi. "
     "Botga faqat ID raqamini (6+ xona) yuborsangiz ham bo'ladi\n"
     "/reply &lt;chat_id&gt; &lt;matn&gt; — sizning nomingizdan javob yozish\n"
@@ -131,7 +130,6 @@ HELP = (
 
 # ---------- doimiy tugmali menyu (buyruqlarni eslab qolmaslik uchun) ----------
 MENU_PANEL = "⚙️ Boshqaruv"
-MENU_INBOX = "📬 Inbox"
 MENU_ARCHIVE = "🗂 Chat arxivi"
 MENU_FIN = "💰 Moliya"
 MENU_FIND = "🔎 Qidirish"
@@ -141,13 +139,13 @@ MENU_WATCH = "🔔 Eslatmalar"
 MENU_IG = "📸 Instagram"
 MENU_GROUPS = "👥 Guruhlar"
 MENU_CHANNELS = "📢 Kanallar"
-MENU_TEXTS = {MENU_PANEL, MENU_INBOX, MENU_ARCHIVE, MENU_FIN, MENU_FIND, MENU_REPORT, MENU_HELP,
+MENU_TEXTS = {MENU_PANEL, MENU_ARCHIVE, MENU_FIN, MENU_FIND, MENU_REPORT, MENU_HELP,
               MENU_WATCH, MENU_IG, MENU_GROUPS, MENU_CHANNELS}
 
 
 def main_keyboard() -> list:
     return [
-        [Button.text(MENU_PANEL, resize=True, persistent=True), Button.text(MENU_INBOX), Button.text(MENU_WATCH)],
+        [Button.text(MENU_PANEL, resize=True, persistent=True), Button.text(MENU_WATCH)],
         [Button.text(MENU_ARCHIVE), Button.text(MENU_FIN)],
         [Button.text(MENU_FIND), Button.text(MENU_REPORT), Button.text(MENU_HELP)],
         [Button.text(MENU_IG), Button.text(MENU_GROUPS), Button.text(MENU_CHANNELS)],
@@ -370,8 +368,7 @@ def _buttons(chat_id: int, slot: int = 1):
     """slot 2 — 2-akkaunt: tugma ma'lumotiga «:2» qo'shiladi (javob o'sha akkauntdan ketadi)."""
     sfx = "" if slot == 1 else f":{slot}"
     rows = [
-        [Button.inline("✍️ Javob berish", f"reply:{chat_id}{sfx}".encode()),
-         Button.inline("✅ Ko'rildi", f"done:{chat_id}{sfx}".encode())],
+        [Button.inline("✍️ Javob berish", f"reply:{chat_id}{sfx}".encode())],
         [Button.inline("🔇 Bu chatda AI jim", f"mute:{chat_id}{sfx}".encode()),
          Button.inline("🚫 Istisnoga qo'shish", f"ignore:{chat_id}{sfx}".encode())],
     ]
@@ -402,8 +399,7 @@ def new_msg_panel() -> tuple[str, list]:
         return ("📩 «Yangi xabar» bildirishnomalari: 🟢 yoqiq",
                 [[Button.inline("🔕 O'chirish", b"newmsg:off")]])
     return ("📩 «Yangi xabar» bildirishnomalari: ⚪️ o'chiq\n"
-            "Kotiba javob berishda davom etadi; 🔴 SHOSHILINCH, 📞 chaqiruv va media baribir keladi. "
-            "Javob kutayotganlar: /inbox",
+            "Kotiba javob berishda davom etadi; 🔴 SHOSHILINCH, 📞 chaqiruv va media baribir keladi.",
             [[Button.inline("🔔 Yoqish", b"newmsg:on")]])
 
 
@@ -498,7 +494,7 @@ def allowed_panel() -> tuple[str, list]:
 
 # ---------- «Qaysi akkaunt uchun?» ----------
 PICK_TITLES = {"panel": "⚙️ Boshqaruv", "chn": "📢 Kanallar arxivi", "find": "🔎 Qidirish",
-               "grp": "👥 Guruhlar", "inbox": "📬 Inbox", "arc": "🗂 Chat arxivi", "watch": "🔔 Eslatmalar",
+               "grp": "👥 Guruhlar", "arc": "🗂 Chat arxivi", "watch": "🔔 Eslatmalar",
                "report": "📈 Hisobot"}
 _watch_view: dict[int, int] = {}   # kim qaysi akkaunt eslatmalarini ko'ryapti
 _find_slot = 1   # oxirgi qidiruv qaysi akkauntdan (natija tugmalari ham shu akkauntdan ishlaydi)
@@ -558,7 +554,7 @@ def acc_panel(slot: int = 2, first_time: bool = False) -> tuple[str, list]:
         rows.append([Button.inline(("✅ " if on else "▫️ ") + label, f"acc:t:{slot}:{key}".encode())])
     if config.DRY_RUN and runtime.get(f"acc{slot}_bio"):
         lines += ["", "ℹ️ DRY_RUN=true — bio Telegram'da o'zgarmaydi (faqat logda)."]
-    lines += ["", "Boshqa hamma bo'lim ham (🗂 Arxiv, 📬 Inbox, 🔎 Qidirish, 🔔 Eslatmalar, 👥 Guruhlar, 📢 Kanallar, "
+    lines += ["", "Boshqa hamma bo'lim ham (🗂 Arxiv, 🔎 Qidirish, 🔔 Eslatmalar, 👥 Guruhlar, 📢 Kanallar, "
               "📈 Hisobot) shu akkaunt uchun ishlaydi — bosganda «qaysi akkaunt?» deb so'raladi."]
     rows.append([Button.inline("⚙️ To'liq boshqaruv paneli", f"pick:panel:{slot}".encode())])
     rows.append([Button.inline("✔️ Tayyor", f"acc:done:{slot}".encode()),
@@ -1197,25 +1193,6 @@ async def _group_backfill(chat_id: int, title: str, slot: int = 1) -> None:
     await alert(f"👥 «{title}»: {added} ta xabar arxivga olindi. Bundan keyingi xabarlar ham yozib boriladi.")
 
 
-async def _inbox_for(event, slot: int | None) -> None:
-    """📬 Javob kutayotganlar (slot berilsa — faqat shu akkauntniki)."""
-    with storage.use_slot(slot or 1):
-        rows = await storage.pending_inbox(slot)
-    who = f" ({_acc_title(slot)})" if slot and 2 in ctx.users else ""
-    if not rows:
-        await event.respond(f"📭 Javob kutayotgan xabar yo'q{who}.")
-        return
-    for r in rows[:15]:
-        mark = "🔴 " if r["urgent"] else ""
-        s = int(r.get("slot") or 1)
-        await event.respond(
-            f"{mark}{_acc_head(s)}👤 {_who(r['name'], r['username'], r['chat_id'])}\n"
-            f"📝 {html.escape(r['summary'] or r['last_text'] or '')}",
-            parse_mode="html",
-            buttons=_buttons(r["chat_id"], s),
-        )
-
-
 async def _saved_list(slot: int, channels_only: bool = False) -> tuple[str, list]:
     """Arxivdagi kanallar (va 2-akkaunt uchun — yuklab olingan guruhlar): ochish va HTML yuklash."""
     rows, lines = [], []
@@ -1259,6 +1236,21 @@ async def _enabled_groups_view(slot: int | None) -> tuple[str, list]:
 async def group_clone_text(text: str, link: str | None, reply_to: int | None = None) -> None:
     """👥 Guruhdan nusxalangan matnli xabar (groups.py)."""
     buttons = [[Button.url("🔗 Guruhda ochish", link)]] if link else None
+    parts = split_message(text)
+    if len(parts) == 1:
+        await ctx.bot.send_message(ctx.owner_id, parts[0], parse_mode="html", buttons=buttons,
+                                   link_preview=False, reply_to=reply_to)
+        return
+    await ctx.bot.send_message(ctx.owner_id, parts[0], parse_mode="html", link_preview=False, reply_to=reply_to)
+    for part in parts[1:-1]:
+        await ctx.bot.send_message(ctx.owner_id, part, parse_mode="html", link_preview=False)
+    await ctx.bot.send_message(ctx.owner_id, parts[-1], parse_mode="html", buttons=buttons, link_preview=False)
+
+
+@_broadcast
+async def notify_activity(text: str, link: str | None = None, reply_to: int | None = None) -> None:
+    """📱 2-akkaunt yuborgan/olgan xabar (shaxsiy chat, guruh, kanal, Saqlangan xabarlar)."""
+    buttons = [[Button.url("🔗 Ochish", link)]] if link else None
     parts = split_message(text)
     if len(parts) == 1:
         await ctx.bot.send_message(ctx.owner_id, parts[0], parse_mode="html", buttons=buttons,
@@ -1437,7 +1429,6 @@ BOT_COMMANDS = [
     ("auto", "🤖 Aqlli rejim — faqat band bo'lganda javob"),
     ("on", "🟢 Kotiba doim javob beradi"),
     ("off", "⚪️ Avtojavobni o'chirish"),
-    ("inbox", "📬 Javob kutayotgan xabarlar"),
     ("report", "📈 Bugungi hisobot"),
     ("fin", "💰 Moliya paneli: kirim-chiqim hisobotlari"),
     ("today", "📒 Bugungi kirim-chiqim"),
@@ -2427,9 +2418,6 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         if choice == MENU_PANEL:
             if not await _ask_account(event, "panel"):
                 await _status(event)
-        elif choice == MENU_INBOX:
-            if not await _ask_account(event, "inbox"):
-                await _inbox(event)
         elif choice == MENU_ARCHIVE:
             if not await _ask_account(event, "arc"):
                 _arc_view[event.sender_id] = 1
@@ -2697,7 +2685,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
 
     # ---------- «Qaysi akkaunt uchun?» — 2 ta akkaunt ulangan bo'lsa ----------
-    @_on(events.CallbackQuery(pattern=rb"^pick:(panel|chn|find|grp|inbox|arc|watch|report):(\d)$", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^pick:(panel|chn|find|grp|arc|watch|report):(\d)$", func=is_owner))
     async def _pick_account(event):
         feature, slot = event.data.decode().split(":")[1], int(event.data.decode().split(":")[2])
         await event.answer()
@@ -2719,8 +2707,6 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             with storage.use_slot(slot):
                 text = await report.make_report()
             await event.respond(_acc_head(slot) + text, parse_mode="html")
-        elif feature == "inbox":
-            await _inbox_for(event, slot)
         elif feature == "arc":
             _arc_view[event.sender_id] = slot          # keyingi arxiv tugmalari shu akkaunt uchun
             with storage.use_slot(slot):
@@ -2946,8 +2932,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     @_on(events.NewMessage(pattern=r"^/status$", func=is_owner))
     async def _status(event, slot: int = 1):
         with storage.use_slot(slot):
-            extra = (f"📨 Oxirgi 24 soatda: {await storage.today_count()} ta xabar\n"
-                     f"📬 Javob kutayotganlar: {len(await storage.pending_inbox())} (/inbox)")
+            extra = f"📨 Oxirgi 24 soatda: {await storage.today_count()} ta xabar"
         await _send_panel(event, extra=extra, slot=slot)
 
     @_on(events.NewMessage(pattern=r"^/tag\s+(\S+)\s+(\S+)$", func=is_owner))
@@ -2976,11 +2961,6 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return
         await event.respond("\n".join(f"• {TAGS.get(r['tag'], r['tag'])}: {html.escape(r['label'])} "
                                       f"<code>{r['user_id']}</code>" for r in rows), parse_mode="html")
-
-    @_on(events.NewMessage(pattern=r"^/inbox$", func=is_owner))
-    async def _inbox(event):
-        if not await _ask_account(event, "inbox"):
-            await _inbox_for(event, None)
 
     @_on(events.NewMessage(pattern=r"^/reply\s+(-?\d+)\s+([\s\S]+)", func=is_owner))
     async def _reply_cmd(event):
@@ -3572,7 +3552,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         _awaiting_reply.pop("chat", None)
         await _send_as_owner(chat_id, event.text, event, slot)
 
-    @_on(events.CallbackQuery(pattern=rb"^(reply|done|mute|ignore):", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^(reply|mute|ignore):", func=is_owner))
     async def _callback(event):
         action, _, raw = event.data.decode().partition(":")
         raw_id, _, raw_slot = raw.partition(":")
@@ -3584,10 +3564,6 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
             via = f" ({slot}-akkauntdan)" if slot != 1 else ""
             await event.respond(f"✍️ <code>{chat_id}</code> ga javob matnini yozing{via}:", parse_mode="html")
-        elif action == "done":
-            with storage.use_slot(slot):
-                await storage.mark_handled(chat_id)
-            await event.answer("Ko'rildi deb belgilandi")
         elif action == "mute":
             with storage.use_slot(slot):
                 await storage.mute(chat_id, OWNER_TAKEOVER_MINUTES * 60)

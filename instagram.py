@@ -1641,7 +1641,7 @@ async def _save_ephemeral(threads: list[Thread], acc: _State | None = None) -> i
     return saved
 
 
-SENT_KINDS = ("rasm", "video")
+SENT_KINDS = ("rasm", "video", "ovozli xabar", "GIF")
 SENT_WAIT = 10 * 60          # yuborgan mediangiz fayli shuncha vaqt kutiladi (Instagram'ga yuklanib bo'lishi uchun)
 SENT_REFETCH_EVERY = 60      # fayl ko'rinmasa — chat shuncha soniyada bir to'liq qayta o'qiladi
 _sent_wait: dict[str, list[float]] = {}          # kalit -> [birinchi ko'rilgan vaqt, oxirgi qayta o'qish]
@@ -1740,7 +1740,8 @@ async def _forward_sent(threads: list[Thread], acc: _State | None = None) -> int
             ext = _ext(it.kind, mime)
             video = ({"duration": it.duration, "w": it.width, "h": it.height} if it.kind == "video" else None)
             ok = await _send_media(data, f"instagram_men_{it.item_id[-12:]}{ext}", sent_caption(th, it, acc),
-                                   video, it.kind != "video" and ext not in (".jpg", ".png"))
+                                   video, it.kind not in ("video", "rasm", "GIF", "ovozli xabar")
+                                   and ext not in (".jpg", ".png", ".mp4", ".ogg", ".m4a"))
             if ok:
                 await storage.ig_saved_add(key, meta)
                 sent += 1
@@ -1918,7 +1919,7 @@ async def _send_incoming_media(th: Thread, items: list[Item], acc: _State | None
         if sent >= 5 or it.ephemeral or not it.url or it.kind not in ("rasm", "video", "ovozli xabar", "GIF"):
             continue
         try:
-            data, mime = await _download(it.url, acc=acc or st)
+            data, mime = await _download(it.url)
         except Exception as e:
             log.info("Instagram kelgan media yuklab olinmadi (%s)", type(e).__name__)
             continue
@@ -1961,6 +1962,24 @@ async def _on_incoming(th: Thread, items: list[Item], acc: _State | None = None)
     return bool(result and result.get("reply"))
 
 
+def outgoing_notify_text(th: Thread, items: list[Item], acc: "_State | None" = None) -> str:
+    """2-Instagram akkauntdan yuborilgan matn / reels / post / storis — botga xabar."""
+    others = [(u, f) for pk, (u, f) in th.users.items() if pk != items[-1].sender_id]
+    lines = ["📤 <b>Instagram: yuborildi</b>"]
+    if acc is not None and (line := acc_line(acc)):
+        lines.append(line)
+    if th.group:
+        lines.append(f"👥 Guruh: {_esc(th.title)}")
+    elif others:
+        uname, full = others[0]
+        lines.append(f"➡️ Kimga: {who_html(full, uname)}")
+    else:
+        lines.append(f"➡️ Kimga: {_esc(th.title)}")
+    content = "\n".join(c for c in (content_of(i) for i in items) if c)
+    lines.append(f"\n💬 <i>{_esc(content[:1000])}</i>")
+    return "\n".join(lines)
+
+
 async def _process_fresh(threads: list[Thread], acc: _State | None = None) -> int:
     acc = acc or st
     replied = 0
@@ -1980,6 +1999,15 @@ async def _process_fresh(threads: list[Thread], acc: _State | None = None) -> in
                     await availability.mark_owner_active()
                 except Exception:
                     pass
+        if acc.slot == "2" and _notify:
+            # 2-Instagram: yuborilgan matn, reels/post/storis ham botga (rasm/video/ovozni _forward_sent yuboradi)
+            outgoing = [it for it in fresh if it.out and it.kind != "amal" and it.text not in ai_texts
+                        and not (it.kind in SENT_KINDS and not it.text)]
+            if outgoing:
+                try:
+                    await _notify(th.thread_id, outgoing_notify_text(th, outgoing, acc), share_of(outgoing))
+                except Exception:
+                    log.exception("2-Instagram yuborgan xabari botga uzatilmadi")
         incoming = [it for it in fresh if not it.out and it.kind != "amal"]
         if not incoming:
             continue
@@ -2013,7 +2041,7 @@ async def check_once(acc: _State | None = None) -> dict:
         res = {"threads": len(threads), "saved": 0, "replied": 0, "sent": 0}
         if runtime.get("ig_save"):
             res["saved"] = await _save_ephemeral(threads, acc)
-        if runtime.get("ig_sent"):
+        if runtime.get("ig_sent") or acc.slot == "2":
             res["sent"] = await _forward_sent(threads, acc)
         if runtime.get("ig_archive"):
             for th in threads:

@@ -192,7 +192,6 @@ python main.py
 | `/status` | Rejim va hozir nega javob beradi/bermaydi |
 | `/tag <id/@username> <oila\|mijoz\|dost\|clear>` | Kontakt turi |
 | `/tags` | Turlar ro'yxati |
-| `/inbox` | Javob kutayotganlar |
 | `/reply <chat_id> <matn>` | Sizning nomingizdan javob |
 | `/ignore <id/@username>` | Bu odamga umuman tegmaslik (xabar ham kelmaydi) |
 | `/unignore <id>`, `/ignored` | Istisnolarni boshqarish |

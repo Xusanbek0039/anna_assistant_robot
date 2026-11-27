@@ -1,4 +1,4 @@
-"""MongoDB Atlas saqlash: suhbat tarixi, inbox, sozlamalar, istisnolar va bio holati."""
+"""MongoDB Atlas saqlash: suhbat tarixi, sozlamalar, istisnolar va bio holati."""
 import asyncio
 import contextlib
 import contextvars
@@ -19,8 +19,8 @@ _db = None
 # 🗂 Chat arxivi qaysi akkauntniki: 1 — «archive», «archive_chats»; 2 — «archive2», «archive_chats2».
 # Bir odam ikkala akkauntga yozsa ham xabar raqamlari aralashib ketmaydi. Faqat shu ikki kolleksiya ajraladi.
 ARC_SLOT: contextvars.ContextVar[int] = contextvars.ContextVar("arc_slot", default=1)
-# Har bir akkauntga alohida: arxiv, AI suhbat tarixi, Inbox, «AI jim», statistika, eslatmalar
-_SLOTTED = ("archive", "archive_chats", "history", "inbox", "muted", "stats", "watches")
+# Har bir akkauntga alohida: arxiv, AI suhbat tarixi, «AI jim», statistika, eslatmalar
+_SLOTTED = ("archive", "archive_chats", "history", "muted", "stats", "watches")
 
 
 def arc_slot() -> int:
@@ -170,46 +170,6 @@ async def get_history(chat_id: int, limit: int = HISTORY_LIMIT) -> list[dict]:
     cursor = _get_db().history.find({"chat_id": chat_id}).sort("_id", DESCENDING).limit(limit)
     rows = await cursor.to_list()
     return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
-
-
-# ---------- inbox ----------
-async def upsert_inbox(chat_id, name, username, summary, urgent, last_text, slot: int = 1) -> None:
-    # Pipeline update: ko'rilmagan xabar shoshilinch bo'lsa, belgisi saqlanib qoladi
-    await _get_db().inbox.update_one(
-        {"_id": chat_id},
-        [{"$set": {
-            "chat_id": chat_id,
-            "name": name,
-            "username": username,
-            "summary": summary,
-            "last_text": last_text,
-            "slot": slot,
-            "updated": time.time(),
-            "urgent": {"$cond": [
-                {"$eq": [{"$ifNull": ["$handled", True]}, True]},
-                bool(urgent),
-                {"$or": [{"$ifNull": ["$urgent", False]}, bool(urgent)]},
-            ]},
-            "handled": False,
-        }}],
-        upsert=True,
-    )
-
-
-async def mark_handled(chat_id: int) -> None:
-    await _get_db().inbox.update_one({"_id": chat_id}, {"$set": {"handled": True, "urgent": False}})
-
-
-async def pending_inbox(slot: int | None = None) -> list[dict]:
-    """slot berilsa — faqat shu akkauntniki (1-akkaunt: eski yozuvlarda «slot» yo'q)."""
-    query: dict = {"handled": False}
-    if slot == 1:
-        query["slot"] = {"$in": [1, None]}
-    elif slot is not None:
-        query["slot"] = slot
-    cursor = _get_db().inbox.find(query).sort([("urgent", DESCENDING),
-                                                             ("updated", DESCENDING)])
-    return await cursor.to_list()
 
 
 async def today_count() -> int:

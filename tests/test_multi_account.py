@@ -164,7 +164,6 @@ def test_autoreply_off_still_notifies_second_account(monkeypatch, fake_storage):
 
     run(handlers[0](Ev()))
     assert notes == [(5, "Ali", "salom", None, 2)]
-    assert fake_storage.d_inbox[5]["slot"] == 2
 
 
 def test_second_bio_uses_its_own_backup(tmp_path, monkeypatch):
@@ -221,18 +220,6 @@ async def _false():
     return False
 
 
-def test_inbox_filtered_by_account(two, fake_storage):
-    run(fake_storage.upsert_inbox(10, "Ali", None, "", False, "salom"))
-    run(fake_storage.upsert_inbox(20, "Vali", None, "", False, "hey", 2))
-    ev = Ask()
-    run(control_bot._inbox_for(ev, 2))
-    assert len(ev.sent) == 1 and "Vali" in ev.sent[0][0] and "2-akkaunt" in ev.sent[0][0]
-    assert b"reply:20:2" in _datas(ev.sent[0][1])        # javob 2-akkauntdan ketadi
-    ev1 = Ask()
-    run(control_bot._inbox_for(ev1, 1))
-    assert len(ev1.sent) == 1 and "Ali" in ev1.sent[0][0]
-
-
 def test_groups_listed_per_account(monkeypatch):
     class D:
         def __init__(self, gid, name):
@@ -287,7 +274,7 @@ def test_second_account_archive_uses_own_collections(monkeypatch):
         db = storage._get_db()
         assert db.archive == "col:archive2" and db.archive_chats == "col:archive_chats2"
         assert db["archive"] == "col:archive2"
-        assert db.inbox == "col:inbox2" and db.history == "col:history2"   # Inbox va AI tarixi ham alohida
+        assert db.history == "col:history2" and db.muted == "col:muted2"   # AI tarixi va jim ham alohida
         assert db.settings == "col:settings" and db.contacts == "col:contacts"   # sozlamalar umumiy
     assert storage.arc_slot() == 1
 
@@ -437,3 +424,71 @@ def test_second_telegram_always_notifies_even_when_muted_or_alerts_off(two, fake
 
     run(handlers[0](Ev()))
     assert notes == [(5, "yangi xabar", 2)]
+
+
+def test_second_telegram_forwards_outgoing_everywhere_including_view_once(two, fake_storage, monkeypatch):
+    """2-akkaunt yuborgan har bir xabar (chat, guruh, kanal, o'chib ketadigan media) botga keladi; 1-akkauntda emas."""
+    import userbot
+    from telethon.tl.types import User
+
+    sent_act, sent_media = [], []
+
+    async def fake_activity(text, link=None, reply_to=None):
+        sent_act.append((text, link))
+
+    async def fake_media(*args, **kw):
+        sent_media.append((args, kw))
+        return 200
+
+    monkeypatch.setattr(control_bot, "notify_activity", fake_activity)
+    monkeypatch.setattr(control_bot, "send_media", fake_media)
+
+    h1, h2 = [], []
+
+    class U:
+        def __init__(self, sink):
+            self.sink = sink
+
+        def on(self, ev):
+            def deco(fn):
+                self.sink.append(fn)
+                return fn
+            return deco
+
+    userbot.setup(U(h1), 10, slot=1)
+    userbot.setup(U(h2), 99, slot=2)
+
+    # 1) 2-akkaunt kanalga matn yubordi -> botga keladi
+    class ChMsg:
+        message, media, file, id, is_reply = "kanalga post", None, None, 42, False
+        voice = video_note = video = sticker = document = photo = None
+
+    class ChEv:
+        chat_id, message, is_private, is_group = -100123, ChMsg(), False, False
+        async def get_chat(self):
+            return type("C", (), {"id": 123, "title": "Just", "username": None, "broadcast": True})()
+
+    run(h1[1](ChEv()))   # 1-akkaunt outgoing -> botga yuborilmaydi
+    assert not sent_act
+    run(h2[1](ChEv()))   # 2-akkaunt outgoing -> botga keladi
+    assert len(sent_act) == 1 and "Just" in sent_act[0][0] and "kanalga post" in sent_act[0][0]
+    assert sent_act[0][1] == "https://t.me/c/123/42"
+
+    # 2) 2-akkaunt shaxsiy chatga o'chib ketadigan rasm yubordi -> view_once=True bilan yuboriladi
+    class VoMsg:
+        message, id, is_reply = "qara", 43, False
+        media = type("M", (), {"ttl_seconds": 5})()
+        file = type("F", (), {"size": 500, "mime_type": "image/jpeg", "name": None, "ext": ".jpg"})()
+        photo, voice, video_note, video, sticker, document = media, None, None, None, None, None
+        async def download_media(self, file=None):
+            return b"secret-jpg"
+
+    class DmEv:
+        chat_id, message, is_private, is_group = 5, VoMsg(), True, False
+        async def get_chat(self):
+            return User(id=5, first_name="Ali", username="ali")
+
+    run(h2[1](DmEv()))
+    assert len(sent_media) == 1
+    assert sent_media[0][0][2] == b"secret-jpg" and sent_media[0][1]["view_once"] is True
+    assert sent_media[0][1]["slot"] == 2 and sent_media[0][1]["kind"] == "rasm"

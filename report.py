@@ -57,17 +57,14 @@ def build_report(stats: dict, pending: list[dict], day: datetime) -> str:
             lines.append(f"{mark}<b>{html.escape(r.get('name') or 'Nomaʼlum')}</b>: "
                          f"{html.escape(about[:120])}")
         if len(pending) > 7:
-            lines.append(f"… va yana {len(pending) - 7} ta (/inbox)")
-    elif people:
-        lines += ["", "✅ Hammasiga javob berilgan."]
+            lines.append(f"… va yana {len(pending) - 7} ta")
     return "\n".join(lines)
 
 
 async def make_report() -> str:
     tz = ZoneInfo(config.TIMEZONE)
     stats = await storage.get_stats()
-    pending = [r for r in await storage.pending_inbox() if r.get("summary") != "🚫 spam"]
-    return build_report(stats, pending, datetime.now(tz))
+    return build_report(stats, [], datetime.now(tz))
 
 
 def _parse_time(text: str) -> tuple[int, int]:

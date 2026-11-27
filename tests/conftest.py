@@ -38,7 +38,6 @@ class FakeStorage:
         self.d_muted: set[int] = set()
         self.d_mode = "on"
         self.d_owner_active = 0.0
-        self.d_inbox: dict[int, dict] = {}
         self.d_stats: dict = {}
         self.d_runtime: dict = {}
         self.d_bio: dict = {}
@@ -180,17 +179,6 @@ class FakeStorage:
 
     async def mute(self, chat_id, seconds):
         self.d_muted.add(chat_id)
-
-    async def upsert_inbox(self, chat_id, name, username, summary, urgent, last_text, slot=1):
-        self.d_inbox[chat_id] = {"chat_id": chat_id, "name": name, "username": username, "summary": summary, "slot": slot,
-                                 "urgent": urgent, "last_text": last_text, "handled": False}
-
-    async def mark_handled(self, chat_id):
-        if chat_id in self.d_inbox:
-            self.d_inbox[chat_id]["handled"] = True
-
-    async def pending_inbox(self, slot=None):
-        return [r for r in self.d_inbox.values() if not r["handled"] and (slot is None or r.get("slot", 1) == slot)]
 
     async def get_runtime(self):
         return dict(self.d_runtime)

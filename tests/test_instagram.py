@@ -1154,3 +1154,19 @@ def test_second_instagram_always_forwards_every_incoming_message(ig, monkeypatch
     instagram.st2.client, instagram.st2.username, instagram.st2.started = cl2, "ikkinchi", 1_700_000_000.0
     run(instagram.check_once(instagram.st2))
     assert len(ig.notes) == 1 and "salom 2-ig" in ig.notes[0][1] and "@ikkinchi" in ig.notes[0][1]
+
+
+def test_second_instagram_forwards_outgoing_text_only_for_slot_2(ig, monkeypatch):
+    """2-Instagramdan yuborilgan matn ham botga keladi; 1-Instagramniki emas."""
+    monkeypatch.setitem(runtime._values, "ig_forward", False)
+    monkeypatch.setitem(runtime._values, "ig_autoreply", False)
+    out1 = {**text_item("o1", "1", "1-akk yozdi", ts=NEW + 1), "is_sent_by_viewer": True}
+    out2 = {**text_item("o2", "1", "2-akk yozdi", ts=NEW + 2), "is_sent_by_viewer": True}
+    cl1 = FakeCl([thread("111", [out1])])
+    connect(cl1)
+    cl2 = FakeCl([thread("999", [out2])])
+    instagram.st2.client, instagram.st2.username, instagram.st2.started = cl2, "ikkinchi", 1_700_000_000.0
+    run(instagram.check_once(instagram.st))
+    assert not ig.notes
+    run(instagram.check_once(instagram.st2))
+    assert len(ig.notes) == 1 and "yuborildi" in ig.notes[0][1] and "2-akk yozdi" in ig.notes[0][1]
