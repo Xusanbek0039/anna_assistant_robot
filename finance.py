@@ -7,6 +7,9 @@
 AI (OpenAI) matnni tahlil qiladi; u ishlamasa — oddiy qoidalar bilan taxminiy tahlil.
 Hisobot matnlari sof funksiyalar (test qilish oson).
 """
+
+
+
 import asyncio
 import calendar
 import csv
