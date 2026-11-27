@@ -27,7 +27,6 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `finder.py` | Chatlardan aqlli qidirish: «Ali yuborgan manzilni top», «wifi parolini qidir» — matn, username, raqam, havola, rasm, fayl, lokatsiya (ism aytilmasa — barcha chatlardan) |
 | `archive.py` | Chat arxivi: barcha shaxsiy chatlar (istisnodagilar ham) saqlanadi; suhbatdosh xabar yoki butun chatni o'chirsa — bot xabar beradi va yozishmani **HTML fayl** qilib yuboradi (botda «🗂 Chat arxivi» tugmasi yoki /arxiv) |
 | `gdrive.py`, `drive_auth.py` | Chat arxivini Google Drive papkasiga HTML qilib yuklash (har chatga bitta fayl, o'zgarganda yangilanadi). Bir martalik sozlash: `python drive_auth.py` — `.env.example` dagi Google bo'limiga qarang |
-| `profiles.py` | Profil kuzatuvi: yozishgan odamlar ism, username, bio, rasmini o'zgartirsa yoki akkauntini o'chirsa — xabar; profil rasmlari tarixi Drive'ga |
 | `watchers.py` | 🔔 Eslatmalar: «95 446 68 86 raqami tg ga qo'shilsa xabar ber», «@ali online bo'lsa xabar ber» — hodisa ro'y berganda bot xabar beradi; panelda «➕ Yangi eslatma» tugmasi va Telegram cheklovi holati ko'rinadi |
 | `instagram.py` | 📸 Instagram (`/ig`): bir marta ko'riladigan rasm/videolarni ochmasdan saqlash, Direct'ga avtojavob, yozishmalar arxivi (eski tarix bilan) va Google Drive'ga HTML nusxasi, qaytarib olingan (unsend) xabarlar, chatni botda o'qish |
 | `groups.py` | 👥 Guruhlar (`/guruhlar`): akkauntingizdagi guruhlar ro'yxati — yoqilgan guruhga kelgan xabarlar (matn, rasm, video, ovozli, fayl) botga nusxalanadi |
