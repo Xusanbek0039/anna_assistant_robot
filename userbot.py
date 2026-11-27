@@ -317,16 +317,46 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
         _pending[chat_id].append((getattr(msg, "id", None), content, time.time()))
         await _stat(chat_id=chat_id, messages=1)
 
-        media_msg_id = None  # egasiga yuborilgan media — bildirishnoma shunga reply bo'ladi
+        replied_media_id = None
+        if getattr(msg, "is_reply", False):
+            try:
+                rep = await msg.get_reply_message()
+                if rep is not None:
+                    rlabel = _media_label(rep)
+                    if rlabel and rlabel != "stiker" and (getattr(rep, "file", None) or getattr(rep, "photo", None)):
+                        rsize = getattr(getattr(rep, "file", None), "size", 0) or 0
+                        if rsize <= MAX_MEDIA_BYTES:
+                            rdata = await rep.download_media(file=bytes)
+                            if rdata:
+                                rsender = await rep.get_sender()
+                                rname = _display_name(rsender) if isinstance(rsender, User) else name
+                                ruser = getattr(rsender, "username", None) if isinstance(rsender, User) else None
+                                rvid = bool(getattr(rep, "video", None) or getattr(rep, "video_note", None))
+                                replied_media_id = await control_bot.send_media(
+                                    chat_id, f"↩️ {rname}", rdata, _media_filename(rep, rlabel),
+                                    kind=rlabel, username=ruser, caption=(rep.message or "").strip(),
+                                    mime=(getattr(getattr(rep, "file", None), "mime_type", None) or "").lower(),
+                                    attributes=getattr(getattr(rep.media, "document", None), "attributes", None),
+                                    thumb=await _video_thumb(rep) if rvid else None,
+                                    link_reply=False, slot=slot,
+                                )
+            except Exception:
+                log.warning("Javob berilgan media botga yuborilmadi")
+
+        media_msg_id = replied_media_id  # egasiga yuborilgan media — bildirishnoma shunga reply bo'ladi
         if data:
             try:
                 has_video = bool(msg.video or msg.video_note)
-                media_msg_id = await control_bot.send_media(
-                    chat_id, name, data, _media_filename(msg, label),
+                media_kw = dict(
                     kind=label, username=username, view_once=view_once,
                     mime=(getattr(msg.file, "mime_type", None) or "").lower(),
                     attributes=getattr(getattr(msg.media, "document", None), "attributes", None),
                     thumb=await _video_thumb(msg) if has_video else None, slot=slot,
+                )
+                if replied_media_id is not None:
+                    media_kw["reply_to"] = replied_media_id
+                media_msg_id = await control_bot.send_media(
+                    chat_id, name, data, _media_filename(msg, label), **media_kw,
                 )
             except Exception:
                 log.exception("Media botga yuborilmadi")

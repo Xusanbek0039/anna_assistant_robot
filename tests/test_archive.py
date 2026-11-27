@@ -506,3 +506,26 @@ def test_sync_full_history_for_selected_groups_channels_and_second_account(arc, 
     with storage.use_slot(2):
         c2, a2 = run(archive.sync_existing(Tg([Dialog(usr_ent, usr_msgs, user=True)]), per_chat=2, pause=0, full=True))
     assert c2 == 1 and a2 == 5 and arc.chats[10]["full_synced"] is True
+
+
+def test_deleted_alert_sends_archived_photo(arc, monkeypatch):
+    """O'chirilgan rasm/ovoz bazada saqlangan bo'lsa — deleted_alert uni botga asl ko'rinishida yuboradi."""
+    sent_files = []
+
+    class Bot:
+        async def send_message(self, to, text, **kw):
+            return type("M", (), {"id": 55})()
+
+        async def send_file(self, to, file, **kw):
+            sent_files.append((file.read(), file.name, kw))
+            return type("M", (), {"id": 56})()
+
+    monkeypatch.setattr(control_bot.ctx, "bot", Bot(), raising=False)
+    monkeypatch.setattr(control_bot.ctx, "owner_id", 1, raising=False)
+    monkeypatch.setattr(control_bot.ctx, "main_owner", 1, raising=False)
+    arc.media["m99"] = (b"photo-bytes", "image/jpeg")
+    docs = [{"chat_id": 5, "msg_id": 2, "out": False, "sender": "Ali", "text": "qara",
+             "media": "rasm", "media_id": "m99", "date": 1.7e9}]
+    run(control_bot.deleted_alert(5, docs))
+    assert len(sent_files) == 1
+    assert sent_files[0][0] == b"photo-bytes" and sent_files[0][2]["reply_to"] == 55

@@ -353,14 +353,18 @@ def _describe(it: dict) -> tuple[str, str]:
         return "ovozli xabar", ""
     if itype == "animated_media":
         return "GIF", ""
-    if itype in ("clip", "xma_clip"):
-        return "reels", ""
-    if itype in ("media_share", "xma_media_share", "generic_xma", "xma", "felix_share"):
-        return "post", ""
+    if itype in ("clip", "xma_clip", "xma_reel_share", "reel_share_clip"):
+        return "reels", it.get("text") or ""
+    if itype in ("media_share", "xma_media_share", "generic_xma", "xma", "felix_share", "xma_post", "xma_share"):
+        return "post", it.get("text") or ""
     if itype in ("story_share", "xma_story_share"):
-        return "storis", ""
+        return "storis", it.get("text") or ""
+    if itype == "xma_link":
+        return "havola", it.get("text") or ""
+    if itype == "xma_profile":
+        return "profil", it.get("text") or ""
     if itype == "reel_share":
-        return "storisga javob", sub("reel_share").get("text") or ""
+        return "storisga javob", sub("reel_share").get("text") or it.get("text") or ""
     if itype == "action_log":
         return "amal", sub("action_log").get("description") or ""
     if itype == "placeholder":
@@ -409,15 +413,27 @@ def _gif_url(it: dict) -> str:
     return ""
 
 
-_SHARE_KEYS = ("clip", "media_share", "story_share", "felix_share", "xma_clip", "xma_media_share",
-               "xma_story_share", "generic_xma", "xma", "reel_share")
+_SHARE_KEYS = ("clip", "media_share", "story_share", "felix_share", "xma_clip", "xma_reel_share",
+               "xma_media_share", "xma_story_share", "xma_post", "xma_share", "xma_link", "xma_profile",
+               "generic_xma", "xma", "reel_share")
 _LINK_BY_KIND = {"reels": "reel", "post": "p", "storis": "p"}
+_LEGACY_LABELS = {
+    "xma_reel_share": "reels", "xma_clip": "reels", "reel_share_clip": "reels", "clip": "reels",
+    "xma_media_share": "post", "media_share": "post", "generic_xma": "post", "xma": "post",
+    "xma_post": "post", "xma_share": "post", "felix_share": "post",
+    "xma_story_share": "storis", "story_share": "storis",
+    "xma_link": "havola", "xma_profile": "profil",
+}
+
+
+def _clean_label(raw: str) -> str:
+    return _LEGACY_LABELS.get(raw or "", raw or "")
 
 
 def _find(block, *names: str):
     """Ichma-ich joylashgan lug'atlardan berilgan kalitni topadi (Instagram tuzilishi har xil bo'ladi)."""
     stack, seen = [block], 0
-    while stack and seen < 60:
+    while stack and seen < 80:
         cur = stack.pop()
         seen += 1
         if isinstance(cur, dict):
@@ -432,20 +448,22 @@ def _find(block, *names: str):
 
 def share_link(it: dict, kind: str) -> tuple[str, str]:
     """Ulashilgan post/reels/storis uchun (havola, muallif). Topilmasa ("", "")."""
-    for key in _SHARE_KEYS:
+    keys = list(_SHARE_KEYS) + [k for k in it if isinstance(k, str) and k.startswith("xma") and k not in _SHARE_KEYS]
+    fallback_author = ""
+    for key in keys:
         block = it.get(key)
         if not isinstance(block, (dict, list)) or not block:
             continue
         author = str(_find(block, "username") or "")
-        target = _find(block, "target_url", "url")
+        target = _find(block, "target_url", "cta_button_url", "url")
         if isinstance(target, str) and "instagram.com/" in target:
             return target.split("?")[0], author
         code = _find(block, "code", "shortcode")
         if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_-]{5,40}", code):
             return f"https://www.instagram.com/{_LINK_BY_KIND.get(kind, 'p')}/{code}/", author
-        if author:   # havola yo'q, lekin muallif ma'lum (masalan storis)
-            return "", author
-    return "", ""
+        if author and not fallback_author:   # havola yo'q, lekin muallif ma'lum (masalan storis)
+            fallback_author = author
+    return "", fallback_author
 
 
 def _attach_media(item: Item, it: dict) -> None:
@@ -480,13 +498,18 @@ def _attach_media(item: Item, it: dict) -> None:
     if item.kind == "GIF":
         item.url = _gif_url(it)
         return
-    for key in ("media", "clip", "media_share", "felix_share"):
-        block = it.get(key)
+    media_keys = ("media", "clip", "media_share", "felix_share", "xma_clip", "xma_reel_share",
+                  "xma_media_share", "xma_story_share", "xma", "generic_xma")
+    for key in media_keys:
+        raw_block = it.get(key)
+        block = raw_block[0] if isinstance(raw_block, list) and raw_block and isinstance(raw_block[0], dict) else raw_block
         if isinstance(block, dict):
             inner = block.get(key) if isinstance(block.get(key), dict) else block
             url, kind, w, h, dur = _from_media(inner)
             if not url and isinstance(inner.get("carousel_media"), list) and inner["carousel_media"]:
                 url, kind, w, h, dur = _from_media(inner["carousel_media"][0])   # bir nechta rasm birga
+            if not url and isinstance(inner.get("preview_url"), str) and inner["preview_url"].startswith("http"):
+                url, kind = inner["preview_url"], "rasm"
             if url:
                 item.url, item.width, item.height, item.duration = url, w, h, dur
                 if key == "media":
@@ -502,7 +525,7 @@ def parse_item(it: dict, viewer_id: str = "") -> Item | None:
     out = bool(it.get("is_sent_by_viewer")) or (bool(viewer_id) and sender == str(viewer_id))
     kind, text = _describe(it)
     item = Item(item_id, sender, out, _ts(it.get("timestamp")), kind, text, itype=str(it.get("item_type") or ""))
-    if kind in ("reels", "post", "storis", "storisga javob"):
+    if kind:
         item.share_url, item.author = share_link(it, kind)
     _attach_media(item, it)
     return item
@@ -1886,6 +1909,40 @@ async def _ai_reply(th: Thread, status, acc: _State | None = None) -> dict | Non
     return result
 
 
+async def _send_incoming_media(th: Thread, items: list[Item], acc: _State | None = None) -> None:
+    """Yangi kelgan oddiy rasm/video/ovoz/GIF larni ham asl ko'rinishida botga yuboradi."""
+    if not _send_media:
+        return
+    sent = 0
+    for it in items:
+        if sent >= 5 or it.ephemeral or not it.url or it.kind not in ("rasm", "video", "ovozli xabar", "GIF"):
+            continue
+        try:
+            data, mime = await _download(it.url, acc=acc or st)
+        except Exception as e:
+            log.info("Instagram kelgan media yuklab olinmadi (%s)", type(e).__name__)
+            continue
+        if not data:
+            continue
+        uname, full = th.person(it.sender_id)
+        ext = _ext(it.kind, mime)
+        video = ({"duration": it.duration, "w": it.width, "h": it.height} if it.kind == "video" else None)
+        lines = [f"📸 <b>Instagram</b> — {_esc(it.kind)}", f"👤 {who_html(full, uname)}"]
+        if acc is not None and (line := acc_line(acc)):
+            lines.append(line)
+        if th.group:
+            lines.append(f"👥 {_esc(th.title)}")
+        if it.text:
+            lines.append(f"\n💬 <i>{_esc(it.text[:700])}</i>")
+        try:
+            await _send_media(data, f"instagram_{it.item_id[-12:]}{ext}", "\n".join(lines), video,
+                              it.kind not in ("video", "rasm", "GIF", "ovozli xabar")
+                              and ext not in (".jpg", ".png", ".mp4", ".ogg", ".m4a"))
+            sent += 1
+        except Exception:
+            log.warning("Instagram kelgan media botga yuborilmadi")
+
+
 async def _on_incoming(th: Thread, items: list[Item], acc: _State | None = None) -> bool:
     """Yangi kelgan xabarlar: avtojavob va/yoki botga bildirishnoma. AI javob bergan bo'lsa True."""
     auto = runtime.get("ig_autoreply")
@@ -1896,8 +1953,10 @@ async def _on_incoming(th: Thread, items: list[Item], acc: _State | None = None)
         result = await _ai_reply(th, status, acc)
     want = (result is not None or runtime.get("ig_forward")
             or (auto and status.notify and not th.group))
-    if want and _notify:
-        await _notify(th.thread_id, notify_text(th, items, result, acc), share_of(items))
+    if want:
+        await _send_incoming_media(th, items, acc)
+        if _notify:
+            await _notify(th.thread_id, notify_text(th, items, result, acc), share_of(items))
     return bool(result and result.get("reply"))
 
 
@@ -2364,12 +2423,26 @@ async def chat_view(thread_id: str, page: int = 0) -> tuple[str, list]:
     lines = []
     for d in rows:
         who = "🫵 <b>Siz</b>" if d.get("out") else f"<b>{_esc(d.get('sender') or '')}</b>"
-        body = d.get("text") or ""
-        if d.get("media"):
-            icon = "🔥" if d.get("view_once") else "📎"
-            body = f"{icon} [{_esc(d['media'])}]" + (f" {_esc(body[:300])}" if body else "")
+        raw_text = d.get("text") or ""
+        label = _clean_label(d.get("media") or d.get("kind") or "")
+        if d.get("share_url"):
+            icon = _ICONS.get(label, "🔗")
+            author = f" @{_esc(d['author'])}" if d.get("author") else ""
+            u = _esc(d["share_url"])
+            body = f'{icon} {_esc(label or "havola")}{author}: <a href="{u}">{u}</a>'
+            if raw_text:
+                body += f" {_esc(raw_text[:300])}"
+        elif d.get("media"):
+            icon = "🔥" if d.get("view_once") else _ICONS.get(label, "📎")
+            if d.get("media_drive_link"):
+                u = _esc(d["media_drive_link"])
+                body = f'{icon} <a href="{u}">{_esc(label)}</a>'
+            else:
+                body = f"{icon} [{_esc(label)}]"
+            if raw_text:
+                body += f" {_esc(raw_text[:300])}"
         else:
-            body = _esc(body[:600]) or "<i>(bo'sh)</i>"
+            body = _esc(raw_text[:600]) or "<i>(bo'sh)</i>"
         tag = " 🗑 <i>qaytarib olingan</i>" if d.get("deleted") else ""
         if d.get("ai"):
             tag += " 🤖"
@@ -2380,6 +2453,45 @@ async def chat_view(thread_id: str, page: int = 0) -> tuple[str, list]:
     buttons = [nav] if nav else []
     buttons.append([("📄 HTML fayl", f"ig:html:{thread_id}"), ("💬 Chatlar", "ig:chats:0")])
     return "\n".join(head) + "\n\n" + body, buttons
+
+
+async def send_page_media(thread_id: str, page: int = 0, limit: int = 5) -> int:
+    """Ko'rilayotgan sahifadagi saqlangan rasm/video/ovozlarni botda asl ko'rinishida yuboradi."""
+    if not _send_media:
+        return 0
+    rows = await storage.ig_archive_page(thread_id, page * MSGS_PER_PAGE, MSGS_PER_PAGE)
+    rows = rows[:MSGS_PER_PAGE]
+    candidates = [d for d in rows if d.get("media_saved")][:limit]
+    if not candidates:
+        return 0
+    try:
+        blobs = await storage.ig_media_get(thread_id, [d["msg_id"] for d in candidates])
+    except Exception:
+        return 0
+    sent = 0
+    for d in reversed(candidates):   # eskidan yangiga tartibda
+        blob = blobs.get(d["msg_id"])
+        if not blob:
+            continue
+        data, mime = blob
+        kind = _clean_label(d.get("media") or d.get("kind") or "media")
+        ext = _ext(kind, mime)
+        is_vid = mime.startswith("video/") or kind == "video"
+        video = {"duration": d.get("media_dur") or 0, "w": d.get("media_w") or 0, "h": d.get("media_h") or 0} if is_vid else None
+        who = "🫵 <b>Siz</b>" if d.get("out") else f"<b>{_esc(d.get('sender') or '')}</b>"
+        cap = f"<i>{_when(d.get('date'))}</i> · {who} — {_esc(kind)}"
+        if d.get("share_url"):
+            u = _esc(d["share_url"])
+            cap += f'\n🔗 <a href="{u}">{u}</a>'
+        if d.get("text"):
+            cap += f"\n\n💬 <i>{_esc(d['text'][:700])}</i>"
+        try:
+            ok = await _send_media(data, f"ig_{d['msg_id'][-10:]}{ext}", cap, video,
+                                   not is_vid and not mime.startswith(("image/", "audio/")))
+            sent += bool(ok)
+        except Exception:
+            log.warning("Instagram sahifa mediasi yuborilmadi")
+    return sent
 
 
 _CSS = """

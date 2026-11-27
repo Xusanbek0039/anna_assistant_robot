@@ -1662,16 +1662,55 @@ def _html_buttons(chat_id: int, slot: int | None = None) -> list:
              Button.inline("🗑 Faqat o'chirilganlar", f"{p}:html:{chat_id}:d".encode())]]
 
 
+async def _send_archived_media(docs: list[dict], *, reply_to: int | None = None, limit: int = 5) -> int:
+    """Arxivda saqlangan rasm/ovoz/video/GIF larni asl ko'rinishida botga yuboradi."""
+    with_id = [d for d in docs if d.get("media_id")][:limit]
+    if not with_id or not hasattr(ctx.bot, "send_file"):
+        return 0
+    try:
+        blobs = await storage.archive_media_get([d["media_id"] for d in with_id])
+    except Exception:
+        return 0
+    ext_by = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+              "audio/ogg": ".ogg", "audio/mp4": ".m4a", "audio/mpeg": ".mp3", "video/mp4": ".mp4", "video/webm": ".webm"}
+    sent = 0
+    for d in with_id:
+        blob = blobs.get(d["media_id"])
+        if not blob:
+            continue
+        data, mime = blob
+        kind = d.get("media") or "media"
+        fname = d.get("file_name") or f"media_{d.get('msg_id', 0)}{ext_by.get(mime, '.bin')}"
+        who = "🫵 <b>Siz</b>" if d.get("out") else f"<b>{html.escape(d.get('sender') or 'Suhbatdosh')}</b>"
+        cap = f"<i>{_when(d.get('date'))}</i> · {who} — {html.escape(kind)}"
+        if d.get("text"):
+            cap += f"\n\n💬 <i>{html.escape(d['text'][:700])}</i>"
+        f = io.BytesIO(data)
+        f.name = fname
+        is_round = kind == "video-xabar"
+        try:
+            await ctx.bot.send_file(
+                ctx.owner_id, f, caption=None if is_round else cap, parse_mode="html",
+                voice_note=kind == "ovozli xabar", video_note=is_round,
+                supports_streaming=kind in ("video", "video-xabar"), reply_to=reply_to,
+            )
+            sent += 1
+        except Exception:
+            log.warning("Arxivdagi media botga yuborilmadi")
+    return sent
+
+
 @_broadcast
 async def deleted_alert(chat_id: int, docs: list[dict]) -> None:
-    """Arxivdagi xabarlar o'chirildi — egasiga nechta/nima o'chganini va yuklab olish tugmalarini yuboradi."""
+    """Arxivdagi xabarlar o'chirildi — egasiga nechta/nima o'chganini, o'chgan media va yuklab olish tugmalarini yuboradi."""
     info = await storage.archive_chat(chat_id) or {}
     theirs = sum(1 for d in docs if not d.get("out"))
     mine = len(docs) - theirs
     head = "🗑 <b>Yozishma o'chirildi</b>" if len(docs) >= 10 else "🗑 <b>Xabar o'chirildi</b>"
     lines = [head, f"👤 {_who(archive.chat_label({'chat_id': chat_id, **info}), info.get('username'), chat_id)}",
              f"{len(docs)} ta xabar (uniki: {theirs}, sizniki: {mine})", ""]
-    for d in docs[-ARCHIVE_PREVIEW:]:
+    preview = docs[-ARCHIVE_PREVIEW:]
+    for d in preview:
         body = (d.get("text") or "").strip() or f"[{d.get('media') or 'xabar'}]"
         if d.get("media") and d.get("text"):
             body = f"[{d['media']}] {body}"
@@ -1688,6 +1727,7 @@ async def deleted_alert(chat_id: int, docs: list[dict]) -> None:
     except Exception:
         log.exception("O'chirish haqida ogohlantirish yuborilmadi")
         return
+    await _send_archived_media(preview, reply_to=getattr(msg, "id", None))
     if not gdrive.enabled():
         return
     try:  # Drive'dagi nusxani darhol yangilab, havolasini tugma qilib qo'shamiz
@@ -1798,10 +1838,48 @@ async def _archive_chat_view(chat_id: int) -> tuple[str, list]:
             f"💾 Arxivda: {info.get('count', 0)} ta xabar · 🗑 o'chirilgan: {info.get('deleted', 0)}\n"
             f"Oxirgi xabar: {_when(info.get('last')) or '—'}\n\n"
             "«Butun yozishma» ga Telegram'da hali turgan xabarlar ham qo'shiladi.")
-    buttons = _html_buttons(chat_id) + _summary_buttons(chat_id)
+    buttons = [[Button.inline("💬 Oxirgi xabarlar", f"arc:view:{chat_id}:0".encode())]] \
+        + _html_buttons(chat_id) + _summary_buttons(chat_id)
     if info.get("drive_link"):
         buttons.append([Button.url("☁️ Google Drive'da ochish", info["drive_link"])])
     return text, buttons + [[Button.inline("⬅️ Chatlar", b"arc:list:0")]]
+
+
+ARC_VIEW_PAGE = 15
+
+
+async def _archive_messages_view(chat_id: int, page: int = 0) -> tuple[str, list, list[dict]]:
+    """Telegram chat yozishmasini botda o'qish (yangidan eskiga) + sahifadagi media yozuvlari."""
+    info = await storage.archive_chat(chat_id) or {"chat_id": chat_id}
+    docs = await storage.archive_messages(chat_id, limit=(page + 1) * ARC_VIEW_PAGE + 1)
+    newest = list(reversed(docs))
+    chunk = newest[page * ARC_VIEW_PAGE:(page + 1) * ARC_VIEW_PAGE]
+    more = len(newest) > (page + 1) * ARC_VIEW_PAGE
+    total = info.get("count") or len(newest)
+    head = [f"💬 {_who(archive.chat_label({'chat_id': chat_id, **info}), info.get('username'), chat_id)}",
+            f"{total} ta xabar · {page * ARC_VIEW_PAGE + 1}–{page * ARC_VIEW_PAGE + len(chunk)} (yangidan eskiga)"]
+    if info.get("drive_link"):
+        head.append(f'☁️ <a href="{html.escape(info["drive_link"])}">Google Drive\'dagi nusxasi</a>')
+    lines = []
+    for d in chunk:
+        who = "🫵 <b>Siz</b>" if d.get("out") else f"<b>{html.escape(d.get('sender') or archive.chat_label({'chat_id': chat_id, **info}))}</b>"
+        raw = (d.get("text") or "").strip()
+        if d.get("media"):
+            link = d.get("drive_media_link")
+            m = f'<a href="{html.escape(link)}">📎 {html.escape(d["media"])}</a>' if link else f"📎 [{html.escape(d['media'])}]"
+            body = f"{m} {html.escape(raw[:300])}" if raw else m
+        else:
+            body = html.escape(raw[:600]) or "<i>(bo'sh)</i>"
+        tag = " 🗑 <i>o'chirilgan</i>" if d.get("deleted") else ""
+        lines.append(f"<i>{_when(d.get('date'))}</i> · {who}: {body}{tag}")
+    body = "\n\n".join(lines) if lines else "<i>Bu chatda hali arxivlangan xabar yo'q.</i>"
+    nav = []
+    if page > 0:
+        nav.append(Button.inline("◀️ Yangiroq", f"arc:view:{chat_id}:{page - 1}".encode()))
+    if more:
+        nav.append(Button.inline("▶️ Eskiroq", f"arc:view:{chat_id}:{page + 1}".encode()))
+    buttons = ([nav] if nav else []) + [[Button.inline("⬅️ Chat", f"arc:chat:{chat_id}".encode())]]
+    return "\n".join(head) + "\n\n" + body, buttons, chunk
 
 
 GONE_PAGE = 15
@@ -2523,6 +2601,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
             text, rows = await instagram.chat_view(arg, page)
             await _edit_or_send(event, text, rows)
+            await instagram.send_page_media(arg, page)
         elif action == "dl":
             share = _ig_shares.get(arg)
             links = instagram.parse_media_links(share) if share else []
@@ -2808,6 +2887,15 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             text, buttons = await _archive_list(int(arg or 0), action == "dlist")
         elif action == "chat":
             text, buttons = await _archive_chat_view(int(arg))
+        elif action == "view" and arg:
+            page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+            text, buttons, chunk = await _archive_messages_view(int(arg), page)
+            try:
+                await event.edit(text, parse_mode="html", buttons=buttons, link_preview=False)
+            except Exception:
+                await event.respond(text, parse_mode="html", buttons=buttons, link_preview=False)
+            await _send_archived_media(list(reversed(chunk)))
+            return
         elif action == "gone":
             text, buttons = await _gone_list(int(arg or 0))
         else:

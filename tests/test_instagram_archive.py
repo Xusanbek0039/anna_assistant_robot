@@ -400,3 +400,46 @@ def test_backfill_loop_waits_briefly_until_connected(ig, monkeypatch):
 def test_backfill_loop_off_when_sync_disabled(ig, monkeypatch):
     monkeypatch.setattr(config, "IG_SYNC_LIMIT", 0)
     run(instagram.backfill_loop(None))      # darhol tugaydi, hech narsa qilmaydi
+
+
+def test_xma_reel_share_and_chat_view_links_and_media(ig, monkeypatch):
+    """xma_reel_share -> reels + havola + matn; chat_view havolani ko'rsatadi; send_page_media rasm yuboradi."""
+    raw = {
+        "item_id": "r1", "user_id": "2", "timestamp": NEW, "item_type": "xma_reel_share",
+        "text": "Assalomu aleykum",
+        "xma_reel_share": [{"target_url": "https://www.instagram.com/reel/AbCdEf123/?igsh=1",
+                            "username": "author_x"}],
+    }
+    parsed = instagram.parse_item(raw)
+    assert parsed.kind == "reels" and parsed.text == "Assalomu aleykum"
+    assert parsed.share_url == "https://www.instagram.com/reel/AbCdEf123/"
+    assert parsed.author == "author_x"
+
+    docs = [
+        {"thread_id": "t1", "msg_id": "m1", "date": NEW / 1e6 + 2, "out": False, "sender": "Raxa",
+         "kind": "post", "media": "post", "text": "", "share_url": "https://www.instagram.com/p/DgIS3ZusuyM/",
+         "view_once": False, "ai": False},
+        {"thread_id": "t1", "msg_id": "m2", "date": NEW / 1e6 + 1, "out": True, "sender": "Siz",
+         "kind": "xma_reel_share", "media": "xma_reel_share", "text": "Salom", "view_once": False, "ai": False},
+        {"thread_id": "t1", "msg_id": "m3", "date": NEW / 1e6, "out": False, "sender": "Raxa",
+         "kind": "rasm", "media": "rasm", "media_saved": True, "text": "mana", "view_once": False, "ai": False},
+    ]
+    run(storage.ig_archive_add_many(docs))
+    run(storage.ig_chat_touch("t1", "Raxa", ["raxa"], False, NEW / 1e6 + 2, 3))
+    text, _ = run(instagram.chat_view("t1", 0))
+    assert "https://www.instagram.com/p/DgIS3ZusuyM/" in text
+    assert "xma_reel_share" not in text and "[reels]" in text
+
+    sent = []
+
+    async def fake_media_get(tid, mids):
+        return {"m3": (b"jpgdata", "image/jpeg")}
+
+    async def fake_send_media(data, fname, cap, video=None, as_file=False):
+        sent.append((data, fname, cap))
+        return True
+
+    monkeypatch.setattr(storage, "ig_media_get", fake_media_get, raising=False)
+    monkeypatch.setattr(instagram, "_send_media", fake_send_media)
+    assert run(instagram.send_page_media("t1", 0)) == 1
+    assert sent[0][0] == b"jpgdata" and "mana" in sent[0][2]
