@@ -101,11 +101,49 @@ def test_invalid_token_exits_immediately_without_wiping(bot_env):
     assert os.path.exists(session_file())
 
 
-def test_flood_wait_exits_with_seconds(bot_env):
+def test_flood_wait_waits_and_retries_instead_of_exiting(bot_env, monkeypatch):
+    """FloodWait — dastur to'xtamaydi (to'xtasa server qayta ishga tushirib cheklovni uzaytirardi): kutib,
+    qayta ulanadi va egasiga xabar beradi."""
+    slept, told = [], []
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(sec, *a):
+        slept.append(sec)
+        await real_sleep(0)
+
+    async def notify(text):
+        told.append(text)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     bot_env.next_behaviour = "flood"
-    with pytest.raises(SystemExit) as e:
-        run(tg_client.start_bot())
-    assert "cheklovi" in str(e.value)
+    bot, me = run(tg_client.start_bot(notify=notify))
+    assert me.username == "AnnaBot" and len(bot_env.created) == 2
+    assert slept and "kutyapman" in told[0]
+
+
+def test_saved_session_from_db_is_reused(bot_env, monkeypatch):
+    """Render qayta ishga tushganda fayl yo'qoladi — bazadagi sessiya bilan qayta login qilinmaydi."""
+    import storage
+    saved = {}
+
+    async def get():
+        return {"string": "SAVED", "bot_id": "1"} if saved.get("ok") else None
+
+    async def set_(string, bot_id):
+        saved.update(ok=True, bot_id=bot_id)
+
+    async def delete():
+        saved.clear()
+
+    monkeypatch.setattr(storage, "bot_get_session", get, raising=False)
+    monkeypatch.setattr(storage, "bot_set_session", set_, raising=False)
+    monkeypatch.setattr(storage, "bot_delete_session", delete, raising=False)
+    monkeypatch.setattr(tg_client, "StringSession", type("SS", (), {
+        "__init__": lambda self, s=None: setattr(self, "s", s), "save": staticmethod(lambda sess: "STR")}))
+    run(tg_client.start_bot())
+    assert saved == {"ok": True, "bot_id": "1"}           # birinchi ulanishdan keyin bazaga yozildi
+    run(tg_client.start_bot())
+    assert getattr(bot_env.created[-1].session, "s", None) == "SAVED"   # ikkinchi safar — bazadagi sessiya
 
 
 def test_get_me_returning_none_is_treated_as_bad_session(bot_env):

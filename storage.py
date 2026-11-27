@@ -831,6 +831,21 @@ async def drive_set_token(token: str) -> None:
                                         {"$set": {"refresh_token": token, "ts": time.time()}}, upsert=True)
 
 
+# ---------- 🤖 nazorat boti sessiyasi (qayta ishga tushganda qayta login — FloodWait bo'lmasin) ----------
+async def bot_get_session() -> dict | None:
+    return await _get_db().settings.find_one({"_id": "bot_session"})
+
+
+async def bot_set_session(string: str, bot_id: str) -> None:
+    await _get_db().settings.update_one({"_id": "bot_session"},
+                                        {"$set": {"string": string, "bot_id": bot_id, "ts": time.time()}},
+                                        upsert=True)
+
+
+async def bot_delete_session() -> None:
+    await _get_db().settings.delete_one({"_id": "bot_session"})
+
+
 # ---------- 📸 Instagram (instagram.py) ----------
 def _ig_session_id(slot: str = "1") -> str:
     """1-akkaunt — «session» (eski yozuv o'zgarmaydi), 2-akkaunt — «session2»."""

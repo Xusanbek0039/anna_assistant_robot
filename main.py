@@ -133,7 +133,11 @@ async def main() -> None:
 
     if bot is None:
         log.info("5/6 Nazorat botiga ulanyapti (BOT_TOKEN) (xotira %s)", health.memory_note())
-        bot, bot_me = await start_bot()
+
+        async def _tell_owner(text: str) -> None:   # bot hali yo'q — «Saqlangan xabarlar»ga yoziladi
+            await user.send_message("me", text)
+
+        bot, bot_me = await start_bot(notify=_tell_owner)
     log.info("Nazorat boti: @%s — botga /start bosishni unutmang", bot_me.username)
 
     control_bot.setup(bot, user, owner_id=me.id)

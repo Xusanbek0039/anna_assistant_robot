@@ -152,30 +152,96 @@ def _wipe_bot_session() -> bool:
     return removed
 
 
-async def start_bot() -> tuple[TelegramClient, object]:
+BOT_FLOOD_MAX_WAIT = 6 * 3600   # Telegram bundan uzoq kuting desa — baribir kutamiz, lekin logda ogohlantiramiz
+
+
+def _bot_id() -> str:
+    """Token boshidagi bot raqami — saqlangan sessiya shu tokenga tegishli ekanini tekshirish uchun."""
+    return (config.BOT_TOKEN or "").split(":", 1)[0]
+
+
+async def _saved_bot_session() -> str | None:
+    """MongoDB'dagi bot sessiyasi (Render qayta ishga tushganda fayl yo'qoladi — qayta login FloodWait beradi)."""
+    try:
+        import storage
+        doc = await storage.bot_get_session()
+    except Exception as e:
+        log.info("Bot sessiyasi bazadan o'qilmadi (%s)", type(e).__name__)
+        return None
+    if doc and doc.get("bot_id") == _bot_id() and doc.get("string"):
+        return doc["string"]
+    return None
+
+
+async def _save_bot_session(bot: TelegramClient) -> None:
+    try:
+        import storage
+        await storage.bot_set_session(StringSession.save(bot.session), _bot_id())
+    except Exception as e:
+        log.info("Bot sessiyasi bazaga saqlanmadi (%s)", type(e).__name__)
+
+
+async def _forget_bot_session() -> None:
+    try:
+        import storage
+        await storage.bot_delete_session()
+    except Exception:
+        pass
+
+
+async def start_bot(notify=None) -> tuple[TelegramClient, object]:
     """Nazorat botini tokendan ulaydi va (bot, bot_me) qaytaradi.
 
-    Sessiya fayli eskirgan bo'lsa (masalan BOT_TOKEN @BotFather'da bekor qilinib yangilangan), Telethon
-    ulanishni kutib QOTIB qolishi mumkin — logda hech narsa chiqmaydi va server dasturni qayta ishga
-    tushiradi. Shuning uchun kutish vaqti cheklangan: birinchi urinish o'tmasa, sessiya fayli tozalanib
-    bitta qayta urinish qilinadi.
+    - Sessiya MongoDB'da saqlanadi: server qayta ishga tushganda bot qayta «login» qilmaydi. Har safar login
+      qilinsa, Telegram «N soniya kuting» (FloodWait) deydi va bot umuman ishlamay qoladi.
+    - FloodWait bo'lsa — dastur TO'XTAMAYDI (to'xtasa server qayta ishga tushirib, cheklovni uzaytirardi):
+      kerakli vaqt kutiladi va qayta uriniladi. notify(matn) — egasiga xabar (userbot orqali).
+    - Sessiya eskirgan bo'lsa (BOT_TOKEN @BotFather'da yangilangan), Telethon ulanishni kutib QOTIB qolishi
+      mumkin — kutish vaqti cheklangan: birinchi urinish o'tmasa, sessiya tozalanib bitta qayta urinish qilinadi.
     """
     import asyncio
 
     last: Exception | None = None
-    for attempt in (1, 2):
-        bot = TelegramClient(config.BOT_SESSION, config.API_ID, config.API_HASH)
+    attempt = 0
+    use_saved = True
+    while attempt < 2:
+        attempt += 1
+        saved = await _saved_bot_session() if use_saved else None
+        session = StringSession(saved) if saved else config.BOT_SESSION
+        bot = TelegramClient(session, config.API_ID, config.API_HASH)
         try:
             await asyncio.wait_for(bot.start(bot_token=config.BOT_TOKEN), timeout=BOT_CONNECT_TIMEOUT)
             me = await asyncio.wait_for(bot.get_me(), timeout=BOT_ME_TIMEOUT)
             if me is None:
                 raise RuntimeError("bot o'zini tanimadi (sessiya yaroqsiz)")
+            await _save_bot_session(bot)
+            if saved:
+                log.info("Nazorat boti saqlangan sessiya bilan ulandi (qayta login shart bo'lmadi)")
             return bot, me
         except (errors.AccessTokenInvalidError, errors.AccessTokenExpiredError):
+            await _forget_bot_session()
             sys.exit("[telegram] BOT_TOKEN noto'g'ri yoki bekor qilingan. @BotFather -> /mybots -> "
                      "<botingiz> -> API Token dan yangisini oling va .env (serverda: Environment) ga qo'ying.")
         except errors.FloodWaitError as e:
-            sys.exit(f"[telegram] Bot uchun Telegram cheklovi: {e.seconds} soniya kutish kerak.")
+            try:
+                await bot.disconnect()
+            except Exception:
+                pass
+            wait = int(getattr(e, "seconds", 0) or 0) + 5
+            if wait > BOT_FLOOD_MAX_WAIT:
+                log.warning("Telegram juda uzoq kutishni so'radi (%d s)", wait)
+            log.warning("Bot uchun Telegram cheklovi: %d soniya (~%d daqiqa) kutaman, keyin o'zim qayta "
+                        "ulanaman. Dasturni qayta ishga tushirmang — har qayta urinish cheklovni uzaytiradi.",
+                        wait, wait // 60 + 1)
+            if notify:
+                try:
+                    await notify(f"⏳ Anna: nazorat boti uchun Telegram cheklovi — {wait // 60 + 1} daqiqa kutyapman, "
+                                 "keyin bot o'zi ishga tushadi. Serverni qayta ishga tushirmang (cheklov uzayadi).")
+                except Exception:
+                    pass
+            await asyncio.sleep(wait)
+            attempt -= 1          # cheklov — urinish hisoblanmaydi
+            continue
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -187,9 +253,10 @@ async def start_bot() -> tuple[TelegramClient, object]:
             except Exception:
                 pass
             if attempt == 1:
-                log.warning("Nazorat botiga ulanib bo'lmadi (%s) — sessiya fayli tozalanib qayta urinaman",
-                            reason)
+                log.warning("Nazorat botiga ulanib bo'lmadi (%s) — sessiya tozalanib qayta urinaman", reason)
                 _wipe_bot_session()
+                await _forget_bot_session()
+                use_saved = False
                 continue
             sys.exit(f"[telegram] Nazorat botiga ulanib bo'lmadi ({reason}). BOT_TOKEN to'g'riligini va "
                      "serverning internet aloqasini tekshiring.")
