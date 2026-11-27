@@ -26,7 +26,7 @@ def store(monkeypatch):
     for name in ("group_clone_list", "group_clone_add", "group_clone_remove"):
         monkeypatch.setattr(storage, name, getattr(st, name), raising=False)
     monkeypatch.setattr(groups, "_enabled", {})
-    monkeypatch.setattr(groups, "_cache", (0.0, []))
+    monkeypatch.setattr(groups, "_cache", {})
     return st
 
 

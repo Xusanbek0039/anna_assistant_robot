@@ -27,7 +27,7 @@ SEND_GAP = 0.7               # bot xabarlari orasidagi pauza (Telegram cheklovid
 MAX_MEDIA_BYTES = config.MAX_MEDIA_MB * 1024 * 1024
 
 _enabled: dict[int, str] = {}        # chat_id -> guruh nomi
-_cache: tuple[float, list[dict]] = (0.0, [])
+_cache: dict = {}   # akkaunt (None — hammasi) -> (vaqt, guruhlar)
 _queue: asyncio.Queue | None = None
 _dropped = 0
 _send_text = None
@@ -77,16 +77,15 @@ async def toggle(chat_id: int, title: str = "") -> bool:
     return True
 
 
-async def my_groups(refresh: bool = False) -> list[dict]:
+async def my_groups(refresh: bool = False, only: int | None = None) -> list[dict]:
     """Akkaunt(lar)ingiz a'zo bo'lgan guruhlar (kanallarsiz): [{"id", "title", "username", "slots"}].
-    Faqat 2-akkauntdagi guruh nomi yonida «· 2-akk» turadi."""
-    global _cache
-    ts, cached = _cache
+    only — faqat shu akkaunt guruhlari. Hammasi bo'lsa, faqat 2-akkauntdagi guruh nomi yonida «· 2-akk»."""
+    ts, cached = _cache.get(only, (0.0, []))
     if cached and not refresh and time.time() - ts < CACHE_SECONDS:
         return cached
     groups: dict[int, dict] = {}
     for slot, client in sorted(_clients.items()):
-        if not slot_enabled(slot):
+        if (only is not None and slot != only) or (only is None and not slot_enabled(slot)):
             continue
         try:
             async for d in client.iter_dialogs():
@@ -99,24 +98,28 @@ async def my_groups(refresh: bool = False) -> list[dict]:
                                     "username": getattr(d.entity, "username", None)}
         except Exception as e:
             log.warning("%d-akkaunt guruhlari olinmadi (%s)", slot, type(e).__name__)
-    for g in groups.values():
-        if 1 not in g["slots"] and len(_clients) > 1:
-            g["title"] += f" · {g['slots'][0]}-akk"
+    if only is None:
+        for g in groups.values():
+            if 1 not in g["slots"] and len(_clients) > 1:
+                g["title"] += f" · {g['slots'][0]}-akk"
     result = list(groups.values())
-    _cache = (time.time(), result)
+    _cache[only] = (time.time(), result)
     return result
 
 
-def panel(groups: list[dict], page: int = 0) -> tuple[str, list]:
-    """Matn va tugmalar ([[(matn, data)]]) — control_bot._inline formatida."""
+def panel(groups: list[dict], page: int = 0, slot: int | None = None, acc_name: str = "") -> tuple[str, list]:
+    """Matn va tugmalar ([[(matn, data)]]) — control_bot._inline formatida. slot — qaysi akkaunt guruhlari."""
+    sfx = f":{slot}" if slot else ""
     # Yoqilganlar tepada, qolganlari Telegram'dagi tartibda
     ordered = [g for g in groups if g["id"] in _enabled] + [g for g in groups if g["id"] not in _enabled]
     pages = max(1, -(-len(ordered) // PER_PAGE))
     page = min(max(0, page), pages - 1)
     chunk = ordered[page * PER_PAGE:(page + 1) * PER_PAGE]
     lines = [
-        "👥 <b>Guruhlar — xabarlarni klonlash</b>", "",
-        f"Akkauntingizda {len(groups)} ta guruh, klonlanyapti: <b>{len(_enabled)}</b> ta.",
+        "👥 <b>Guruhlar — xabarlarni klonlash</b>" + (f" — {slot}-akkaunt {acc_name}".rstrip() if slot else ""),
+        "",
+        f"Akkauntingizda {len(groups)} ta guruh, klonlanyapti: "
+        f"<b>{sum(1 for g in groups if g['id'] in _enabled)}</b> ta.",
         "Guruhni bosib yoqing — o'sha guruhga yangi xabar kelsa, bot uni sizga nusxalab yuboradi "
         "(matn, rasm, video, ovozli xabar, fayl).",
     ]
@@ -128,15 +131,15 @@ def panel(groups: list[dict], page: int = 0) -> tuple[str, list]:
     for g in chunk:
         on = g["id"] in _enabled
         title = g["title"] if len(g["title"]) <= 40 else g["title"][:39] + "…"
-        rows.append([(("✅ " if on else "▫️ ") + title, f"grp:t:{g['id']}:{page}")])
+        rows.append([(("✅ " if on else "▫️ ") + title, f"grp:t:{g['id']}:{page}{sfx}")])
     nav = []
     if page > 0:
-        nav.append(("⬅️", f"grp:p:{page - 1}"))
+        nav.append(("⬅️", f"grp:p:{page - 1}{sfx}"))
     if page < pages - 1:
-        nav.append(("➡️", f"grp:p:{page + 1}"))
+        nav.append(("➡️", f"grp:p:{page + 1}{sfx}"))
     if nav:
         rows.append(nav)
-    rows.append([("🔄 Yangilash", f"grp:r:{page}")])
+    rows.append([("🗂 Yoqilganlar — o'qish/yuklash", f"grp:on:0{sfx}"), ("🔄 Yangilash", f"grp:r:{page}{sfx}")])
     return "\n".join(lines), rows
 
 
@@ -146,15 +149,13 @@ def slot_enabled(slot: int) -> bool:
 
 
 def reset_cache() -> None:
-    global _cache
-    _cache = (0.0, [])
+    _cache.clear()
 
 
 def forget_client(slot: int) -> None:
     """Akkauntdan chiqilganda — uning guruhlari ro'yxatdan olib tashlanadi."""
-    global _cache
     _clients.pop(slot, None)
-    _cache = (0.0, [])
+    _cache.clear()
 
 
 def message_link(chat, msg_id: int) -> str | None:
@@ -178,10 +179,10 @@ def _sender_name(sender) -> tuple[str, str | None]:
 def setup(user: TelegramClient, send_text, send_media, slot: int = 1) -> None:
     """send_text(text_html, link) va send_media(...) — control_bot'dagi yuboruvchilar.
     Har bir akkaunt uchun alohida chaqiriladi (slot 1, 2)."""
-    global _send_text, _send_media, _cache
+    global _send_text, _send_media
     _send_text, _send_media = send_text, send_media
     _clients[slot] = user
-    _cache = (0.0, [])
+    _cache.clear()
 
     @user.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and e.chat_id in _enabled))
     async def _on_group_message(event):

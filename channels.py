@@ -104,5 +104,6 @@ def panel(channels: list[dict], page: int = 0, archive_on: bool = True, slot: in
         nav.append(("➡️", f"chn:p:{page + 1}{sfx}"))
     if nav:
         rows.append(nav)
+    rows.append([("🗂 Arxivdagi kanallar — o'qish/yuklash", f"chn:saved{sfx}")])
     rows.append([("🔄 Yangilash", f"chn:r:{page}{sfx}"), ("⬅️ Arxiv", "arc:panel")])
     return "\n".join(lines), rows

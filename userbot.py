@@ -324,7 +324,7 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
         # Kontakt turi: oila -> AI javob bermaydi, faqat egasiga xabar
         tag = await storage.get_tag(sender.id)
         if tag == "oila":
-            await storage.upsert_inbox(chat_id, name, username, "", False, content)
+            await storage.upsert_inbox(chat_id, name, username, "", False, content, slot)
             await control_bot.notify(chat_id, f"👨‍👩‍👧 {name}", username, content, "", False, None, reply_to=media_msg_id, slot=slot)
             return
         kind = tag or ("tanish" if sender.contact else "notanish")
@@ -334,7 +334,7 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
         status = await availability.get_status()
         if not status.reply:
             log.info("%s ga javob berilmadi: %s", chat_id, status.reason)
-            await storage.upsert_inbox(chat_id, name, username, "", False, content)
+            await storage.upsert_inbox(chat_id, name, username, "", False, content, slot)
             if status.notify:
                 await control_bot.notify(chat_id, name, username, content, "", False, None, reply_to=media_msg_id, slot=slot)
             return
@@ -382,7 +382,7 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
             if result["spam"] and kind == "notanish":
                 await _stat(spam=1)
                 log.info("%s (%s) dan spam — javob berilmadi, bildirishnoma yuborilmadi", name, chat_id)
-                await storage.upsert_inbox(chat_id, name, username, "🚫 spam", False, content)
+                await storage.upsert_inbox(chat_id, name, username, "🚫 spam", False, content, slot)
                 await storage.mark_handled(chat_id)
                 return
 
@@ -405,7 +405,7 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
             if result["urgent"]:
                 await _stat(urgent=1)
             await storage.upsert_inbox(chat_id, name, username, result["summary"],
-                                       result["urgent"] or calling, content)
+                                       result["urgent"] or calling, content, slot)
             label_name = f"💼 {name}" if kind == "mijoz" else name
             if calling:
                 log.info("%s (%s) egasini chaqiryapti — botga xabar berildi", name, chat_id)

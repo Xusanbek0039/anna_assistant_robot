@@ -201,3 +201,53 @@ def test_find_uses_chosen_account(two, monkeypatch):
 
 async def _false():
     return False
+
+
+def test_inbox_filtered_by_account(two, fake_storage):
+    run(fake_storage.upsert_inbox(10, "Ali", None, "", False, "salom"))
+    run(fake_storage.upsert_inbox(20, "Vali", None, "", False, "hey", 2))
+    ev = Ask()
+    run(control_bot._inbox_for(ev, 2))
+    assert len(ev.sent) == 1 and "Vali" in ev.sent[0][0] and "2-akkaunt" in ev.sent[0][0]
+    assert b"reply:20:2" in _datas(ev.sent[0][1])        # javob 2-akkauntdan ketadi
+    ev1 = Ask()
+    run(control_bot._inbox_for(ev1, 1))
+    assert len(ev1.sent) == 1 and "Ali" in ev1.sent[0][0]
+
+
+def test_groups_listed_per_account(monkeypatch):
+    class D:
+        def __init__(self, gid, name):
+            self.id, self.name, self.is_group, self.entity = gid, name, True, None
+
+    class C:
+        def __init__(self, ds):
+            self.ds = ds
+
+        async def iter_dialogs(self):
+            for d in self.ds:
+                yield d
+
+    monkeypatch.setattr(groups, "_clients", {1: C([D(-1, "Ish")]), 2: C([D(-2, "Oila")])})
+    monkeypatch.setattr(groups, "_cache", {})
+    monkeypatch.setattr(runtime, "_values", dict(runtime.DEFAULTS))
+    assert [g["title"] for g in run(groups.my_groups(only=2))] == ["Oila"]
+    assert [g["title"] for g in run(groups.my_groups(only=1))] == ["Ish"]
+    text, rows = groups.panel(run(groups.my_groups(only=2)), 0, slot=2, acc_name="Ikkinchi")
+    assert "2-akkaunt" in text and rows[0][0][1] == "grp:t:-2:0:2"
+
+
+def test_saved_channels_list_per_account(two, monkeypatch):
+    import channels
+    import storage
+    monkeypatch.setattr(channels, "_enabled", {-11: "Bir", -22: "Ikki"})
+    infos = {-11: {"title": "Bir", "count": 5}, -22: {"title": "Ikki", "count": 7, "via": 2}}
+
+    async def chat(cid):
+        return infos.get(cid)
+
+    monkeypatch.setattr(storage, "archive_chat", chat)
+    text, rows = run(control_bot._saved_list(2, channels_only=True))
+    labels = [b.text for row in rows for b in row]
+    assert any("Ikki · 7" in t for t in labels) and not any("Bir" in t for t in labels)
+    assert b"arc:html:-22:a" in _datas({"buttons": rows})

@@ -77,7 +77,8 @@ def test_panel(chn):
     text, rows = channels.panel(items, 0)
     assert "12 ta" in text and "arxivlanyapti: <b>1</b>" in text
     assert rows[0][0] == ("✅ Kanal 5", "chn:t:-105:0:1")
-    assert ("➡️", "chn:p:1:1") in rows[-2] and ("⬅️ Arxiv", "arc:panel") in rows[-1]
+    assert ("➡️", "chn:p:1:1") in rows[-3] and ("⬅️ Arxiv", "arc:panel") in rows[-1]
+    assert rows[-2] == [("🗂 Arxivdagi kanallar — o'qish/yuklash", "chn:saved:1")]
     assert "to'xtatilgan" in channels.panel(items, 0, archive_on=False)[0]
 
 

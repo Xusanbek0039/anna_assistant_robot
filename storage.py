@@ -126,7 +126,7 @@ async def get_history(chat_id: int, limit: int = HISTORY_LIMIT) -> list[dict]:
 
 
 # ---------- inbox ----------
-async def upsert_inbox(chat_id, name, username, summary, urgent, last_text) -> None:
+async def upsert_inbox(chat_id, name, username, summary, urgent, last_text, slot: int = 1) -> None:
     # Pipeline update: ko'rilmagan xabar shoshilinch bo'lsa, belgisi saqlanib qoladi
     await _get_db().inbox.update_one(
         {"_id": chat_id},
@@ -136,6 +136,7 @@ async def upsert_inbox(chat_id, name, username, summary, urgent, last_text) -> N
             "username": username,
             "summary": summary,
             "last_text": last_text,
+            "slot": slot,
             "updated": time.time(),
             "urgent": {"$cond": [
                 {"$eq": [{"$ifNull": ["$handled", True]}, True]},
@@ -152,8 +153,14 @@ async def mark_handled(chat_id: int) -> None:
     await _get_db().inbox.update_one({"_id": chat_id}, {"$set": {"handled": True, "urgent": False}})
 
 
-async def pending_inbox() -> list[dict]:
-    cursor = _get_db().inbox.find({"handled": False}).sort([("urgent", DESCENDING),
+async def pending_inbox(slot: int | None = None) -> list[dict]:
+    """slot berilsa — faqat shu akkauntniki (1-akkaunt: eski yozuvlarda «slot» yo'q)."""
+    query: dict = {"handled": False}
+    if slot == 1:
+        query["slot"] = {"$in": [1, None]}
+    elif slot is not None:
+        query["slot"] = slot
+    cursor = _get_db().inbox.find(query).sort([("urgent", DESCENDING),
                                                              ("updated", DESCENDING)])
     return await cursor.to_list()
 

@@ -339,7 +339,8 @@ def new_msg_panel() -> tuple[str, list]:
 
 
 # ---------- «Qaysi akkaunt uchun?» ----------
-PICK_TITLES = {"panel": "⚙️ Boshqaruv", "chn": "📢 Kanallar arxivi", "find": "🔎 Qidirish"}
+PICK_TITLES = {"panel": "⚙️ Boshqaruv", "chn": "📢 Kanallar arxivi", "find": "🔎 Qidirish",
+               "grp": "👥 Guruhlar", "inbox": "📬 Inbox", "arc": "🗂 Chat arxivi"}
 _find_slot = 1   # oxirgi qidiruv qaysi akkauntdan (natija tugmalari ham shu akkauntdan ishlaydi)
 
 
@@ -808,9 +809,11 @@ async def _send_ig_panel(event, extra: str = "", edit: bool = False) -> None:
     await send_long(event.respond, text, parse_mode="html", buttons=_inline(rows), link_preview=False)
 
 
-async def _send_groups_panel(event, page: int = 0, edit: bool = False, refresh: bool = False) -> None:
+async def _send_groups_panel(event, page: int = 0, edit: bool = False, refresh: bool = False,
+                             slot: int | None = None) -> None:
     try:
-        text, rows = groups.panel(await groups.my_groups(refresh=refresh), page)
+        text, rows = groups.panel(await groups.my_groups(refresh=refresh, only=slot), page, slot=slot,
+                                  acc_name=html.escape(ctx.names.get(slot, "")) if slot else "")
     except Exception as e:
         log.exception("Guruhlar ro'yxati olinmadi")
         text, rows = f"❌ Guruhlar ro'yxatini olib bo'lmadi: {type(e).__name__}", None
@@ -953,6 +956,63 @@ async def _channel_backfill(chat_id: int, title: str, slot: int = 1) -> None:
     archive.drive_wake()
     await alert(f"📢 «{title}»: {added} ta post arxivga olindi. Bundan keyingi postlar ham yozib boriladi "
                 "(🗂 Chat arxivi → 💬 Chatlar).")
+
+
+async def _inbox_for(event, slot: int | None) -> None:
+    """📬 Javob kutayotganlar (slot berilsa — faqat shu akkauntniki)."""
+    rows = await storage.pending_inbox(slot)
+    who = f" ({_acc_title(slot)})" if slot and 2 in ctx.users else ""
+    if not rows:
+        await event.respond(f"📭 Javob kutayotgan xabar yo'q{who}.")
+        return
+    for r in rows[:15]:
+        mark = "🔴 " if r["urgent"] else ""
+        s = int(r.get("slot") or 1)
+        await event.respond(
+            f"{mark}{_acc_head(s)}👤 {_who(r['name'], r['username'], r['chat_id'])}\n"
+            f"📝 {html.escape(r['summary'] or r['last_text'] or '')}",
+            parse_mode="html",
+            buttons=_buttons(r["chat_id"], s),
+        )
+
+
+async def _saved_list(slot: int, channels_only: bool = False) -> tuple[str, list]:
+    """Arxivdagi kanallar (va 2-akkaunt uchun — yuklab olingan guruhlar): ochish va HTML yuklash."""
+    rows, lines = [], []
+    for cid, title in list(channels._enabled.items()):
+        info = await storage.archive_chat(cid) or {}
+        if int(info.get("via") or 1) != slot:
+            continue
+        label = f"📢 {(info.get('title') or title or str(cid))[:30]} · {info.get('count', 0)}"
+        rows.append([Button.inline(label, f"arc:chat:{cid}".encode()),
+                     Button.inline("📄 HTML", f"arc:html:{cid}:a".encode())])
+    head = (f"🗂 <b>Arxivdagi kanallar</b>" + (f" — {html.escape(_acc_title(slot))}" if 2 in ctx.users else "")
+            + "\nKanalni bosing — postlarini ko'rasiz; «📄 HTML» — hammasini fayl qilib yuklab olasiz.")
+    if not rows:
+        head += ("\n\n<i>Hali arxivlangan kanal yo'q.</i> 📢 Kanallar ro'yxatida kanalni bosib yoqing — "
+                 "postlari shu yerda paydo bo'ladi.")
+    if not channels_only and slot != 1:
+        head = ("🗂 <b>" + html.escape(_acc_title(slot)) + " arxivi</b>\nBu akkauntda shaxsiy chatlar arxivlanmaydi — "
+                "faqat siz belgilagan 📢 kanallar va 👥 guruhlar (guruhni yuklab olish: 👥 Guruhlar → 🗂 Yoqilganlar).\n\n"
+                + head)
+    rows.append([Button.inline("📢 Kanallar ro'yxati", f"chn:p:0:{slot}".encode())])
+    return head, rows
+
+
+async def _enabled_groups_view(slot: int | None) -> tuple[str, list]:
+    """Klonlash yoqilgan guruhlar: har biri uchun butun yozishmani HTML qilib yuklash."""
+    items = [g for g in await groups.my_groups(only=slot) if groups.is_enabled(g["id"])]
+    acc = f" — {html.escape(_acc_title(slot))}" if slot and 2 in ctx.users else ""
+    if not items:
+        return (f"👥 <b>Yoqilgan guruhlar</b>{acc}\n\n<i>Hali yoqilgan guruh yo'q.</i>",
+                [[Button.inline("⬅️ Guruhlar", f"grp:p:0{':' + str(slot) if slot else ''}".encode())]])
+    rows = []
+    for g in items[:20]:
+        s = slot or (g.get("slots") or [1])[0]
+        rows.append([Button.inline(f"📄 {g['title'][:34]} — HTML", f"grp:html:{g['id']}:{s}".encode())])
+    rows.append([Button.inline("⬅️ Guruhlar", f"grp:p:0{':' + str(slot) if slot else ''}".encode())])
+    return (f"👥 <b>Yoqilgan guruhlar</b>{acc}\nYangi xabarlari sizga nusxalanib keladi. Guruhni bosing — "
+            "butun yozishmani (eski xabarlar bilan) HTML fayl qilib yuboraman.", rows)
 
 
 async def group_clone_text(text: str, link: str | None) -> None:
@@ -1957,10 +2017,12 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             if not await _ask_account(event, "panel"):
                 await _status(event)
         elif choice == MENU_INBOX:
-            await _inbox(event)
+            if not await _ask_account(event, "inbox"):
+                await _inbox(event)
         elif choice == MENU_ARCHIVE:
-            text, buttons = await _archive_panel()
-            await event.respond(text, parse_mode="html", buttons=buttons)
+            if not await _ask_account(event, "arc"):
+                text, buttons = await _archive_panel()
+                await event.respond(text, parse_mode="html", buttons=buttons)
         elif choice == MENU_FIN:
             await event.respond(await finance.make_report("today"), parse_mode="html",
                                 buttons=_fin_panel_buttons())
@@ -1978,7 +2040,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         elif choice == MENU_IG:
             await _send_ig_panel(event)
         elif choice == MENU_GROUPS:
-            await _send_groups_panel(event)
+            if not await _ask_account(event, "grp"):
+                await _send_groups_panel(event)
         elif choice == MENU_CHANNELS:
             if not await _ask_account(event, "chn"):
                 await _send_channels_panel(event)
@@ -2204,6 +2267,11 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
             if not await _ask_account(event, "chn"):
                 await _send_channels_panel(event)
+        elif action == "saved":
+            slot = int(parts[2]) if len(parts) > 2 else 1
+            await event.answer()
+            text, rows = await _saved_list(slot, channels_only=True)
+            await event.respond(text, parse_mode="html", buttons=rows)
         elif action in ("p", "r"):
             slot = int(parts[3]) if len(parts) > 3 else 1
             await event.answer("🔄 Yangilanyapti..." if action == "r" else None)
@@ -2212,7 +2280,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
 
     # ---------- «Qaysi akkaunt uchun?» — 2 ta akkaunt ulangan bo'lsa ----------
-    @bot.on(events.CallbackQuery(pattern=rb"^pick:(panel|chn|find):(\d)$", func=is_owner))
+    @bot.on(events.CallbackQuery(pattern=rb"^pick:(panel|chn|find|grp|inbox|arc):(\d)$", func=is_owner))
     async def _pick_account(event):
         feature, slot = event.data.decode().split(":")[1], int(event.data.decode().split(":")[2])
         await event.answer()
@@ -2227,6 +2295,17 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                 await event.respond(text, parse_mode="html", buttons=rows)
         elif feature == "chn":
             await _send_channels_panel(event, slot=slot)
+        elif feature == "grp":
+            await _send_groups_panel(event, slot=slot)
+        elif feature == "inbox":
+            await _inbox_for(event, slot)
+        elif feature == "arc":
+            if slot == 1:
+                text, buttons = await _archive_panel()
+                await event.respond(text, parse_mode="html", buttons=buttons)
+            else:   # 2-akkauntda shaxsiy chatlar arxivlanmaydi — uning kanallari va guruhlari
+                text, rows = await _saved_list(slot)
+                await event.respond(text, parse_mode="html", buttons=rows)
         elif feature == "find":
             _awaiting_slot["find"] = slot
             await event.respond(f"🔎 {_acc_title(slot)} — nimani topay? Yozing: «Ali yuborgan manzilni top», "
@@ -2241,18 +2320,28 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     async def _groups_callback(event):
         parts = event.data.decode().split(":")
         action = parts[1]
-        if action == "t" and len(parts) == 4:
+        if action == "t" and len(parts) in (4, 5):
             chat_id, page = int(parts[2]), int(parts[3])
-            title = next((g["title"] for g in await groups.my_groups() if g["id"] == chat_id), "")
+            slot = int(parts[4]) if len(parts) == 5 else None
+            title = next((g["title"] for g in await groups.my_groups(only=slot) if g["id"] == chat_id), "")
             on = await groups.toggle(chat_id, title)
             await event.answer(("✅ Klonlash yoqildi: " if on else "⏸ Klonlash o'chirildi: ") + title[:150])
-            await _send_groups_panel(event, page, edit=True)
-        elif action == "p":
+            await _send_groups_panel(event, page, edit=True, slot=slot)
+        elif action in ("p", "r"):
+            slot = int(parts[3]) if len(parts) > 3 else None
+            await event.answer("🔄 Yangilanyapti..." if action == "r" else None)
+            await _send_groups_panel(event, int(parts[2]), edit=True, refresh=action == "r", slot=slot)
+        elif action == "on":
+            slot = int(parts[3]) if len(parts) > 3 else None
             await event.answer()
-            await _send_groups_panel(event, int(parts[2]), edit=True)
-        elif action == "r":
-            await event.answer("🔄 Yangilanyapti...")
-            await _send_groups_panel(event, int(parts[2]), edit=True, refresh=True)
+            text, rows = await _enabled_groups_view(slot)
+            await event.respond(text, parse_mode="html", buttons=rows)
+        elif action == "html" and len(parts) == 4:
+            chat_id, slot = int(parts[2]), int(parts[3])
+            await event.answer("⏳ Tayyorlanmoqda...")
+            archive._chat_via[chat_id] = slot          # yozishma shu akkauntdan olinadi
+            await _send_archive_html(chat_id, False)
+            await archive.mark_via(chat_id, slot)
         else:
             await event.answer()
 
@@ -2432,18 +2521,8 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
 
     @bot.on(events.NewMessage(pattern=r"^/inbox$", func=is_owner))
     async def _inbox(event):
-        rows = await storage.pending_inbox()
-        if not rows:
-            await event.respond("📭 Javob kutayotgan xabar yo'q.")
-            return
-        for r in rows[:15]:
-            mark = "🔴 " if r["urgent"] else ""
-            await event.respond(
-                f"{mark}👤 {_who(r['name'], r['username'], r['chat_id'])}\n"
-                f"📝 {html.escape(r['summary'] or r['last_text'] or '')}",
-                parse_mode="html",
-                buttons=_buttons(r["chat_id"]),
-            )
+        if not await _ask_account(event, "inbox"):
+            await _inbox_for(event, None)
 
     @bot.on(events.NewMessage(pattern=r"^/reply\s+(-?\d+)\s+([\s\S]+)", func=is_owner))
     async def _reply_cmd(event):
