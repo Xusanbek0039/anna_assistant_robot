@@ -51,9 +51,9 @@ def code_digits(text: str) -> str | None:
     return digits if 5 <= len(digits) <= 6 else None
 
 
-async def _saved_session() -> str | None:
+async def _saved_session(slot: int = 1) -> str | None:
     try:
-        doc = await storage.tg_get_session()
+        doc = await storage.tg_get_session(slot)
     except Exception as e:
         log.warning("Bazadagi Telegram sessiyasi o'qilmadi (%s)", type(e).__name__)
         return None
@@ -105,11 +105,12 @@ async def open_client() -> TelegramClient:
     return create_user_client(StringSession())
 
 
-async def save_session(client: TelegramClient, user_id: int) -> None:
+async def save_session(client: TelegramClient, user_id: int, slot: int = 1) -> None:
     """Kirilgan sessiyani bazaga yozadi (server qayta ishga tushganda login so'ralmaydi)."""
     try:
-        await storage.tg_set_session(StringSession.save(client.session), user_id)
-        await storage.tg_set_owner(user_id)
+        await storage.tg_set_session(StringSession.save(client.session), user_id, slot)
+        if slot == 1:
+            await storage.tg_set_owner(user_id)
     except Exception as e:
         log.warning("Telegram sessiyasi bazaga saqlanmadi (%s) — keyingi safar yana login so'raladi",
                     type(e).__name__)
@@ -132,12 +133,42 @@ async def _known_owner() -> int | None:
         return None
 
 
+class LoginCancelled(Exception):
+    """Egasi 2-akkaunt loginini «bekor» bilan to'xtatdi."""
+
+
+_busy = 0   # bot orqali login davom etyapti — control_bot oddiy matnni (telefon, kod) o'zi ishlamaydi
+
+
+def busy() -> bool:
+    return _busy > 0
+
+
+async def connect_saved(slot: int) -> TelegramClient | None:
+    """Bazadagi sessiya bilan ulanadi. Kirilgan bo'lsa — client, bo'lmasa None (login kerak)."""
+    saved = await _saved_session(slot)
+    if not saved:
+        return None
+    try:
+        client = create_user_client(StringSession(saved))
+    except ValueError:
+        log.warning("%d-akkaunt sessiyasi yaroqsiz matn", slot)
+        return None
+    if await _authorized(client):
+        return client
+    log.warning("%d-akkaunt sessiyasi bekor qilingan", slot)
+    await client.disconnect()
+    return None
+
+
 class _Dialog:
     """Bot bilan savol-javob: egasining navbatdagi xabarini kutadi."""
 
-    def __init__(self, bot: TelegramClient, owner: int | None):
+    def __init__(self, bot: TelegramClient, owner: int | None, slot: int = 1):
         self.bot = bot
         self.owner = owner
+        self.slot = slot
+        self.cmd = "/tglogin" if slot == 1 else f"/tglogin{slot}"
         self.setup_code = None if owner else f"{secrets.randbelow(10 ** 6):06d}"
         self.queue: asyncio.Queue = asyncio.Queue()
         self.fails: dict[int, int] = {}
@@ -171,7 +202,16 @@ class _Dialog:
     async def ask(self, text: str | None = None):
         if text:
             await self.say(text)
-        return await self.queue.get()
+        event = await self.queue.get()
+        if self.slot != 1 and (event.raw_text or "").strip().lower() in ("bekor", "/bekor", "cancel", "stop"):
+            raise LoginCancelled()
+        return event
+
+    def prompt(self, text: str) -> str:
+        if self.slot == 1:
+            return text
+        return (text.replace("Telegram akkaunt ulanmagan.", f"{self.slot}-Telegram akkauntni ulash")
+                .replace("/tglogin</i>", f"{self.cmd}, to'xtatish: bekor</i>"))
 
     async def forget(self, event) -> None:
         """Kod yoki parolli xabarni chatdan o'chiradi."""
@@ -191,11 +231,14 @@ PASSWORD_PROMPT = ("🔒 Akkauntda ikki bosqichli parol yoqilgan. Parolni yubori
                    "va hech qayerga yozilmaydi.")
 
 
-async def via_bot(bot: TelegramClient, user: TelegramClient) -> None:
-    """Akkauntga nazorat boti orqali kiradi. Kirilmaguncha kutadi (ishga tushish shu yerda turadi)."""
-    dialog = _Dialog(bot, await _known_owner())
+async def via_bot(bot: TelegramClient, user: TelegramClient, slot: int = 1, owner: int | None = None) -> None:
+    """Akkauntga nazorat boti orqali kiradi. Kirilmaguncha kutadi (ishga tushish shu yerda turadi).
+    slot=2: ikkinchi akkaunt (Anna ishlab turganda, egasi ma'lum). «bekor» — LoginCancelled."""
+    global _busy
+    dialog = _Dialog(bot, owner or await _known_owner(), slot)
     handler = dialog.on_message
     bot.add_event_handler(handler, events.NewMessage(incoming=True))
+    _busy += 1
     try:
         if dialog.owner is None:
             log.warning("🔑 Telegram akkaunt ulanmagan. Nazorat botiga yuboring: /tglogin %s  "
@@ -205,22 +248,23 @@ async def via_bot(bot: TelegramClient, user: TelegramClient) -> None:
             log.warning("🔑 Telegram akkaunt ulanmagan — nazorat botida login so'raldi (telefon, kod, parol)")
         await _login_dialog(dialog, user)
     finally:
+        _busy -= 1
         bot.remove_event_handler(handler)
 
     me = await user.get_me()
-    await save_session(user, me.id)
+    await save_session(user, me.id, slot)
     await dialog.say(f"✅ Akkauntga kirildi: <b>{me.first_name or ''}</b> (id <code>{me.id}</code>). "
-                     "Anna ishga tushyapti...")
+                     + ("Anna ishga tushyapti..." if slot == 1 else "Ulanyapti..."))
 
 
 async def _login_dialog(dialog: _Dialog, user: TelegramClient) -> None:
     if not user.is_connected():
         await user.connect()
-    phone = normalize_phone(config.PHONE) if config.PHONE else None
+    phone = normalize_phone(config.PHONE) if config.PHONE and dialog.slot == 1 else None
     prompt = PHONE_PROMPT
     while True:
         if not phone:
-            event = await dialog.ask(prompt)
+            event = await dialog.ask(dialog.prompt(prompt))
             text = (event.raw_text or "").strip()
             if text.lower().startswith(("/tglogin", "/start")):
                 prompt = PHONE_PROMPT
@@ -256,7 +300,7 @@ async def _enter_code(dialog: _Dialog, user: TelegramClient, phone: str, code_ha
     """True — akkauntga kirildi; False — boshidan boshlash kerak (telefon so'raladi)."""
     prompt = CODE_PROMPT
     while True:
-        event = await dialog.ask(prompt)
+        event = await dialog.ask(dialog.prompt(prompt))
         text = (event.raw_text or "").strip()
         if text.lower().startswith(("/tglogin", "/start")):
             return False
@@ -287,7 +331,7 @@ async def _enter_code(dialog: _Dialog, user: TelegramClient, phone: str, code_ha
 async def _enter_password(dialog: _Dialog, user: TelegramClient) -> bool:
     prompt = PASSWORD_PROMPT
     while True:
-        event = await dialog.ask(prompt)
+        event = await dialog.ask(dialog.prompt(prompt))
         text = event.raw_text or ""
         if text.strip().lower().startswith(("/tglogin", "/start")):
             return False

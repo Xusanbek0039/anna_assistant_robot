@@ -20,11 +20,11 @@ class Store:
     async def tg_set_owner(self, uid):
         self.owner = uid
 
-    async def tg_get_session(self):
-        return {"string": self.session} if self.session else None
+    async def tg_get_session(self, slot=1):
+        return {"string": self.session} if self.session and slot == 1 else None
 
-    async def tg_set_session(self, string, uid):
-        self.saved = (string, uid)
+    async def tg_set_session(self, string, uid, slot=1):
+        self.saved = (string, uid) if slot == 1 else (string, uid, slot)
 
 
 @pytest.fixture
