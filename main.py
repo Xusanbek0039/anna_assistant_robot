@@ -270,4 +270,5 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception:
+        log.exception("Ishga tushishda kutilmagan xato")
         sys.exit(1)

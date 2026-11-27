@@ -2794,7 +2794,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         await event.respond("Bu shaxsiy bot.")
 
     @_on(events.NewMessage(pattern=r"^/on$", func=is_owner))
-    async def _on(event):
+    async def _cmd_on(event):
         await storage.set_mode("on")
         await event.respond("🟢 Avtojavob doim yoqiq.")
 

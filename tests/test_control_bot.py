@@ -302,3 +302,19 @@ def test_new_msg_alerts_can_be_turned_off(monkeypatch, fake_storage, fresh_runti
     run(control_bot.notify(5, "Ali", None, "tez!", "", True, None))
     assert "SHOSHILINCH" in bot.sent[-1][0]       # shoshilinch baribir keladi
     assert "o'chiq" in control_bot.new_msg_panel()[0]
+
+
+def test_setup_registers_all_handlers(monkeypatch):
+    """control_bot.setup() barcha buyruq/callback handlerlarni xatosiz ro'yxatdan o'tkazishi shart."""
+    registered = []
+
+    class FakeBot:
+        def on(self, event):
+            def deco(fn):
+                registered.append((event, fn))
+                return fn
+            return deco
+
+    monkeypatch.setattr(control_bot, "ctx", control_bot.Ctx())
+    control_bot.setup(FakeBot(), object(), owner_id=1)
+    assert len(registered) >= 50
