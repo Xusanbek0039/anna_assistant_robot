@@ -398,3 +398,25 @@ def test_empty_list_offers_add_button(alerts, fake_storage):
     text, buttons = run(watchers.list_view())
     assert "Hozir eslatma yo'q" in text and buttons == [[watchers.ADD_BUTTON]]
     assert "Yangi eslatma" in watchers.ADD_HELP
+
+
+def test_storage_watch_list_formats_id(monkeypatch):
+    import storage
+
+    class _Cursor:
+        def sort(self, *a, **k):
+            return self
+
+        async def to_list(self):
+            return [{"_id": "abc123", "kind": "online", "active": True}]
+
+    class _Watches:
+        def find(self, q):
+            return _Cursor()
+
+    class _DB:
+        watches = _Watches()
+
+    monkeypatch.setattr(storage, "_get_db", lambda: _DB())
+    rows = run(storage.watch_list())
+    assert rows == [{"id": "abc123", "kind": "online", "active": True}]

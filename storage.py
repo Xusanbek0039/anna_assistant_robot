@@ -831,7 +831,7 @@ async def watch_add(doc: dict) -> str:
 async def watch_list(active_only: bool = True) -> list[dict]:
     rows = await _get_db().watches.find({"active": True} if active_only else {}) \
         .sort("created", ASCENDING).to_list()
-    return [_prm_out(r) for r in rows]
+    return [_tx_out(r) for r in rows]
 
 
 async def watch_update(watch_id: str, **fields) -> bool:
