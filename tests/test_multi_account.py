@@ -397,3 +397,43 @@ def test_reports_sent_for_each_account(monkeypatch):
     monkeypatch.setattr(weekly.schedule, "daily", daily)
     run(weekly.run(send, lambda: [1, 2]))
     assert sent == ["hafta 1", "📱 <b>2-akkaunt</b>\nhafta 2"]
+
+
+def test_second_telegram_always_notifies_even_when_muted_or_alerts_off(two, fake_storage, monkeypatch):
+    """2-akkauntda har bir kiruvchi xabar botga keladi (muted va new_msg_alerts=False bo'lsa ham)."""
+    import runtime
+    import userbot
+    from telethon.tl.types import User
+
+    bot, _, _ = two
+    monkeypatch.setitem(runtime._values, "new_msg_alerts", False)
+    run(control_bot.notify(77, "Ali", None, "salom", "", False, None, slot=2))
+    assert len(bot.sent) == 1 and "salom" in bot.sent[0][0]
+
+    handlers, notes = [], []
+
+    class U:
+        def on(self, ev):
+            def deco(fn):
+                handlers.append(fn)
+                return fn
+            return deco
+
+    async def fake_notify(chat_id, name, username, content, *a, slot=1, **kw):
+        notes.append((chat_id, content, slot))
+
+    monkeypatch.setattr(control_bot, "notify", fake_notify)
+    fake_storage.d_muted.add(5)
+    userbot.setup(U(), 99, slot=2)
+
+    class Msg:
+        message, media, file, id, is_reply = "yangi xabar", None, None, 10, False
+        voice = video_note = video = sticker = document = photo = None
+
+    class Ev:
+        chat_id, message = 5, Msg()
+        async def get_sender(self):
+            return User(id=5, first_name="Ali", contact=True)
+
+    run(handlers[0](Ev()))
+    assert notes == [(5, "yangi xabar", 2)]

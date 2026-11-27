@@ -1951,7 +1951,8 @@ async def _on_incoming(th: Thread, items: list[Item], acc: _State | None = None)
     if (auto and status.reply and not th.group and not th.pending
             and _muted_until.get(th.thread_id, 0) <= time.time()):
         result = await _ai_reply(th, status, acc)
-    want = (result is not None or runtime.get("ig_forward")
+    is_second = acc is not None and acc.slot == "2"
+    want = (is_second or result is not None or runtime.get("ig_forward")
             or (auto and status.notify and not th.group))
     if want:
         await _send_incoming_media(th, items, acc)
@@ -1990,7 +1991,7 @@ async def _process_fresh(threads: list[Thread], acc: _State | None = None) -> in
 
 
 def _any_on() -> bool:
-    return any(runtime.get(k) for k in TOGGLES)
+    return any(runtime.get(k) for k in TOGGLES) or bool(_accounts.get("2") and _accounts["2"].client)
 
 
 async def check_once(acc: _State | None = None) -> dict:

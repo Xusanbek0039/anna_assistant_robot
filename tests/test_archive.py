@@ -529,3 +529,22 @@ def test_deleted_alert_sends_archived_photo(arc, monkeypatch):
     run(control_bot.deleted_alert(5, docs))
     assert len(sent_files) == 1
     assert sent_files[0][0] == b"photo-bytes" and sent_files[0][2]["reply_to"] == 55
+
+
+def test_html_budget_prefers_photos_and_voices_over_heavy_video_notes(monkeypatch):
+    """Yengil rasm/ovozlar og'ir video-xabarlardan OLDIN HTML'ga joylanadi."""
+    import base64
+    monkeypatch.setattr(archive, "HTML_MEDIA_BUDGET", 10)
+    docs = [
+        {"chat_id": 5, "msg_id": 1, "out": False, "text": "", "media": "rasm", "media_id": "p1",
+         "date": 1.7e9 + 1},
+        {"chat_id": 5, "msg_id": 2, "out": False, "text": "", "media": "ovozli xabar", "media_id": "v1",
+         "date": 1.7e9 + 2},
+        {"chat_id": 5, "msg_id": 3, "out": False, "text": "", "media": "video-xabar", "media_id": "vn1",
+         "date": 1.7e9 + 100},  # eng yangi, lekin og'ir video-xabar
+    ]
+    media = {"p1": (b"PHOTO", "image/jpeg"), "v1": (b"VOICE", "audio/mp4"), "vn1": (b"VIDEONOTE!", "video/mp4")}
+    page = archive.build_html({"chat_id": 5, "title": "Just"}, docs, media, False)
+    assert base64.b64encode(b"PHOTO").decode() in page
+    assert base64.b64encode(b"VOICE").decode() in page
+    assert base64.b64encode(b"VIDEONOTE!").decode() not in page

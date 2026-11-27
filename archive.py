@@ -37,6 +37,8 @@ DELETE_GATHER_SECONDS = 3         # shu vaqt ichida o'chirilganlari bitta ogohla
 HTML_MEDIA_BUDGET = 30 * 1024 * 1024
 # Chat tarixini olganda HTML ichida ko'rinadigan media turlari (video — faqat Drive havolasi)
 EMBED_KINDS = {"rasm", "ovozli xabar", "video-xabar", "stiker", "GIF", "audio"}
+# Yengil media (rasm, ovoz, stiker, GIF) og'ir video-xabar/audiodan OLDIN joylanadi — barcha rasmlar sig'sin
+LIGHT_EMBED_KINDS = {"rasm", "ovozli xabar", "stiker", "GIF"}
 
 _on_deleted = None                # async (chat_id, docs) -> None — control_bot ogohlantirishi
 _on_edited = None                 # async (chat_id, eski hujjat, yangi matn) -> None
@@ -313,6 +315,8 @@ async def _flush(key) -> None:
 def setup(user, me_id: int, on_deleted, on_edited=None) -> None:
     global _on_deleted, _on_edited, _me_id
     _on_deleted, _on_edited, _me_id = on_deleted, on_edited, me_id
+    _clients[1] = user
+    _me_ids[1] = me_id
 
     @user.on(events.NewMessage())
     async def archive_new(event):
@@ -629,10 +633,11 @@ async def sync_selected_channels(user, slot: int, pause: float = 0.5) -> tuple[i
 
 
 async def _fetch_media_budget(docs: list[dict], budget: int) -> tuple[dict[str, tuple[bytes, str]], set[int]]:
-    """HTML sig'imiga (budget) kiradigan media'ni kichik bo'laklarda bazadan oladi (xotirani tejash uchun)."""
+    """HTML sig'imiga (budget) kiradigan media'ni kichik bo'laklarda bazadan oladi (xotirani tejash uchun).
+    Tartib: avval o'chirilganlar, keyin yengil media (rasm/ovoz/stiker/GIF), so'ngra video-xabar/audio."""
     ordered = sorted(
         (d for d in docs if d.get("media") and d.get("media_id")),
-        key=lambda x: (not x.get("deleted"), -(x.get("date") or 0)),
+        key=lambda x: (not x.get("deleted"), x.get("media") not in LIGHT_EMBED_KINDS, -(x.get("date") or 0)),
     )
     media: dict[str, tuple[bytes, str]] = {}
     embed: set[int] = set()
@@ -685,17 +690,19 @@ def _safe(title: str) -> str:
 
 async def fill_media(user, chat_id: int) -> int:
     """Arxivda faqat nomi bor rasm/ovozli/video-xabarlarni Telegram'dan yuklab, arxivga saqlaydi — HTML'da
-    ko'rinadi va keyin xabar o'chirilsa ham qoladi. Eng yangilaridan boshlab, HTML sig'imigacha.
-    Saqlanganlar soni."""
+    ko'rinadi va keyin xabar o'chirilsa ham qoladi. Avval barcha rasm va ovozlar (yengil), keyin og'ir
+    video-xabar/audio — HTML sig'imigacha. Saqlanganlar soni."""
     user = await client_for(chat_id, user)
     docs = await storage.archive_messages(chat_id, limit=config.ARCHIVE_EXPORT_LIMIT)
-    need = []
-    for d in reversed(docs):  # eng yangilari birinchi
-        if d.get("media") in EMBED_KINDS and not d.get("media_id") and not d.get("deleted") and not d.get("media_tried"):
-            need.append(d)
+    need = [d for d in docs
+            if d.get("media") in EMBED_KINDS and not d.get("media_id") and not d.get("deleted") and not d.get("media_tried")]
+    need.sort(key=lambda d: (d.get("media") not in LIGHT_EMBED_KINDS, -(d.get("date") or 0)))
     if not need or config.EXPORT_MEDIA_MAX_KB <= 0:
         return 0
-    entity = await user.get_input_entity(chat_id)
+    try:
+        entity = await user.get_input_entity(chat_id)
+    except Exception:
+        entity = await user.get_entity(chat_id)
     total, saved = 0, 0
     for i in range(0, len(need), 100):
         chunk = need[i:i + 100]
@@ -792,6 +799,12 @@ async def drive_sync_chat(chat_id: int, info: dict | None = None) -> str:
     path = os.path.join(tmp, "chat.html")
     try:
         async with _drive_lock:
+            cli = _clients.get(storage.arc_slot()) or _clients.get(1)
+            if cli is not None:
+                try:
+                    await fill_media(cli, chat_id)
+                except Exception as e:
+                    log.debug("Drive HTML media to'ldirilmadi (%s)", type(e).__name__)
             info2, _ = await _render_to_file(chat_id, False, path)
             res = await _in_folder(chat_id, info, lambda folder: gdrive.upload(
                 _drive_name(info2), mime="text/html", file_id=info.get("drive_file_id"),
@@ -1110,10 +1123,11 @@ def _iter_html(info: dict, docs: list[dict], media: dict[str, tuple[bytes, str]]
     by_id = {d["msg_id"]: d for d in docs}
     n_del = sum(1 for d in docs if d.get("deleted"))
     n_edit = sum(1 for d in docs if d.get("edits"))
-    # Hammasi sig'masa: avval o'chirilganlarining mediasi (boshqa joyda qolmagan), keyin eng yangilari
+    # Hammasi sig'masa: avval o'chirilganlar, keyin yengil media (rasm/ovoz/stiker/GIF), so'ngra og'irroqlari
     if embed is None:
         embed, budget = set(), HTML_MEDIA_BUDGET
-        for d in sorted(docs, key=lambda x: (not x.get("deleted"), -(x.get("date") or 0))):
+        for d in sorted(docs, key=lambda x: (not x.get("deleted"), x.get("media") not in LIGHT_EMBED_KINDS,
+                                             -(x.get("date") or 0))):
             blob = media.get(d.get("media_id") or "") if d.get("media") else None
             if blob and len(blob[0]) <= budget:
                 budget -= len(blob[0])

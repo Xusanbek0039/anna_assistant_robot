@@ -1142,3 +1142,15 @@ def test_second_account_auth_error_keeps_first(ig, ig_no_grace):
     run(instagram._on_error(type("LoginRequired", (Exception,), {})(), st2))
     assert instagram.connected("1") and not instagram.connected("2")
     assert "/iglogin2" in ig.alerts[0] and "@ikkinchi" in ig.alerts[0]
+
+
+def test_second_instagram_always_forwards_every_incoming_message(ig, monkeypatch):
+    """2-Instagramda ig_forward=False bo'lsa ham har bir kiruvchi xabar botga keladi."""
+    monkeypatch.setitem(runtime._values, "ig_forward", False)
+    monkeypatch.setitem(runtime._values, "ig_autoreply", False)
+    cl1 = FakeCl([])
+    connect(cl1)
+    cl2 = FakeCl([thread("999", [text_item("m1", "2", "salom 2-ig", ts=NEW + 1)])])
+    instagram.st2.client, instagram.st2.username, instagram.st2.started = cl2, "ikkinchi", 1_700_000_000.0
+    run(instagram.check_once(instagram.st2))
+    assert len(ig.notes) == 1 and "salom 2-ig" in ig.notes[0][1] and "@ikkinchi" in ig.notes[0][1]

@@ -370,12 +370,16 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
         kind = tag or ("tanish" if sender.contact else "notanish")
 
         if await storage.is_muted(chat_id):
+            if slot != 1:   # 2-akkauntda har bir kiruvchi xabar baribir botga keladi
+                await storage.upsert_inbox(chat_id, name, username, "", False, content, slot)
+                await control_bot.notify(chat_id, name, username, content, "", False, None,
+                                         reply_to=media_msg_id, slot=slot)
             return  # egasi o'zi shu chatda gaplashyapti
         status = await availability.get_status()
         if not status.reply:
             log.info("%s ga javob berilmadi: %s", chat_id, status.reason)
             await storage.upsert_inbox(chat_id, name, username, "", False, content, slot)
-            if status.notify:
+            if status.notify or slot != 1:
                 await control_bot.notify(chat_id, name, username, content, "", False, None, reply_to=media_msg_id, slot=slot)
             return
 
@@ -418,8 +422,8 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
                     await _report_ai_error(e)
                     result = fallback
 
-            # Notanishdan kelgan aniq spam: javob ham, bildirishnoma ham yo'q
-            if result["spam"] and kind == "notanish":
+            # Notanishdan kelgan aniq spam: javob ham, bildirishnoma ham yo'q (2-akkauntda bildirishnoma doim keladi)
+            if result["spam"] and kind == "notanish" and slot == 1:
                 await _stat(spam=1)
                 log.info("%s (%s) dan spam — javob berilmadi, bildirishnoma yuborilmadi", name, chat_id)
                 await storage.upsert_inbox(chat_id, name, username, "🚫 spam", False, content, slot)
@@ -444,14 +448,15 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
                 await _stat(calls=1)
             if result["urgent"]:
                 await _stat(urgent=1)
+            notify_content = "\n".join(t for _, t in waiting) if slot != 1 and len(waiting) > 1 else content
             await storage.upsert_inbox(chat_id, name, username, result["summary"],
-                                       result["urgent"] or calling, content, slot)
+                                       result["urgent"] or calling, notify_content, slot)
             label_name = f"💼 {name}" if kind == "mijoz" else name
             if calling:
                 log.info("%s (%s) egasini chaqiryapti — botga xabar berildi", name, chat_id)
-                await control_bot.call_owner(chat_id, label_name, username, content, result["summary"], slot=slot)
+                await control_bot.call_owner(chat_id, label_name, username, notify_content, result["summary"], slot=slot)
             else:
-                await control_bot.notify(chat_id, label_name, username, content,
+                await control_bot.notify(chat_id, label_name, username, notify_content,
                                          result["summary"], result["urgent"], reply, reply_to=media_msg_id, slot=slot)
 
     @_reg(events.NewMessage(outgoing=True))

@@ -795,8 +795,8 @@ async def notify(chat_id: int, name: str, username: str | None, text: str,
                  summary: str, urgent: bool, ai_reply: str | None, reply_to: int | None = None,
                  slot: int = 1) -> None:
     """reply_to: shu xabar bilan kelgan media (bot xabari) id si — bildirishnoma uning tagiga bog'lanadi."""
-    if not urgent and not runtime.get("new_msg_alerts"):
-        return  # egasi «📩 Yangi xabar»ni o'chirgan (/yangixabar); xabar /inbox ga baribir yoziladi
+    if slot == 1 and not urgent and not runtime.get("new_msg_alerts"):
+        return  # egasi «📩 Yangi xabar»ni o'chirgan (/yangixabar); 2-akkauntda har xabar doim keladi
     head ="🔴 <b>SHOSHILINCH</b>\n" if urgent else "📩 <b>Yangi xabar</b>\n"
     body = (
         f"{head}{_acc_head(slot)}👤 {_who(name, username, chat_id)}\n\n"
@@ -1165,6 +1165,10 @@ async def _channel_backfill(chat_id: int, title: str, slot: int = 1) -> None:
         with storage.use_slot(1):
             added = await archive.backfill(client, chat_id, limit=None)
             await archive.mark_via(chat_id, slot)   # backfill chat yozuvini yaratdi — endi «via» saqlanadi
+            try:
+                await archive.fill_media(client, chat_id)
+            except Exception as e:
+                log.warning("Kanal mediasi to'ldirilmadi (%s)", type(e).__name__)
     except Exception as e:
         log.exception("Kanal tarixi arxivga olinmadi")
         await alert(f"⚠️ «{title}» kanalining eski postlari arxivga olinmadi: {type(e).__name__}")
@@ -1181,6 +1185,10 @@ async def _group_backfill(chat_id: int, title: str, slot: int = 1) -> None:
     try:
         with storage.use_slot(slot):
             added = await archive.backfill(client, chat_id, limit=None)
+            try:
+                await archive.fill_media(client, chat_id)
+            except Exception as e:
+                log.warning("Guruh mediasi to'ldirilmadi (%s)", type(e).__name__)
     except Exception as e:
         log.exception("Guruh tarixi arxivga olinmadi")
         await alert(f"⚠️ «{title}» guruhining eski xabarlari arxivga olinmadi: {type(e).__name__}")
