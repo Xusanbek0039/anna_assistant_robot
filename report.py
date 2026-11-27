@@ -88,7 +88,7 @@ def seconds_until(now: datetime, hh: int, mm: int) -> float:
     return (target - now).total_seconds()
 
 
-async def run(send) -> None:
+async def run(send, slots=lambda: [1]) -> None:
     """send(text) — egasiga HTML xabar yuboradigan coroutine. Hech qachon istisno chiqarmaydi."""
     tz = ZoneInfo(config.TIMEZONE)
     hh, mm = _parse_time(config.REPORT_TIME)
@@ -100,7 +100,10 @@ async def run(send) -> None:
             st = await storage.get_runtime()
             if st.get("last_report") == today:  # qayta ishga tushganda ikki marta yubormaslik
                 continue
-            await send(await make_report())
+            for slot in slots():   # har bir akkauntga alohida hisobot
+                with storage.use_slot(slot):
+                    text = await make_report()
+                    await send(text if slot == 1 else f"📱 <b>{slot}-akkaunt</b>\n" + text)
             await storage.set_runtime(last_report=today)
             log.info("Kunlik hisobot yuborildi")
         except Exception as e:

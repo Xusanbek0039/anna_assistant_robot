@@ -212,6 +212,11 @@ class Ctx:
 ctx = Ctx()
 
 
+def account_slots() -> list[int]:
+    """Ulangan Telegram akkauntlar: [1] yoki [1, 2]."""
+    return sorted(set(ctx.users) | {1})
+
+
 def recipients() -> list[int]:
     """Bildirishnoma oladiganlar: asosiy ega + /ruxsat berilganlar."""
     return [ctx.main_owner] + [u for u in _allowed if u != ctx.main_owner]
@@ -493,7 +498,9 @@ def allowed_panel() -> tuple[str, list]:
 
 # ---------- «Qaysi akkaunt uchun?» ----------
 PICK_TITLES = {"panel": "⚙️ Boshqaruv", "chn": "📢 Kanallar arxivi", "find": "🔎 Qidirish",
-               "grp": "👥 Guruhlar", "inbox": "📬 Inbox", "arc": "🗂 Chat arxivi"}
+               "grp": "👥 Guruhlar", "inbox": "📬 Inbox", "arc": "🗂 Chat arxivi", "watch": "🔔 Eslatmalar",
+               "report": "📈 Hisobot"}
+_watch_view: dict[int, int] = {}   # kim qaysi akkaunt eslatmalarini ko'ryapti
 _find_slot = 1   # oxirgi qidiruv qaysi akkauntdan (natija tugmalari ham shu akkauntdan ishlaydi)
 _arc_view: dict[int, int] = {}   # kim qaysi akkaunt arxivini ko'ryapti (oddiy «arc:» tugmalari uchun)
 
@@ -551,10 +558,9 @@ def acc_panel(slot: int = 2, first_time: bool = False) -> tuple[str, list]:
         rows.append([Button.inline(("✅ " if on else "▫️ ") + label, f"acc:t:{slot}:{key}".encode())])
     if config.DRY_RUN and runtime.get(f"acc{slot}_bio"):
         lines += ["", "ℹ️ DRY_RUN=true — bio Telegram'da o'zgarmaydi (faqat logda)."]
-    lines += ["", "📢 Kanallar arxivi va 🔎 qidiruv — pastdagi tugmalar (shu akkaunt uchun).",
-              "Faqat asosiy akkauntda: shaxsiy chatlar arxivi, eslatmalar."]
-    rows.append([Button.inline("📢 Kanallar arxivi", f"pick:chn:{slot}".encode()),
-                 Button.inline("🔎 Qidirish", f"pick:find:{slot}".encode())])
+    lines += ["", "Boshqa hamma bo'lim ham (🗂 Arxiv, 📬 Inbox, 🔎 Qidirish, 🔔 Eslatmalar, 👥 Guruhlar, 📢 Kanallar, "
+              "📈 Hisobot) shu akkaunt uchun ishlaydi — bosganda «qaysi akkaunt?» deb so'raladi."]
+    rows.append([Button.inline("⚙️ To'liq boshqaruv paneli", f"pick:panel:{slot}".encode())])
     rows.append([Button.inline("✔️ Tayyor", f"acc:done:{slot}".encode()),
                  Button.inline("🚪 Akkauntdan chiqish", b"tg:logout2_ask")])
     return "\n".join(lines), rows
@@ -585,7 +591,7 @@ async def _acc_stop(slot: int) -> None:
             await upd.restore()
         except Exception as e:
             log.warning("%d-akkaunt asl bio'si qaytarilmadi (%s)", slot, type(e).__name__)
-    for key in ("online", "bio"):
+    for key in ("online", "bio", "watch"):
         t = tasks.get(key)
         if t and not t.done():
             t.cancel()
@@ -595,6 +601,9 @@ async def acc_toggle(slot: int, key: str) -> str:
     """Funksiyani yoqadi/o'chiradi. Javob matni (callback uchun)."""
     flag = f"acc{slot}_{key}"
     on = not runtime.get(flag)
+    if key == "autoreply":   # kotiba = 2-akkaunt rejimi (Doim / O'chiq)
+        with storage.use_slot(slot):
+            await storage.set_mode("on" if on else "off")
     if key == "bio" and not on:   # o'chirilsa — asl bio va familiya qaytariladi
         upd = _acc_tasks.get(slot, {}).get("bio_obj")
         if upd is not None:
@@ -633,6 +642,12 @@ async def connect_second(client, slot: int = 2) -> str | None:
     groups.setup(client, group_clone_text, send_media, slot=slot)
     archive.setup_channels(client, slot)   # 📢 2-akkaunt kanallari ham arxivlanadi (belgilanganlari)
     archive.setup_account(client, me.id, slot)   # 🗂 shaxsiy chatlar va yoqilgan guruhlar — o'z arxivi
+    if config.WATCH_ENABLED:   # 🔔 eslatmalar — o'z ro'yxati («watches2»), shu akkaunt orqali tekshiriladi
+        watchers.setup(client, watch_alert, slot)
+        _acc_tasks.setdefault(slot, {})["watch"] = asyncio.create_task(watchers.run(client, slot))
+    with storage.use_slot(slot):   # eski «kotiba o'chiq» sozlamasi -> 2-akkaunt rejimi
+        if not await storage.has_mode():
+            await storage.set_mode("on" if runtime.get(f"acc{slot}_autoreply") else "off")
     asyncio.create_task(_sync_second_archive(client, slot))
     _acc_apply(slot)
     log.info("%d-akkaunt ulandi: %s (id %s)", slot, me.first_name, me.id)
@@ -651,9 +666,13 @@ async def _sync_second_archive(client, slot: int) -> None:
     with storage.use_slot(slot):
         try:
             chats, added = await archive.sync_existing(client, config.ARCHIVE_SYNC_LIMIT)
-        except Exception as e:
+        except Exception:
             log.exception("%d-akkaunt chatlari arxivga nusxalanmadi", slot)
             return
+        try:   # akkaunti o'chirilgan odamlar bilan yozishmalar ham (1-akkauntdagidek)
+            await deleted_accounts.refresh(client)
+        except Exception:
+            log.exception("%d-akkaunt o'chirilgan akkauntlari arxivlanmadi", slot)
     if added:
         await alert(f"🗂 {_acc_title(slot)}: {chats} ta chatdan {added} ta xabar arxivga nusxalandi "
                     "(🗂 Chat arxivi → shu akkaunt).")
@@ -835,8 +854,16 @@ async def watch_alert(text: str, buttons: list | None = None) -> None:
 
 async def _watch_request(event, req: "watchers.Request", note: str = "") -> None:
     """Egasi aytgan eslatmani qo'yadi va natijani yozadi."""
+    # qaysi akkaunt eslatmasi: tugma ichida — o'shaniki, bo'lmasa oxirgi tanlangan (🔔 Eslatmalar → akkaunt)
+    slot = storage.arc_slot() if storage.arc_slot() != 1 else _watch_view.get(_requester.get(), 1)
+    if slot not in ctx.users:
+        slot = 1
     try:
-        text, buttons = await watchers.handle(ctx.user, req)
+        with storage.use_slot(slot):
+            text, buttons = await watchers.handle(ctx.users.get(slot) or ctx.user, req)
+        if slot != 1:
+            text = _acc_head(slot) + text
+            buttons = [[(t, d.replace("wch:", f"wch{slot}:", 1)) for t, d in row] for row in buttons or []]
     except Exception as e:
         log.exception("Eslatma qo'yilmadi")
         await event.respond(f"❌ Eslatma qo'yilmadi: {type(e).__name__}")
@@ -1142,7 +1169,8 @@ async def _channel_backfill(chat_id: int, title: str, slot: int = 1) -> None:
 
 async def _inbox_for(event, slot: int | None) -> None:
     """📬 Javob kutayotganlar (slot berilsa — faqat shu akkauntniki)."""
-    rows = await storage.pending_inbox(slot)
+    with storage.use_slot(slot or 1):
+        rows = await storage.pending_inbox(slot)
     who = f" ({_acc_title(slot)})" if slot and 2 in ctx.users else ""
     if not rows:
         await event.respond(f"📭 Javob kutayotgan xabar yo'q{who}.")
@@ -1442,8 +1470,19 @@ async def set_commands(bot: TelegramClient, owner_id: int) -> None:
 
 
 # ---------- boshqaruv paneli (tugmalar) ----------
-async def _do_action(action: str) -> str:
-    """Panel tugmasi yoki buyruq bajaradigan amal. Natija matnini qaytaradi."""
+def _bio_obj(slot: int):
+    return bio_updater.INSTANCE if slot == 1 else _acc_tasks.get(slot, {}).get("bio_obj")
+
+
+def _flag(slot: int, name: str) -> str:
+    """Akkaunt sozlamasi kaliti: 1-akkaunt — bio_enabled/online, 2-akkaunt — acc2_bio/acc2_online."""
+    return {"bio": "bio_enabled", "online": "online"}[name] if slot == 1 else f"acc{slot}_{name}"
+
+
+async def _do_action(action: str, slot: int = 1) -> str:
+    """Panel tugmasi yoki buyruq bajaradigan amal. Natija matnini qaytaradi. slot — qaysi akkaunt."""
+    if slot != 1:
+        return await _do_action_acc(action, slot)
     upd = bio_updater.INSTANCE
     if action.startswith("mode_"):
         mode = action[5:]
@@ -1482,17 +1521,62 @@ async def _do_action(action: str) -> str:
     return "Noma'lum amal"
 
 
-async def _panel() -> tuple[str, list]:
-    mode = await storage.get_mode()
-    st = await availability.get_status()
-    upd = bio_updater.INSTANCE
-    bio_on, online = runtime.get("bio_enabled"), runtime.get("online")
+async def _do_action_acc(action: str, slot: int) -> str:
+    """2-akkaunt paneli amallari — 1-akkauntdagi bilan bir xil."""
+    if slot not in ctx.users:
+        return f"{slot}-akkaunt ulanmagan — /tglogin{slot}"
+    if action.startswith("mode_") and action[5:] in storage.MODES:
+        mode = action[5:]
+        with storage.use_slot(slot):
+            await storage.set_mode(mode)
+        await runtime.update(**{f"acc{slot}_autoreply": mode != "off"})
+        return {"auto": "🤖 Aqlli rejim yoqildi", "on": "🟢 Kotiba doim javob beradi",
+                "off": "⚪️ Avtojavob o'chirildi (kim yozgani baribir keladi)"}[mode]
+    if action in ("bio_on", "bio_off"):
+        await runtime.update(**{_flag(slot, "bio"): action == "bio_on"})
+        _acc_apply(slot)
+        return "🟢 Bio yangilash yoqildi" if action == "bio_on" else "⏸ Bio yangilash to'xtatildi"
+    if action == "bio_now":
+        if not runtime.get(_flag(slot, "bio")):
+            return "Avval bio yangilashni yoqing"
+        await runtime.update()
+        return "🔄 Bio hozir yangilanadi"
+    if action == "bio_restore":
+        upd = _bio_obj(slot)
+        await runtime.update(**{_flag(slot, "bio"): False})
+        if upd is None:
+            return "Bio hali ishga tushmagan — avval «▶️ Bio yoqish»"
+        await upd.restore()
+        return "↩️ Asl bio qaytarildi. Avtomatik yangilash to'xtatildi"
+    if action in ("online_on", "online_off"):
+        await runtime.update(**{_flag(slot, "online"): action == "online_on"})
+        _acc_apply(slot)
+        return "🟢 Akkaunt online ko'rinadi" if action == "online_on" else "⚪️ Online ko'rsatish o'chirildi"
+    if action in ("quote_auto", "quote_off"):
+        return await _do_action(action, 1)   # iqtibos ikkala akkaunt uchun umumiy
+    if action == "groups":
+        await runtime.update(**{f"acc{slot}_groups": not runtime.get(f"acc{slot}_groups")})
+        groups.reset_cache()
+        return "👥 Guruhlari: " + ("ro'yxatda" if runtime.get(f"acc{slot}_groups") else "yashirildi")
+    if action == "refresh":
+        return "🔄 Yangilandi"
+    return "Noma'lum amal"
+
+
+async def _panel(slot: int = 1) -> tuple[str, list]:
+    with storage.use_slot(slot):
+        mode = await storage.get_mode()
+        st = await availability.get_status()
+    upd = _bio_obj(slot)
+    bio_on, online = runtime.get(_flag(slot, "bio")), runtime.get(_flag(slot, "online"))
+    c = "cfg" if slot == 1 else f"cfg{slot}"
     qmode = runtime.get("quote_mode")
     qtext = {"auto": "har kuni almashadi", "off": "o'chirilgan",
              "fixed": f"“{html.escape(runtime.get('quote_text') or '')}”"}.get(qmode, qmode)
     current = html.escape(upd.current_bio) if upd and upd.current_bio else "—"
     text = (
-        "⚙️ <b>Boshqaruv paneli</b>\n\n"
+        "⚙️ <b>Boshqaruv paneli</b>" + (f" — {html.escape(_acc_title(slot))}" if 2 in ctx.users else "")
+        + "\n\n"
         f"Kotiba: {MODE_NAMES[mode]}\n"
         f"Hozir: {'🟢 javob beradi' if st.reply else '⚪️ jim'} — {html.escape(st.reason)}\n\n"
         f"Bio: {'🟢 yangilanmoqda' if bio_on else '⏸ to‘xtatilgan'}"
@@ -1503,26 +1587,31 @@ async def _panel() -> tuple[str, list]:
     )
     tick = lambda cond, label: ("✅ " if cond else "") + label  # noqa: E731
     buttons = [
-        [Button.inline(tick(mode == "auto", "🤖 Aqlli"), b"cfg:mode_auto"),
-         Button.inline(tick(mode == "on", "🟢 Doim"), b"cfg:mode_on"),
-         Button.inline(tick(mode == "off", "⚪️ O'chiq"), b"cfg:mode_off")],
+        [Button.inline(tick(mode == "auto", "🤖 Aqlli"), f"{c}:mode_auto".encode()),
+         Button.inline(tick(mode == "on", "🟢 Doim"), f"{c}:mode_on".encode()),
+         Button.inline(tick(mode == "off", "⚪️ O'chiq"), f"{c}:mode_off".encode())],
         [Button.inline("⏸ Bio to'xtatish" if bio_on else "▶️ Bio yoqish",
-                       b"cfg:bio_off" if bio_on else b"cfg:bio_on"),
-         Button.inline("🔄 Hozir yangilash", b"cfg:bio_now")],
-        [Button.inline(tick(qmode == "auto", "🔁 Iqtibos: har kuni"), b"cfg:quote_auto"),
-         Button.inline(tick(qmode == "off", "🚫 Iqtibossiz"), b"cfg:quote_off")],
+                       f"{c}:{'bio_off' if bio_on else 'bio_on'}".encode()),
+         Button.inline("🔄 Hozir yangilash", f"{c}:bio_now".encode())],
+        [Button.inline(tick(qmode == "auto", "🔁 Iqtibos: har kuni"), f"{c}:quote_auto".encode()),
+         Button.inline(tick(qmode == "off", "🚫 Iqtibossiz"), f"{c}:quote_off".encode())],
         [Button.inline("⚪️ Online o'chirish" if online else "🟢 Online yoqish",
-                       b"cfg:online_off" if online else b"cfg:online_on"),
-         Button.inline("↩️ Asl bio", b"cfg:bio_restore")],
-        [Button.inline("📱 2-akkaunt sozlamalari" if 2 in ctx.users else "📱 2-akkaunt ulash",
-                       b"acc:panel:2" if 2 in ctx.users else b"acc:login"),
-         Button.inline("🔃 Yangilash", b"cfg:refresh")],
+                       f"{c}:{'online_off' if online else 'online_on'}".encode()),
+         Button.inline("↩️ Asl bio", f"{c}:bio_restore".encode())],
+        [Button.inline("🔃 Yangilash", f"{c}:refresh".encode())],
     ]
+    if slot == 1:
+        buttons[-1].insert(0, Button.inline("📱 2-akkaunt" if 2 in ctx.users else "📱 2-akkaunt ulash",
+                                            b"pick:panel:2" if 2 in ctx.users else b"acc:login"))
+    else:
+        g = runtime.get(f"acc{slot}_groups")
+        buttons.insert(-1, [Button.inline(("✅ " if g else "▫️ ") + "👥 Guruhlari ro'yxatda", f"{c}:groups".encode()),
+                            Button.inline("🚪 Akkauntdan chiqish", b"tg:logout2_ask")])
     return text, buttons
 
 
-async def _send_panel(event, extra: str = "") -> None:
-    text, buttons = await _panel()
+async def _send_panel(event, extra: str = "", slot: int = 1) -> None:
+    text, buttons = await _panel(slot)
     if extra:
         text += f"\n\n{extra}"
     await event.respond(text, parse_mode="html", buttons=buttons)
@@ -1751,7 +1840,8 @@ async def _gone_scan() -> None:
     status = await ctx.bot.send_message(ctx.owner_id, "🔎 Chatlar ko'rib chiqilyapti — o'chirilgan akkauntlar "
                                                       "qidirilmoqda, yozishmalar arxivga olinmoqda...")
     try:
-        found, added, named = await deleted_accounts.refresh(ctx.user, await _ai_ok())
+        client = ctx.users.get(storage.arc_slot()) or ctx.user   # qaysi akkaunt arxivi ko'rilyapti
+        found, added, named = await deleted_accounts.refresh(client, await _ai_ok())
     except Exception as e:
         log.exception("O'chirilgan akkauntlar tekshirilmadi")
         await status.edit(f"❌ Tekshirib bo'lmadi: {type(e).__name__}")
@@ -1839,7 +1929,8 @@ def _summary_buttons(chat_id: int) -> list:
 # ---------- haftalik hisobot ----------
 @_broadcast
 async def send_weekly(text: str, chat_ids: list[int]) -> None:
-    buttons = [[Button.inline(f"✍️ Javob: {i + 1}", f"reply:{cid}".encode())] for i, cid in enumerate(chat_ids)]
+    sfx = "" if storage.arc_slot() == 1 else f":{storage.arc_slot()}"   # javob shu akkauntdan
+    buttons = [[Button.inline(f"✍️ Javob: {i + 1}", f"reply:{cid}{sfx}".encode())] for i, cid in enumerate(chat_ids)]
     await ctx.bot.send_message(ctx.owner_id, text, parse_mode="html", buttons=buttons or None)
 
 
@@ -2241,8 +2332,12 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                                 "«Ali yuborgan manzilni top», «Vali tashlagan pdf faylni qidir», "
                                 "«wifi parolini qidir».")
         elif choice == MENU_REPORT:
-            await event.respond(await report.make_report(), parse_mode="html")
+            if not await _ask_account(event, "report"):
+                await event.respond(await report.make_report(), parse_mode="html")
+        elif choice == MENU_WATCH and await _ask_account(event, "watch"):
+            pass
         elif choice == MENU_WATCH:
+            _watch_view[event.sender_id] = 1
             text, buttons = await watchers.list_view()
             await event.respond(text, parse_mode="html", buttons=_inline(buttons))
         elif choice == MENU_IG:
@@ -2488,7 +2583,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
 
     # ---------- «Qaysi akkaunt uchun?» — 2 ta akkaunt ulangan bo'lsa ----------
-    @_on(events.CallbackQuery(pattern=rb"^pick:(panel|chn|find|grp|inbox|arc):(\d)$", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^pick:(panel|chn|find|grp|inbox|arc|watch|report):(\d)$", func=is_owner))
     async def _pick_account(event):
         feature, slot = event.data.decode().split(":")[1], int(event.data.decode().split(":")[2])
         await event.answer()
@@ -2496,15 +2591,20 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.respond(f"{slot}-akkaunt ulanmagan — /tglogin{slot}")
             return
         if feature == "panel":
-            if slot == 1:
-                await _status(event)
-            else:
-                text, rows = acc_panel(slot)
-                await event.respond(text, parse_mode="html", buttons=rows)
+            await _status(event, slot)
         elif feature == "chn":
             await _send_channels_panel(event, slot=slot)
         elif feature == "grp":
             await _send_groups_panel(event, slot=slot)
+        elif feature == "watch":
+            _watch_view[event.sender_id] = slot
+            with storage.use_slot(slot):
+                text, buttons = await watchers.list_view()
+            await event.respond(_acc_head(slot) + text, parse_mode="html", buttons=_inline(buttons))
+        elif feature == "report":
+            with storage.use_slot(slot):
+                text = await report.make_report()
+            await event.respond(_acc_head(slot) + text, parse_mode="html")
         elif feature == "inbox":
             await _inbox_for(event, slot)
         elif feature == "arc":
@@ -2550,9 +2650,20 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         else:
             await event.answer()
 
-    @_on(events.CallbackQuery(pattern=rb"^wch:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^wch\d?:", func=is_owner))
     async def _watch_callback(event):
-        parts = event.data.decode().split(":")
+        head, _, rest = event.data.decode().partition(":")
+        slot = int(head[3:]) if head[3:].isdigit() else _watch_view.get(event.sender_id, 1)
+        if slot != 1 and slot not in ctx.users:
+            await event.answer(f"{slot}-akkaunt ulanmagan", alert=True)
+            return
+        if head != "wch":
+            _watch_view[event.sender_id] = slot
+        with storage.use_slot(slot):
+            await _watch_callback_inner(event, "wch:" + rest, slot)
+
+    async def _watch_callback_inner(event, data: str, slot: int):
+        parts = data.split(":")
         action, arg = parts[1], parts[2] if len(parts) > 2 else ""
         if action == "dm" and arg.isdigit():
             await event.answer()
@@ -2597,7 +2708,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer("⏳")
             await _watch_request(event, watchers.Request("phone", phone=arg, number=arg))
         elif action == "pick" and len(parts) > 3 and parts[3].isdigit():
-            res = await watchers.pick(ctx.user, arg, int(parts[3]))
+            res = await watchers.pick(ctx.users.get(slot) or ctx.user, arg, int(parts[3]))
             if res is None:
                 await event.answer("So'rov eskirgan — qaytadan yozing")
                 return
@@ -2616,9 +2727,6 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return
         if head != "arc":
             _arc_view[event.sender_id] = slot
-        if slot != 1 and rest.split(":")[0] in ("gone", "gonescan", "weekly", "backup"):
-            await event.answer("Bu bo'lim faqat 1-akkaunt uchun", alert=True)
-            return
         with storage.use_slot(slot):
             await _arc_callback_inner(event, "arc:" + rest)
 
@@ -2706,11 +2814,11 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         )
 
     @_on(events.NewMessage(pattern=r"^/status$", func=is_owner))
-    async def _status(event):
-        await _send_panel(event, extra=(
-            f"📨 Oxirgi 24 soatda: {await storage.today_count()} ta xabar\n"
-            f"📬 Javob kutayotganlar: {len(await storage.pending_inbox())} (/inbox)"
-        ))
+    async def _status(event, slot: int = 1):
+        with storage.use_slot(slot):
+            extra = (f"📨 Oxirgi 24 soatda: {await storage.today_count()} ta xabar\n"
+                     f"📬 Javob kutayotganlar: {len(await storage.pending_inbox())} (/inbox)")
+        await _send_panel(event, extra=extra, slot=slot)
 
     @_on(events.NewMessage(pattern=r"^/tag\s+(\S+)\s+(\S+)$", func=is_owner))
     async def _tag(event):
@@ -3223,12 +3331,13 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
 
     # Panel tugmalari: cfg:<amal>
-    @_on(events.CallbackQuery(pattern=rb"^cfg:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^cfg\d?:", func=is_owner))
     async def _cfg_callback(event):
-        action = event.data.decode().split(":", 1)[1]
-        result = await _do_action(action)
+        head, action = event.data.decode().split(":", 1)
+        slot = int(head[3:]) if head[3:].isdigit() else 1
+        result = await _do_action(action, slot)
         await event.answer(result[:190])
-        text, buttons = await _panel()
+        text, buttons = await _panel(slot)
         try:
             await event.edit(text, parse_mode="html", buttons=buttons)
         except Exception:
@@ -3346,10 +3455,12 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             via = f" ({slot}-akkauntdan)" if slot != 1 else ""
             await event.respond(f"✍️ <code>{chat_id}</code> ga javob matnini yozing{via}:", parse_mode="html")
         elif action == "done":
-            await storage.mark_handled(chat_id)
+            with storage.use_slot(slot):
+                await storage.mark_handled(chat_id)
             await event.answer("Ko'rildi deb belgilandi")
         elif action == "mute":
-            await storage.mute(chat_id, OWNER_TAKEOVER_MINUTES * 60)
+            with storage.use_slot(slot):
+                await storage.mute(chat_id, OWNER_TAKEOVER_MINUTES * 60)
             await event.answer(f"Bu chatda AI {OWNER_TAKEOVER_MINUTES} daqiqa jim turadi")
         elif action == "ignore":
             await storage.add_ignored(chat_id, str(chat_id))

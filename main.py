@@ -196,10 +196,10 @@ async def main() -> None:
            *([supervise("Instagram Drive", instagram.drive_loop(control_bot.alert))] if gdrive.enabled() else []),
            ] if config.INSTAGRAM_ENABLED else []),
         supervise("Guruh xabarlarini klonlash", groups.run()),
-        supervise("Haftalik chat hisoboti", weekly.run(control_bot.send_weekly)),
+        supervise("Haftalik chat hisoboti", weekly.run(control_bot.send_weekly, control_bot.account_slots)),
     ]
     if config.REPORT_ENABLED:
-        background.append(supervise("Kunlik hisobot", report.run(control_bot.send_html)))
+        background.append(supervise("Kunlik hisobot", report.run(control_bot.send_html, control_bot.account_slots)))
     if config.FINANCE_ENABLED:
         background.append(supervise("Moliya hisoboti", finance.run_reports(control_bot.send_html)))
 

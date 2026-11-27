@@ -71,11 +71,15 @@ async def make() -> tuple[str, list[int]]:
     return build(stats, media)
 
 
-async def run(send) -> None:
-    """send(text, chat_ids) — egasiga hisobot (javob berish tugmalari bilan)."""
+async def run(send, slots=lambda: [1]) -> None:
+    """send(text, chat_ids) — egasiga hisobot (javob berish tugmalari bilan). Har bir akkauntga alohida."""
     async def job():
-        text, ids = await make()
-        await send(text, ids)
+        for slot in slots():
+            with storage.use_slot(slot):
+                text, ids = await make()
+                if slot != 1:
+                    text = f"📱 <b>{slot}-akkaunt</b>\n" + text
+                await send(text, ids)
 
     await schedule.daily("Haftalik chat hisoboti", config.WEEKLY_REPORT_TIME, "last_weekly", job,
                          weekday=config.WEEKLY_REPORT_DAY, enabled=lambda: runtime.get("weekly_report"))

@@ -249,7 +249,12 @@ async def resolve_user(client, ref) -> User | None:
 
 # ---------- holat ----------
 _alert = None                                  # async (text, buttons) -> None  (control_bot.watch_alert)
-_online: dict[int, list[dict]] = {}            # user_id -> shu odam uchun faol online eslatmalar
+_online_by: dict[int, dict[int, list[dict]]] = {}   # akkaunt -> {user_id -> faol online eslatmalar}
+
+
+def _ol() -> dict[int, list[dict]]:
+    """Joriy akkauntning online eslatmalari (storage.arc_slot())."""
+    return _online_by.setdefault(storage.arc_slot(), {})
 _lock = asyncio.Lock()
 _wake = asyncio.Event()
 _phone_pause_until = 0.0   # FloodWait bo'lsa raqam tekshiruvi shu vaqtgacha to'xtaydi (bazada ham saqlanadi)
@@ -283,6 +288,10 @@ _seq = itertools.count(1)
 
 
 async def _send(text: str, buttons: list | None = None) -> None:
+    slot = storage.arc_slot()
+    if slot != 1:   # 2-akkaunt eslatmasi — belgisi va tugmalari shu akkauntga
+        text = f"📱 <b>{slot}-akkaunt</b>\n" + text
+        buttons = [[(t, d.replace("wch:", f"wch{slot}:", 1)) for t, d in row] for row in buttons or []] or None
     if _alert:
         try:
             await _alert(text, buttons)
@@ -296,8 +305,8 @@ async def _refresh() -> list[dict]:
     for r in rows:
         if r["kind"] == "online":
             by_user.setdefault(r["user_id"], []).append(r)
-    _online.clear()
-    _online.update(by_user)
+    _ol().clear()
+    _ol().update(by_user)
     return rows
 
 
@@ -507,7 +516,7 @@ async def on_status(user_id: int, status, user: User | None = None) -> None:
     kind = status_kind(status)
     fire: list[dict] = []
     async with _lock:
-        for r in list(_online.get(user_id, [])):
+        for r in list(_ol().get(user_id, [])):
             fields: dict = {}
             if user is not None and (r.get("label") != _name(user) or r.get("username") != _username(user)):
                 fields.update(label=_name(user), username=_username(user))
@@ -519,7 +528,7 @@ async def on_status(user_id: int, status, user: User | None = None) -> None:
                     fields.update(last_fired=now, fired=r.get("fired", 0) + 1)
                     if not r.get("repeat"):
                         fields["active"] = False
-                        _online[user_id].remove(r)
+                        _ol()[user_id].remove(r)
                     fire.append(r)
             if fields:
                 r.update(fields)
@@ -588,23 +597,30 @@ async def check_once(client) -> None:
         await asyncio.sleep(PHONE_PAUSE)
 
 
-def setup(client, alert) -> None:
+def setup(client, alert, slot: int = 1) -> None:
+    """slot — qaysi akkaunt eslatmalari (2-akkaunt: «watches2», o'z client'i orqali tekshiriladi)."""
     global _alert
     _alert = alert
 
     @client.on(events.UserUpdate)
     async def _on_user_update(event):
         # status=None — bu «yozmoqda...» kabi hodisa; faqat kuzatilayotgan odamlar
-        if event.status is None or event.user_id not in _online:
-            return
-        try:
-            await on_status(event.user_id, event.status)
-        except Exception as e:
-            log.warning("Online holat qayta ishlanmadi (%s)", type(e).__name__)
+        with storage.use_slot(slot):
+            if event.status is None or event.user_id not in _ol():
+                return
+            try:
+                await on_status(event.user_id, event.status)
+            except Exception as e:
+                log.warning("Online holat qayta ishlanmadi (%s)", type(e).__name__)
 
 
-async def run(client) -> None:
+async def run(client, slot: int = 1) -> None:
     """Fon vazifasi: online holat (zaxira) va raqamlarni davriy tekshiradi."""
+    with storage.use_slot(slot):
+        await _run(client)
+
+
+async def _run(client) -> None:
     await _load_pause()
     if (left := phone_pause_left()) > 0:
         log.info("Raqam tekshiruvi Telegram cheklovi sabab %.1f soat to'xtab turadi", left / 3600)

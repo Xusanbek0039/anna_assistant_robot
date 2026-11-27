@@ -78,18 +78,24 @@ def _in_busy_hours(now: datetime) -> str | None:
     return None
 
 
+_active_mem: dict[int, float] = {}   # akkaunt -> egasi oxirgi marta o'zi yozgan vaqt
+
+
 async def mark_owner_active() -> None:
-    """Egasi istalgan chatga o'zi yozganda chaqiriladi."""
+    """Egasi istalgan chatga o'zi yozganda chaqiriladi (qaysi akkauntdan — storage.arc_slot())."""
     global _last_active_mem
-    _last_active_mem = time.time()
+    now = time.time()
+    _active_mem[storage.arc_slot()] = now
+    if storage.arc_slot() == 1:
+        _last_active_mem = now
     try:
-        await storage.set_owner_active(_last_active_mem)
+        await storage.set_owner_active(now)
     except Exception:
         pass  # xotirada saqlangani yetarli
 
 
 async def _owner_active_ago() -> float:
-    last = _last_active_mem
+    last = _last_active_mem if storage.arc_slot() == 1 else _active_mem.get(storage.arc_slot(), 0.0)
     if not last:
         try:
             last = await storage.get_owner_active()

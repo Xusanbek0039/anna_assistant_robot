@@ -255,44 +255,21 @@ def _display_name(u: User) -> str:
     return " ".join(p for p in (u.first_name, u.last_name) if p) or "Nomaʼlum"
 
 
-async def _notify_only(event, slot: int) -> None:
-    """Avtojavobsiz: xabar Inbox'ga yoziladi va egasiga «📩 Yangi xabar» (rasm/video bo'lsa — o'zi ham)."""
-    sender = await event.get_sender()
-    if not isinstance(sender, User) or sender.bot or sender.id == TELEGRAM_SERVICE_ID:
-        return
-    if await storage.is_ignored(sender.id):
-        return
-    msg = event.message
-    label = _media_label(msg)
-    content = ((f"[media: {label}] " if label else "") + (msg.message or "")).strip()
-    if not content:
-        return
-    name, username = _display_name(sender), sender.username
-    media_msg_id = None
-    if label and label != "stiker" and (getattr(msg.file, "size", 0) or 0) <= MAX_MEDIA_BYTES:
-        try:
-            data = await msg.download_media(file=bytes)
-            if data:
-                media_msg_id = await control_bot.send_media(
-                    event.chat_id, name, data, _media_filename(msg, label), kind=label, username=username,
-                    view_once=_is_view_once(msg), mime=(getattr(msg.file, "mime_type", None) or "").lower(),
-                    slot=slot)
-        except Exception:
-            log.exception("Media botga yuborilmadi (%s-akkaunt)", slot)
-    await storage.upsert_inbox(event.chat_id, name, username, "", False, content, slot)
-    await control_bot.notify(event.chat_id, name, username, content, "", False, None, reply_to=media_msg_id,
-                             slot=slot)
-
-
 def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
-    """slot — akkaunt raqami (1 — asosiy, 2 — ikkinchi): bildirishnomalar va javoblar shu akkauntga bog'lanadi."""
+    """slot — akkaunt raqami (1 — asosiy, 2 — ikkinchi): bildirishnomalar va javoblar shu akkauntga bog'lanadi.
+    2-akkaunt o'z bazasida (tarix, Inbox, «AI jim», statistika) va o'z kotiba rejimida (Aqlli/Doim/O'chiq) ishlaydi."""
 
-    @user.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+    def _reg(ev):
+        def deco(fn):
+            async def wrapped(event):
+                with storage.use_slot(slot):
+                    return await fn(event)
+            user.on(ev)(wrapped)
+            return fn
+        return deco
+
+    @_reg(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     async def on_incoming(event):
-        if slot != 1 and not runtime.get(f"acc{slot}_autoreply"):
-            # 2-akkauntda kotiba o'chiq — AI javob bermaydi, lekin kim yozgani sizga keladi (📩)
-            await _notify_only(event, slot)
-            return
         sender = await event.get_sender()
         chat_id = event.chat_id
         if not isinstance(sender, User) or sender.bot or sender.id == TELEGRAM_SERVICE_ID:
@@ -445,7 +422,7 @@ def setup(user: TelegramClient, me_id: int, slot: int = 1) -> None:
                 await control_bot.notify(chat_id, label_name, username, content,
                                          result["summary"], result["urgent"], reply, reply_to=media_msg_id, slot=slot)
 
-    @user.on(events.NewMessage(outgoing=True))
+    @_reg(events.NewMessage(outgoing=True))
     async def on_outgoing(event):
         chat_id = event.chat_id
         msg = event.message

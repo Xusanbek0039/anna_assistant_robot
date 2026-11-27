@@ -19,7 +19,8 @@ _db = None
 # 🗂 Chat arxivi qaysi akkauntniki: 1 — «archive», «archive_chats»; 2 — «archive2», «archive_chats2».
 # Bir odam ikkala akkauntga yozsa ham xabar raqamlari aralashib ketmaydi. Faqat shu ikki kolleksiya ajraladi.
 ARC_SLOT: contextvars.ContextVar[int] = contextvars.ContextVar("arc_slot", default=1)
-_SLOTTED = ("archive", "archive_chats")
+# Har bir akkauntga alohida: arxiv, AI suhbat tarixi, Inbox, «AI jim», statistika, eslatmalar
+_SLOTTED = ("archive", "archive_chats", "history", "inbox", "muted", "stats", "watches")
 
 
 def arc_slot() -> int:
@@ -221,9 +222,20 @@ async def today_count() -> int:
 MODES = ("on", "off", "auto")
 
 
+def _sid(name: str) -> str:
+    """Akkauntga xos sozlama kaliti: 1-akkaunt — «mode», 2-akkaunt — «mode2»."""
+    return name if ARC_SLOT.get() == 1 else f"{name}{ARC_SLOT.get()}"
+
+
+async def has_mode() -> bool:
+    return await _get_db().settings.find_one({"_id": _sid("mode")}) is not None
+
+
 async def get_mode() -> str:
-    """on — doim javob beradi, off — hech qachon, auto — faqat band bo'lganda."""
-    doc = await _get_db().settings.find_one({"_id": "mode"})
+    """on — doim javob beradi, off — hech qachon, auto — faqat band bo'lganda (har akkauntniki alohida)."""
+    doc = await _get_db().settings.find_one({"_id": _sid("mode")})
+    if ARC_SLOT.get() != 1:
+        return doc["value"] if doc and doc.get("value") in MODES else "on"
     if doc and doc.get("value") in MODES:
         return doc["value"]
     legacy = await _get_db().settings.find_one({"_id": "enabled"})  # eski /on /off sozlamasi
@@ -233,7 +245,7 @@ async def get_mode() -> str:
 
 
 async def set_mode(mode: str) -> None:
-    await _get_db().settings.update_one({"_id": "mode"}, {"$set": {"value": mode}}, upsert=True)
+    await _get_db().settings.update_one({"_id": _sid("mode")}, {"$set": {"value": mode}}, upsert=True)
 
 
 async def is_enabled() -> bool:
@@ -242,11 +254,11 @@ async def is_enabled() -> bool:
 
 # ---------- egasining faolligi ----------
 async def set_owner_active(ts: float) -> None:
-    await _get_db().settings.update_one({"_id": "owner_active"}, {"$set": {"value": ts}}, upsert=True)
+    await _get_db().settings.update_one({"_id": _sid("owner_active")}, {"$set": {"value": ts}}, upsert=True)
 
 
 async def get_owner_active() -> float:
-    doc = await _get_db().settings.find_one({"_id": "owner_active"})
+    doc = await _get_db().settings.find_one({"_id": _sid("owner_active")})
     return float(doc["value"]) if doc else 0.0
 
 
