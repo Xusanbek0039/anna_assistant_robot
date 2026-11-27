@@ -504,3 +504,36 @@ def test_history_media_queued_from_old_chats(google, monkeypatch):
     assert "drive_media" not in archive._as_history({"media": None})
     monkeypatch.setattr(config, "DRIVE_MEDIA_HISTORY", False)
     assert "drive_media" not in archive._as_history({"media": "video"})
+
+
+def test_resolve_peer_warms_dialogs_and_handles_missing_group(google, media_store, monkeypatch):
+    """StringSession'da kesh bo'sh bo'lsa get_dialogs chaqiriladi; topilmasa ValueError o'rniga lost belgilanadi."""
+    monkeypatch.setattr(archive, "_dialogs_warmed", {})
+    monkeypatch.setattr(archive, "_clients", {})
+    media_store[(-100999, 1)] = {"chat_id": -100999, "msg_id": 1, "media": "rasm", "mime": "image/jpeg",
+                                 "date": 1.7e9, "out": False, "drive_media": "history"}
+    media_store[(-100888, 2)] = {"chat_id": -100888, "msg_id": 2, "media": "rasm", "mime": "image/jpeg",
+                                 "date": 1.7e9, "out": False, "drive_media": "history"}
+
+    class Tg:
+        def __init__(self):
+            self.warmed = False
+
+        async def get_dialogs(self, **kw):
+            self.warmed = True
+            return []
+
+        async def get_input_entity(self, cid):
+            if cid == -100999 and self.warmed:
+                return "peer-999"
+            raise ValueError("Could not find the input entity")
+
+        async def get_messages(self, peer, ids):
+            assert peer == "peer-999"
+            return _TgMsg(ids, b"img", kind="rasm")
+
+    tg = Tg()
+    assert run(archive.drive_media_pending(tg)) == 1
+    assert tg.warmed is True
+    assert media_store[(-100999, 1)]["drive_media"] == "done"
+    assert media_store[(-100888, 2)]["drive_media"] == "lost"

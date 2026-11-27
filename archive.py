@@ -443,6 +443,46 @@ async def client_for(chat_id: int, default):
     return _clients.get(slot, default) if slot != 1 else default
 
 
+_dialogs_warmed: dict[int, float] = {}   # id(client) -> oxirgi get_dialogs vaqti (StringSession keshini to'ldirish)
+
+
+async def _warm_dialogs(client) -> None:
+    """StringSession'da qayta ishga tushgach kanal/guruh access_hash keshi bo'sh bo'ladi — dialoglar bilan to'ldiramiz."""
+    now = time.time()
+    key = id(client)
+    if now - _dialogs_warmed.get(key, 0.0) < 600:
+        return
+    _dialogs_warmed[key] = now
+    if hasattr(client, "get_dialogs"):
+        try:
+            await client.get_dialogs(limit=None)
+        except Exception:
+            pass
+        try:
+            await client.get_dialogs(limit=None, folder=1)  # arxivlangan (Archived) chat/guruhlar ham
+        except Exception:
+            pass
+
+
+async def _resolve_peer(user, chat_id: int, *, full: bool = False):
+    """(client, entity) qaytaradi. StringSession keshida topilmasa dialoglarni yuklaydi va boshqa akkauntni ham sinaydi.
+    Topilmasa (user, None)."""
+    candidates = [user] + [c for c in _clients.values() if c is not user]
+    for cli in candidates:
+        getter = getattr(cli, "get_entity" if full else "get_input_entity", None) or getattr(cli, "get_entity", None)
+        if getter is None:
+            return cli, chat_id
+        try:
+            return cli, await getter(chat_id)
+        except ValueError:
+            await _warm_dialogs(cli)
+            try:
+                return cli, await getter(chat_id)
+            except ValueError:
+                continue
+    return user, None
+
+
 # ---------- eksport ----------
 BACKFILL_BATCH = 500   # katta chatlar tarixini bo'laklab bazaga yozish (xotirani tejash uchun)
 
@@ -459,9 +499,12 @@ async def backfill(user, chat_id: int, limit: int | None = None) -> int:
     limit=None — shu vaqtgacha bo'lgan BARCHA xabarlar (500 talik bo'laklarda, xotirani to'ldirmasdan)."""
     user = await client_for(chat_id, user)
     try:
-        entity = await user.get_entity(chat_id)
+        user, entity = await _resolve_peer(user, chat_id, full=True)
     except Exception as e:
         log.info("Chat %s Telegram'dan olinmadi (%s) — faqat arxivdagilar", chat_id, type(e).__name__)
+        return 0
+    if entity is None:
+        log.info("Chat %s Telegram'da topilmadi — faqat arxivdagilar", chat_id)
         return 0
     group = not isinstance(entity, User)
     kind = "user" if not group else ("channel" if getattr(entity, "broadcast", False) else "group")
@@ -699,10 +742,9 @@ async def fill_media(user, chat_id: int) -> int:
     need.sort(key=lambda d: (d.get("media") not in LIGHT_EMBED_KINDS, -(d.get("date") or 0)))
     if not need or config.EXPORT_MEDIA_MAX_KB <= 0:
         return 0
-    try:
-        entity = await user.get_input_entity(chat_id)
-    except Exception:
-        entity = await user.get_entity(chat_id)
+    user, entity = await _resolve_peer(user, chat_id)
+    if entity is None:
+        return 0
     total, saved = 0, 0
     for i in range(0, len(need), 100):
         chunk = need[i:i + 100]
@@ -890,7 +932,11 @@ async def _upload_media(user, doc: dict) -> str:
         # o'chib ketadigan media — kelgan zahoti diskka olingan, Telegram'dan qayta so'ralmaydi
         tmp, path, mime = os.path.dirname(local), local, doc.get("mime") or ""
     else:
-        msg = await user.get_messages(cid, ids=mid)
+        user, peer = await _resolve_peer(user, cid)
+        if peer is None:
+            await storage.archive_msg_set(cid, mid, drive_media="lost")  # chat/guruh topilmadi (chiqib ketilgan)
+            return "lost"
+        msg = await user.get_messages(peer, ids=mid)
         if msg is None or not msg.media or getattr(msg.file, "size", None) is None:
             await storage.archive_msg_set(cid, mid, drive_media="lost")  # yuklashga ulgurmay o'chirilgan
             return "lost"
