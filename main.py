@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import signal
 import sys
 
 
@@ -93,13 +94,43 @@ async def main() -> None:
     log.info("2/6 MongoDB'ga ulanyapti — Atlas'da Network Access -> 0.0.0.0/0 ruxsati kerak (xotira %s)",
              health.memory_note())
     await storage.init()
+    main_task = asyncio.current_task()
+    if main_task is not None and hasattr(signal, "SIGTERM"):
+        try:
+            # Render/Linux qayta joylashda SIGTERM yuboradi — qulfni darhol bo'shatish uchun toza to'xtaymiz
+            asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, main_task.cancel)
+        except (NotImplementedError, RuntimeError):
+            pass  # Windows'da add_signal_handler qo'llab-quvvatlanmaydi
+
+    startup_hb = None
     if config.SINGLE_INSTANCE:
         log.info("3/6 Nusxa qulfi olinyapti (xotira %s)", health.memory_note())
         await instance.wait_until_only()  # boshqa nusxa ishlayotgan bo'lsa, Telegram'ga ulanmasdan kutadi
+
+        async def _startup_lost() -> None:
+            if main_task is not None:
+                main_task.cancel()
+
+        # Login (via_bot) yoki FloodWait uzoq cho'zilsa ham qulf eskirib qolmasligi uchun
+        startup_hb = asyncio.create_task(instance.heartbeat(_startup_lost))
     else:
         log.warning("3/6 SINGLE_INSTANCE=false — nusxa qulfi O'CHIQ. Deploy paytida eski va yangi nusxa (yoki "
                     "kompyuter va server) bir vaqtda bitta Telegram sessiyasini ishlatsa, Telegram uni bloklaydi va "
                     "bot qotib qoladi. Tavsiya: SINGLE_INSTANCE=true")
+    try:
+        await _run(startup_hb)
+    finally:
+        if startup_hb is not None and not startup_hb.done():
+            startup_hb.cancel()
+            try:
+                await startup_hb
+            except asyncio.CancelledError:
+                pass
+        if config.SINGLE_INSTANCE:
+            await instance.release()  # ishga tushishda xato/chiqish bo'lsa ham qulf darhol bo'shaydi
+
+
+async def _run(startup_hb: asyncio.Task | None = None) -> None:
     await runtime.load()
     await channels.load()       # 📢 arxivlanadigan kanallar (/kanallar)
     await gdrive.load_token()   # botdan (/drive) qayta ulangan bo'lsa — yangi token bazada
@@ -170,6 +201,9 @@ async def main() -> None:
         supervise("Holat nazorati", monitor.run()),
     ]
     if config.SINGLE_INSTANCE:
+        if startup_hb is not None and not startup_hb.done():
+            startup_hb.cancel()
+
         async def _lost() -> None:
             await control_bot.alert("⚠️ Anna'ning boshqa nusxasi ishga tushdi — bu nusxa to'xtadi "
                                     "(ikkalasi birga ishlasa, xabarlar ikki martadan kelardi).")
@@ -225,17 +259,14 @@ async def main() -> None:
         except Exception:
             pass
         raise
-    finally:
-        if config.SINGLE_INSTANCE:
-            await instance.release()  # keyingi ishga tushish kutib qolmasligi uchun
 
 
 if __name__ == "__main__":
     setup_logging()
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        log.info("To'xtatildi (Ctrl+C)")
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        log.info("To'xtatildi")
     except SystemExit:
         raise
     except Exception:

@@ -40,3 +40,28 @@ def test_release_frees_lock(fake_storage):
     run(instance.wait_until_only())
     run(instance.release())
     assert fake_storage.d_lock is None
+
+
+def test_main_releases_lock_on_startup_exit(fake_storage, monkeypatch):
+    """Ishga tushish bosqichida sys.exit() yoki xato bo'lsa ham qulf darhol bo'shatiladi."""
+    import pytest
+    import config
+    import main as main_mod
+
+    monkeypatch.setattr(config, "SINGLE_INSTANCE", True)
+    monkeypatch.setattr(config, "BIO_ENABLED", False)
+    monkeypatch.setattr(config, "require", lambda *a: None)
+
+    async def fake_init():
+        return True
+
+    async def boom(startup_hb=None):
+        assert fake_storage.d_lock == instance.INSTANCE_ID
+        raise SystemExit("BOT_TOKEN xato")
+
+    monkeypatch.setattr(main_mod.storage, "init", fake_init)
+    monkeypatch.setattr(main_mod, "_run", boom)
+
+    with pytest.raises(SystemExit):
+        run(main_mod.main())
+    assert fake_storage.d_lock is None
