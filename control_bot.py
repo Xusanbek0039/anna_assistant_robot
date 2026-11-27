@@ -1,5 +1,7 @@
 """Nazorat boti: egasiga xulosalar yuboradi va buyruqlarni qabul qiladi."""
 import asyncio
+import contextvars
+import functools
 import html
 import io
 import itertools
@@ -100,6 +102,8 @@ HELP = (
     "/bio on | off | now | restore — yoqish, to'xtatish, hozir yangilash, asl bio'ni qaytarish\n"
     "/quote &lt;matn&gt; — doimiy iqtibos, /quote auto — har kuni almashadi, /quote off — iqtibossiz\n"
     "/online on | off — akkauntni online ko'rsatish\n"
+    "/ruxsat &lt;ID yoki @username&gt; — boshqa odamga botdan to'liq foydalanish ruxsati; /ruxsatlar — ro'yxat "
+    "va olib tashlash\n"
     "/tglogin — ulangan Telegram akkaunt; /tglogout — chiqish (keyin botda yangi akkaunt ulanadi)\n"
     "/tglogin2 — 2-Telegram akkauntni ham ulash (kotiba va guruhlar ikkalasida); /tglogout2 — undan chiqish\n"
     "/yangixabar on | off — «📩 Yangi xabar» bildirishnomalari (SHOSHILINCH va chaqiruv doim keladi)\n\n"
@@ -180,16 +184,76 @@ _ig_notif_map: dict[int, str] = {}
 _ig_shares: dict[str, str] = {}
 
 
+# 🔑 Kim bilan gaplashilyapti: bot ishlovchisi ichida — tugmani bosgan/yozgan odam (javob o'shanga ketadi).
+# Fon bildirishnomalarida bo'sh — _broadcast uni har bir ruxsatli odamga navbat bilan qo'yib chiqadi.
+_requester: contextvars.ContextVar[int | None] = contextvars.ContextVar("requester", default=None)
+_allowed: dict[int, str] = {}   # /ruxsat berilganlar: user_id -> nomi (to'liq ruxsat)
+
+
 class Ctx:
     bot: TelegramClient
     user: TelegramClient
-    owner_id: int
+    main_owner: int = 0   # asosiy akkaunt egasi (5626042722) — ruxsat beradi/oladi
+
+    @property
+    def owner_id(self) -> int:
+        """Xabar kimga: hozirgi so'rovchi (egasi yoki ruxsatli odam), bo'lmasa — asosiy ega."""
+        return _requester.get() or self.main_owner
+
+    @owner_id.setter
+    def owner_id(self, value: int) -> None:
+        self.main_owner = value
+
     monitor = None  # health.Monitor (main.py o'rnatadi)
     users: dict = {}   # akkaunt raqami -> TelegramClient (1 — asosiy, 2 — ikkinchi)
     names: dict = {}   # akkaunt raqami -> ko'rinadigan nom
 
 
 ctx = Ctx()
+
+
+def recipients() -> list[int]:
+    """Bildirishnoma oladiganlar: asosiy ega + /ruxsat berilganlar."""
+    return [ctx.main_owner] + [u for u in _allowed if u != ctx.main_owner]
+
+
+def is_allowed(uid: int | None) -> bool:
+    return uid is not None and (uid == ctx.main_owner or uid in _allowed)
+
+
+def _broadcast(fn):
+    """Fon bildirishnomasi — har bir ruxsatli odamga alohida yuboriladi (tugmalari ham har biriga).
+    Bot ishlovchisi ichida chaqirilsa (kimdir tugma bosgan) — faqat o'sha odamga."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        if _requester.get() is not None:
+            return await fn(*args, **kwargs)
+        first = None
+        for i, uid in enumerate(recipients()):
+            token = _requester.set(uid)
+            try:
+                # reply_to — asosiy eganing chatidagi xabar id si; boshqalarda u yo'q
+                kw = kwargs if i == 0 or "reply_to" not in kwargs else {**kwargs, "reply_to": None}
+                res = await fn(*args, **kw)
+                first = res if i == 0 else first
+            except Exception:
+                log.exception("%s: %s ga yuborilmadi", fn.__name__, uid)
+            finally:
+                _requester.reset(token)
+        return first
+    return wrapper
+
+
+async def load_allowed() -> None:
+    try:
+        rows = await storage.bot_users_list()
+    except Exception as e:
+        log.warning("Ruxsat berilganlar ro'yxati o'qilmadi (%s)", type(e).__name__)
+        return
+    _allowed.clear()
+    _allowed.update({int(r["user_id"]): r["label"] for r in rows})
+    if _allowed:
+        log.info("Botdan foydalanishga ruxsat berilganlar: %d ta", len(_allowed))
 
 
 TG_LIMIT = 4096        # Telegram bitta xabar cheklovi (UTF-16 birlikda: emoji = 2)
@@ -284,6 +348,7 @@ async def send_long(send, text: str, *, buttons=None, **kwargs) -> None:
             await send(re.sub(r"<[^>]+>", "", part), **{**kwargs, "parse_mode": None}, **extra)
 
 
+@_broadcast
 async def send_html(text: str) -> None:
     """Egasiga HTML xabar (kunlik hisobot uchun). Uzun bo'lsa bo'laklab yuboriladi."""
     await send_long(lambda t, **kw: ctx.bot.send_message(ctx.owner_id, t, **kw), text, parse_mode="html")
@@ -305,8 +370,7 @@ def _buttons(chat_id: int, slot: int = 1):
         [Button.inline("🔇 Bu chatda AI jim", f"mute:{chat_id}{sfx}".encode()),
          Button.inline("🚫 Istisnoga qo'shish", f"ignore:{chat_id}{sfx}".encode())],
     ]
-    if slot == 1:   # chat arxivi faqat 1-akkauntda
-        rows.append([Button.inline("📄 Yozishmani yuklab olish (HTML)", f"arc:html:{chat_id}:a".encode())])
+    rows.append([Button.inline("📄 Yozishmani yuklab olish (HTML)", f"arc{slot}:html:{chat_id}:a".encode())])
     return rows
 
 
@@ -338,10 +402,100 @@ def new_msg_panel() -> tuple[str, list]:
             [[Button.inline("🔔 Yoqish", b"newmsg:on")]])
 
 
+# ---------- 🔑 /ruxsat ----------
+RUXSAT_HELP = (
+    "🔑 <b>Boshqa odamga botdan foydalanishga ruxsat</b>\n\n"
+    "<code>/ruxsat 123456789</code> yoki <code>/ruxsat @username</code> — to'liq ruxsat\n"
+    "/ruxsatlar — ruxsat berilganlar ro'yxati (🗑 tugmasi bilan olib tashlanadi)\n"
+    "<code>/ruxsat_ol 123456789</code> — ruxsatni olib tashlash\n\n"
+    "⚠️ Ruxsatli odam SIZ kabi hamma narsani ko'radi va boshqaradi: shaxsiy yozishmalar, arxiv, o'chirilgan "
+    "xabarlar, moliya, qidiruv; sizning nomingizdan javob yoza oladi. Bildirishnomalar unga ham keladi.\n"
+    "U botga bir marta /start bosishi kerak (aks holda bot unga yoza olmaydi).\n"
+    "ID ni bilish: o'sha odam @userinfobot ga /start bossin."
+)
+
+
+async def _resolve_person(arg: str) -> tuple[int | None, str]:
+    """ID yoki @username -> (id, ko'rinadigan nom)."""
+    arg = arg.strip()
+    if re.fullmatch(r"\d{5,15}", arg):
+        uid, label = int(arg), arg
+        for client in (ctx.user, ctx.bot):
+            try:
+                ent = await client.get_entity(uid)
+                return uid, (_display_name(ent) or arg) + (f" (@{ent.username})" if getattr(ent, "username", None)
+                                                         else "")
+            except Exception:
+                continue
+        return uid, label
+    name = arg.lstrip("@")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", name):
+        return None, ""
+    for client in (ctx.user, ctx.bot):
+        try:
+            ent = await client.get_entity(name)
+            if getattr(ent, "bot", False) or not isinstance(ent, types.User):
+                return None, ""
+            return ent.id, (_display_name(ent) or name) + f" (@{name})"
+        except Exception:
+            continue
+    return None, ""
+
+
+async def grant(arg: str) -> str:
+    uid, label = await _resolve_person(arg)
+    if uid is None:
+        return ("❌ Odam topilmadi. ID raqamini yozing (o'sha odam @userinfobot ga /start bossa, ID ini ko'radi): "
+                "<code>/ruxsat 123456789</code>")
+    if uid == ctx.main_owner:
+        return "ℹ️ Bu sizning o'zingiz — sizda allaqachon to'liq ruxsat bor."
+    await storage.bot_users_add(uid, label)
+    _allowed[uid] = label
+    note = ""
+    try:
+        await ctx.bot.send_message(uid, "🔑 Sizga Anna botidan foydalanishga ruxsat berildi. Pastdagi tugmalardan "
+                                        "foydalaning yoki /help.", buttons=main_keyboard())
+        await set_commands(ctx.bot, uid)
+    except Exception:
+        note = ("\n⚠️ Unga xabar yubora olmadim — u avval botga <b>/start</b> bosishi kerak. Bosgach, hammasi "
+                "ishlaydi.")
+    log.info("Botdan foydalanishga ruxsat berildi: %s", uid)
+    return (f"✅ <b>{html.escape(label)}</b> (<code>{uid}</code>) ga to'liq ruxsat berildi: u ham botning barcha "
+            "bo'limlaridan foydalanadi va bildirishnomalar unga ham keladi.\n"
+            f"Olib tashlash: /ruxsatlar yoki <code>/ruxsat_ol {uid}</code>{note}")
+
+
+async def revoke(uid: int) -> str:
+    label = _allowed.pop(uid, None)
+    removed = await storage.bot_users_remove(uid)
+    if label is None and not removed:
+        return f"ℹ️ <code>{uid}</code> ruxsatlilar ro'yxatida yo'q."
+    try:
+        await ctx.bot.send_message(uid, "🔒 Anna botidan foydalanish ruxsatingiz olib tashlandi.",
+                                   buttons=Button.clear())
+    except Exception:
+        pass
+    log.info("Ruxsat olib tashlandi: %s", uid)
+    return f"🗑 <b>{html.escape(label or str(uid))}</b> ning ruxsati olib tashlandi — endi botdan foydalana olmaydi."
+
+
+def allowed_panel() -> tuple[str, list]:
+    if not _allowed:
+        return ("🔑 Hozircha hech kimga ruxsat berilmagan — botdan faqat siz foydalanasiz.\n\n"
+                "Ruxsat berish: <code>/ruxsat 123456789</code>"), None
+    lines = ["🔑 <b>Botdan foydalanishga ruxsat berilganlar</b> (to'liq ruxsat):", ""]
+    rows = []
+    for uid, label in _allowed.items():
+        lines.append(f"• {html.escape(label)} — <code>{uid}</code>")
+        rows.append([Button.inline(f"🗑 Olib tashlash: {label[:30]}", f"rx:del:{uid}".encode())])
+    return "\n".join(lines), rows
+
+
 # ---------- «Qaysi akkaunt uchun?» ----------
 PICK_TITLES = {"panel": "⚙️ Boshqaruv", "chn": "📢 Kanallar arxivi", "find": "🔎 Qidirish",
                "grp": "👥 Guruhlar", "inbox": "📬 Inbox", "arc": "🗂 Chat arxivi"}
 _find_slot = 1   # oxirgi qidiruv qaysi akkauntdan (natija tugmalari ham shu akkauntdan ishlaydi)
+_arc_view: dict[int, int] = {}   # kim qaysi akkaunt arxivini ko'ryapti (oddiy «arc:» tugmalari uchun)
 
 
 def _fu():
@@ -478,12 +632,31 @@ async def connect_second(client, slot: int = 2) -> str | None:
     userbot.setup(client, me.id, slot=slot)
     groups.setup(client, group_clone_text, send_media, slot=slot)
     archive.setup_channels(client, slot)   # 📢 2-akkaunt kanallari ham arxivlanadi (belgilanganlari)
+    archive.setup_account(client, me.id, slot)   # 🗂 shaxsiy chatlar va yoqilgan guruhlar — o'z arxivi
+    asyncio.create_task(_sync_second_archive(client, slot))
     _acc_apply(slot)
     log.info("%d-akkaunt ulandi: %s (id %s)", slot, me.first_name, me.id)
     return None
 
 
 SECOND_CONNECT_TIMEOUT = 90
+
+
+async def _sync_second_archive(client, slot: int) -> None:
+    """2-akkaunt mavjud chatlaridagi yozishmalar ham arxivga (1-akkauntdagidek, bir martalik)."""
+    _requester.set(None)
+    await asyncio.sleep(30)
+    if config.ARCHIVE_SYNC_LIMIT <= 0:
+        return
+    with storage.use_slot(slot):
+        try:
+            chats, added = await archive.sync_existing(client, config.ARCHIVE_SYNC_LIMIT)
+        except Exception as e:
+            log.exception("%d-akkaunt chatlari arxivga nusxalanmadi", slot)
+            return
+    if added:
+        await alert(f"🗂 {_acc_title(slot)}: {chats} ta chatdan {added} ta xabar arxivga nusxalandi "
+                    "(🗂 Chat arxivi → shu akkaunt).")
 
 
 async def restore_second() -> None:
@@ -518,6 +691,7 @@ async def _login_second(bot) -> None:
     """/tglogin2: telefon -> kod -> parol shu botda; kirilgach darhol ishga tushadi (qayta ishga tushirmasdan)."""
     from telethon.sessions import StringSession
     from tg_client import create_user_client
+    _requester.set(None)   # fon vazifasi: 2-akkaunt bildirishnomalari hammaga (bosgan odamgagina emas)
     client = create_user_client(StringSession())
     try:
         await client.connect()
@@ -592,6 +766,7 @@ async def tg_logout(exit_after: float = 2.0) -> None:
     asyncio.get_running_loop().call_later(exit_after, os._exit, 0)
 
 
+@_broadcast
 async def notify(chat_id: int, name: str, username: str | None, text: str,
                  summary: str, urgent: bool, ai_reply: str | None, reply_to: int | None = None,
                  slot: int = 1) -> None:
@@ -616,6 +791,7 @@ async def notify(chat_id: int, name: str, username: str | None, text: str,
         log.exception("Egasiga xabar yuborilmadi (botga /start bosganmisiz?)")
 
 
+@_broadcast
 async def call_owner(chat_id: int, name: str, username: str | None, text: str, summary: str,
                      slot: int = 1) -> None:
     """Suhbatdosh egasini chaqirishni so'radi — alohida, ko'zga tashlanadigan xabar."""
@@ -639,6 +815,7 @@ def _inline(rows: list | None) -> list | None:
     return [[Button.inline(t, d.encode()) for t, d in row] for row in rows] if rows else None
 
 
+@_broadcast
 async def watch_alert(text: str, buttons: list | None = None) -> None:
     """🔔 Eslatma bajarildi (watchers.py) — egasiga tugmalar bilan xabar."""
     parts = split_message(text)
@@ -667,6 +844,7 @@ async def _watch_request(event, req: "watchers.Request", note: str = "") -> None
     await event.respond(text + note, parse_mode="html", buttons=_inline(buttons), link_preview=False)
 
 
+@_broadcast
 async def alert(text: str) -> None:
     """Egasiga tizim ogohlantirishi (masalan, AI kaliti ishlamayapti)."""
     try:
@@ -678,6 +856,7 @@ async def alert(text: str) -> None:
 _MEDIA_ICONS = {"rasm": "📸", "video": "🎬", "ovozli xabar": "🎤", "video-xabar": "📹", "audio": "🎵", "fayl": "📎"}
 
 
+@_broadcast
 async def send_media(chat_id: int, name: str, data: bytes, filename: str | None = None, *,
                      kind: str = "media", username: str | None = None, caption: str = "",
                      view_once: bool = False, mime: str = "", attributes=None,
@@ -725,6 +904,7 @@ async def send_media(chat_id: int, name: str, data: bytes, filename: str | None 
 
 
 # ---------- 📸 Instagram ----------
+@_broadcast
 async def send_ig_media(data: bytes, filename: str, caption: str, video: dict | None = None,
                         as_file: bool = False) -> bool:
     """Instagram'dagi bir martalik rasm/video — egasiga oddiy (saqlasa bo'ladigan) holda. Yuborilsa True."""
@@ -764,6 +944,7 @@ def _ig_buttons(thread_id: str, share: str = "") -> list:
     return rows
 
 
+@_broadcast
 async def ig_notify(thread_id: str, text: str, share: str = "") -> None:
     """Instagram xabari / qaytarib olingan xabar — egasiga. Reply qilib yozilsa javob Instagram'ga ketadi.
     share — ulashilgan post/reels havolasi bo'lsa, «📥 Yuklab olish» tugmasi qo'shiladi."""
@@ -835,6 +1016,7 @@ DRIVE_AUTH_TTL = 30 * 60
 DRIVE_AUTH_BUTTON = [[Button.inline("🔑 Google Drive'ni qayta ulash", b"gd:auth")]]
 
 
+@_broadcast
 async def drive_auth_alert() -> None:
     """gdrive: refresh token o'ldi — arxiv, media, Instagram va zaxira uchun BITTA xabar."""
     await ctx.bot.send_message(
@@ -1015,6 +1197,7 @@ async def _enabled_groups_view(slot: int | None) -> tuple[str, list]:
             "butun yozishmani (eski xabarlar bilan) HTML fayl qilib yuboraman.", rows)
 
 
+@_broadcast
 async def group_clone_text(text: str, link: str | None) -> None:
     """👥 Guruhdan nusxalangan matnli xabar (groups.py)."""
     buttons = [[Button.url("🔗 Guruhda ochish", link)]] if link else None
@@ -1210,6 +1393,8 @@ BOT_COMMANDS = [
     ("xulosa", "🧠 Yozishma xulosasi: /xulosa Ali"),
     ("eslatma", "🔔 Eslatmalar: raqam tg ga qo'shilsa / odam online bo'lsa"),
     ("ig", "📸 Instagram: bir martalik media, avtojavob, arxiv"),
+    ("ruxsat", "🔑 Boshqa odamga botdan foydalanish ruxsati: /ruxsat ID"),
+    ("ruxsatlar", "🔑 Ruxsat berilganlar (olib tashlash)"),
     ("tglogin", "🔑 Telegram akkaunt: holati va boshqasini ulash"),
     ("tglogin2", "📱 2-Telegram akkauntni ham ulash"),
     ("iglogin", "🔑 Instagram'ni ulash: /iglogin username parol"),
@@ -1354,11 +1539,14 @@ def _when(ts: float | None) -> str:
     return datetime.fromtimestamp(ts, ZoneInfo(config.TIMEZONE)).strftime("%d.%m %H:%M") if ts else ""
 
 
-def _html_buttons(chat_id: int) -> list:
-    return [[Button.inline("📄 Butun yozishma (HTML)", f"arc:html:{chat_id}:a".encode()),
-             Button.inline("🗑 Faqat o'chirilganlar", f"arc:html:{chat_id}:d".encode())]]
+def _html_buttons(chat_id: int, slot: int | None = None) -> list:
+    """slot berilsa — tugma aniq shu akkaunt arxiviga (ogohlantirishlarda: arc1:/arc2:)."""
+    p = "arc" if slot is None else f"arc{slot}"
+    return [[Button.inline("📄 Butun yozishma (HTML)", f"{p}:html:{chat_id}:a".encode()),
+             Button.inline("🗑 Faqat o'chirilganlar", f"{p}:html:{chat_id}:d".encode())]]
 
 
+@_broadcast
 async def deleted_alert(chat_id: int, docs: list[dict]) -> None:
     """Arxivdagi xabarlar o'chirildi — egasiga nechta/nima o'chganini va yuklab olish tugmalarini yuboradi."""
     info = await storage.archive_chat(chat_id) or {}
@@ -1379,8 +1567,8 @@ async def deleted_alert(chat_id: int, docs: list[dict]) -> None:
         lines.append(f"… yana {len(docs) - ARCHIVE_PREVIEW} ta — HTML faylda")
     lines.append("\n💾 Hammasi arxivda saqlangan.")
     try:
-        msg = await ctx.bot.send_message(ctx.owner_id, "\n".join(lines), parse_mode="html",
-                                         buttons=_html_buttons(chat_id))
+        msg = await ctx.bot.send_message(ctx.owner_id, _acc_head(storage.arc_slot()) + "\n".join(lines),
+                                         parse_mode="html", buttons=_html_buttons(chat_id, storage.arc_slot()))
     except Exception:
         log.exception("O'chirish haqida ogohlantirish yuborilmadi")
         return
@@ -1412,7 +1600,8 @@ async def _archive_panel() -> tuple[str, list]:
     on, groups, alerts = (runtime.get("archive_enabled"), runtime.get("archive_groups"),
                           runtime.get("archive_alerts"))
     text = (
-        "🗂 <b>Chat arxivi</b>\n\n"
+        "🗂 <b>Chat arxivi</b>" + (f" — {html.escape(_acc_title(storage.arc_slot()))}" if storage.arc_slot() != 1
+                                  or 2 in ctx.users else "") + "\n\n"
         f"Arxiv: {'🟢 yoqiq' if on else '⚪️ o‘chiq'} — barcha shaxsiy chatlar (istisnodagilar ham)\n"
         f"Guruhlar: {'🟢 arxivlanadi' if groups else '⚪️ arxivlanmaydi'}\n"
         f"O'chirilganda xabar berish: {'🟢 yoqiq' if alerts else '⚪️ o‘chiq'}\n\n"
@@ -1593,17 +1782,18 @@ async def _send_archive_html(chat_id: int, only_deleted: bool) -> None:
 
 
 # ---------- kuzatuv: tahrir ----------
+@_broadcast
 async def edited_alert(chat_id: int, old: dict, new_text: str) -> None:
     """Suhbatdosh xabarini tahrirladi — avvalgi va yangi matni bilan."""
     info = await storage.archive_chat(chat_id) or {}
     before = (old.get("text") or "").strip() or "(bo'sh)"
     after = new_text.strip() or "(bo'sh — matnini o'chirdi)"
-    body = (f"✏️ <b>Xabar tahrirlandi</b>\n👤 {_who(info.get('title') or '', info.get('username'), chat_id)}\n"
+    body = _acc_head(storage.arc_slot()) + (f"✏️ <b>Xabar tahrirlandi</b>\n👤 {_who(info.get('title') or '', info.get('username'), chat_id)}\n"
             f"🕒 Yozilgan: {_when(old.get('date'))}\n\n"
             f"<b>Avval:</b> <i>{html.escape(before[:600])}</i>\n"
             f"<b>Endi:</b> <i>{html.escape(after[:600])}</i>")
     try:
-        await ctx.bot.send_message(ctx.owner_id, body, parse_mode="html", buttons=_html_buttons(chat_id)[:1])
+        await ctx.bot.send_message(ctx.owner_id, body, parse_mode="html", buttons=_html_buttons(chat_id, storage.arc_slot())[:1])
     except Exception:
         log.exception("Tahrir haqida ogohlantirish yuborilmadi")
 
@@ -1647,6 +1837,7 @@ def _summary_buttons(chat_id: int) -> list:
 
 
 # ---------- haftalik hisobot ----------
+@_broadcast
 async def send_weekly(text: str, chat_ids: list[int]) -> None:
     buttons = [[Button.inline(f"✍️ Javob: {i + 1}", f"reply:{cid}".encode())] for i, cid in enumerate(chat_ids)]
     await ctx.bot.send_message(ctx.owner_id, text, parse_mode="html", buttons=buttons or None)
@@ -1993,24 +2184,40 @@ def _parse_budget_amount(raw: str) -> int:
 
 
 def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
-    ctx.bot, ctx.user, ctx.owner_id = bot, user, owner_id
+    ctx.bot, ctx.user, ctx.main_owner = bot, user, owner_id
     ctx.users = {1: user}
     ctx.names = {1: ""}
-    is_owner = lambda e: e.sender_id == owner_id  # noqa: E731
+    is_owner = lambda e: is_allowed(e.sender_id)  # noqa: E731  — asosiy ega yoki /ruxsat berilgan
+    is_main = lambda e: e.sender_id == owner_id  # noqa: E731  — faqat asosiy ega (ruxsat berish)
+    real_on = bot.on
 
-    @bot.on(events.NewMessage(pattern=r"^/(start|help)", func=is_owner))
+    def _on(ev):
+        """bot.on + kim so'raganini eslab qolish: javoblar (ctx.owner_id) o'sha odamga ketadi."""
+        def deco(fn):
+            @functools.wraps(fn)
+            async def wrapped(event):
+                token = _requester.set(event.sender_id)
+                try:
+                    return await fn(event)
+                finally:
+                    _requester.reset(token)
+            real_on(ev)(wrapped)
+            return fn
+        return deco
+
+    @_on(events.NewMessage(pattern=r"^/(start|help)", func=is_owner))
     async def _help(event):
         if event.raw_text.startswith("/start"):
-            await set_commands(bot, owner_id)  # birinchi /start dan keyin menyu faqat egasiga o'rnatiladi
+            await set_commands(bot, event.sender_id)  # menyu faqat egasiga (va ruxsatlilarga) o'rnatiladi
         # HELP Telegram limitidan (4096) uzun — bo'laklab yuboriladi
         await send_long(event.respond, HELP, parse_mode="html", buttons=main_keyboard())
 
-    @bot.on(events.NewMessage(pattern=r"^/menu$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/menu$", func=is_owner))
     async def _menu(event):
         await event.respond("📋 Menyu pastda — kerakli tugmani bosing.", buttons=main_keyboard())
 
     # Pastdagi doimiy tugmalar (oddiy matn bo'lib keladi)
-    @bot.on(events.NewMessage(func=lambda e: is_owner(e) and (e.raw_text or "").strip() in MENU_TEXTS))
+    @_on(events.NewMessage(func=lambda e: is_owner(e) and (e.raw_text or "").strip() in MENU_TEXTS))
     async def _menu_button(event):
         choice = event.raw_text.strip()
         if choice == MENU_PANEL:
@@ -2021,6 +2228,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                 await _inbox(event)
         elif choice == MENU_ARCHIVE:
             if not await _ask_account(event, "arc"):
+                _arc_view[event.sender_id] = 1
                 text, buttons = await _archive_panel()
                 await event.respond(text, parse_mode="html", buttons=buttons)
         elif choice == MENU_FIN:
@@ -2048,13 +2256,13 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         elif choice == MENU_HELP:
             await send_long(event.respond, HELP, parse_mode="html", buttons=main_keyboard())
 
-    @bot.on(events.NewMessage(pattern=r"^/arxiv(?:\s+([\s\S]+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/arxiv(?:\s+([\s\S]+))?$", func=is_owner))
     async def _arxiv(event):
         name = (event.pattern_match.group(1) or "").strip()
         text, buttons = await (_archive_list(0, False, name) if name else _archive_panel())
         await event.respond(text, parse_mode="html", buttons=buttons)
 
-    @bot.on(events.NewMessage(pattern=r"^/xulosa(?:\s+([\s\S]+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/xulosa(?:\s+([\s\S]+))?$", func=is_owner))
     async def _xulosa(event):
         name = (event.pattern_match.group(1) or "").strip()
         if not name:
@@ -2072,11 +2280,11 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             [Button.inline((r.get("title") or str(r["chat_id"]))[:40], f"arc:sum:{r['chat_id']}:7".encode())]
             for r in rows])
 
-    @bot.on(events.NewMessage(pattern=r"^/(?:deleted|ochirilganlar)(?:\s+([\s\S]+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/(?:deleted|ochirilganlar)(?:\s+([\s\S]+))?$", func=is_owner))
     async def _deleted_cmd(event):
         await _show_gone(event, event.pattern_match.group(1) or "")
 
-    @bot.on(events.NewMessage(pattern=r"^/eslatma(?:lar)?(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/eslatma(?:lar)?(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
     async def _eslatma(event):
         arg = (event.pattern_match.group(1) or "").strip()
         req = watchers.parse(arg, strict=False) if arg else None
@@ -2087,11 +2295,11 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         await _watch_request(event, req)
 
     # ---------- 📸 Instagram ----------
-    @bot.on(events.NewMessage(pattern=r"^/ig(?:@\w+)?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/ig(?:@\w+)?$", func=is_owner))
     async def _ig_cmd(event):
         await _send_ig_panel(event)
 
-    @bot.on(events.NewMessage(pattern=r"^/iglogin(2?)(?:@\w+)?(?:\s+([\s\S]*))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/iglogin(2?)(?:@\w+)?(?:\s+([\s\S]*))?$", func=is_owner))
     async def _ig_login(event):
         slot = event.pattern_match.group(1) or "1"     # /iglogin2 — 2-akkaunt
         args = (event.pattern_match.group(2) or "").strip().split(maxsplit=1)
@@ -2106,7 +2314,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         status = await event.respond("⏳ Instagram'ga kirilmoqda... (parolli xabaringiz o'chirildi)")
 
         async def say(text: str) -> None:
-            await bot.send_message(owner_id, text)
+            await bot.send_message(ctx.owner_id, text)
 
         result = await instagram.login(username, password.strip(), say, slot)
         try:
@@ -2116,7 +2324,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         if instagram.connected(slot):
             await _send_ig_panel(event)
 
-    @bot.on(events.NewMessage(pattern=r"^/igsession(2?)(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/igsession(2?)(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
     async def _ig_session(event):
         slot = event.pattern_match.group(1) or "1"     # /igsession2 — 2-akkaunt
         raw = event.pattern_match.group(2)
@@ -2136,7 +2344,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         if instagram.connected(slot):
             await _send_ig_panel(event)
 
-    @bot.on(events.NewMessage(pattern=r"^/igyukla(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/igyukla(?:@\w+)?(?:\s+([\s\S]+))?$", func=is_owner))
     async def _ig_download(event):
         links = instagram.parse_media_links(event.pattern_match.group(1) or "")
         if not links:
@@ -2151,11 +2359,11 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return
         await _download_ig_links(event, links)
 
-    @bot.on(events.NewMessage(pattern=r"^/iglogout(2?)(?:@\w+)?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/iglogout(2?)(?:@\w+)?$", func=is_owner))
     async def _ig_logout(event):
         await event.respond(await instagram.logout(event.pattern_match.group(1) or "1"))
 
-    @bot.on(events.CallbackQuery(pattern=rb"^ig:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^ig:", func=is_owner))
     async def _ig_callback(event):
         parts = event.data.decode().split(":")
         action, arg = parts[1], parts[2] if len(parts) > 2 else ""
@@ -2214,7 +2422,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                 return
             f = io.BytesIO(data)
             f.name = fname
-            await bot.send_file(owner_id, f, caption=f"📄 Instagram yozishmasi — {n} ta xabar "
+            await bot.send_file(ctx.owner_id, f, caption=f"📄 Instagram yozishmasi — {n} ta xabar "
                                                      "(qaytarib olinganlari qizil bilan)", force_document=True)
         elif action == "reply" and arg:
             _awaiting_reply.pop("chat", None)
@@ -2228,11 +2436,11 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
 
     # ---------- ☁️ Google Drive: holat va botdan qayta ulash ----------
-    @bot.on(events.NewMessage(pattern=r"^/drive(?:@\w+)?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/drive(?:@\w+)?$", func=is_owner))
     async def _drive_cmd(event):
         await _drive_panel(event)
 
-    @bot.on(events.CallbackQuery(pattern=rb"^gd:(auth|check)$", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^gd:(auth|check)$", func=is_owner))
     async def _drive_cb(event):
         await event.answer()
         if event.data == b"gd:auth":
@@ -2241,12 +2449,12 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await _drive_panel(event)
 
     # ---------- 📢 Kanallar arxivi: faqat belgilangan kanallar ----------
-    @bot.on(events.NewMessage(pattern=r"^/kanallar(?:@\w+)?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/kanallar(?:@\w+)?$", func=is_owner))
     async def _channels_cmd(event):
         if not await _ask_account(event, "chn"):
             await _send_channels_panel(event)
 
-    @bot.on(events.CallbackQuery(pattern=rb"^chn:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^chn:", func=is_owner))
     async def _channels_callback(event):
         parts = event.data.decode().split(":")
         action = parts[1]
@@ -2280,7 +2488,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
 
     # ---------- «Qaysi akkaunt uchun?» — 2 ta akkaunt ulangan bo'lsa ----------
-    @bot.on(events.CallbackQuery(pattern=rb"^pick:(panel|chn|find|grp|inbox|arc):(\d)$", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^pick:(panel|chn|find|grp|inbox|arc):(\d)$", func=is_owner))
     async def _pick_account(event):
         feature, slot = event.data.decode().split(":")[1], int(event.data.decode().split(":")[2])
         await event.answer()
@@ -2300,23 +2508,21 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         elif feature == "inbox":
             await _inbox_for(event, slot)
         elif feature == "arc":
-            if slot == 1:
+            _arc_view[event.sender_id] = slot          # keyingi arxiv tugmalari shu akkaunt uchun
+            with storage.use_slot(slot):
                 text, buttons = await _archive_panel()
-                await event.respond(text, parse_mode="html", buttons=buttons)
-            else:   # 2-akkauntda shaxsiy chatlar arxivlanmaydi — uning kanallari va guruhlari
-                text, rows = await _saved_list(slot)
-                await event.respond(text, parse_mode="html", buttons=rows)
+            await event.respond(text, parse_mode="html", buttons=buttons)
         elif feature == "find":
             _awaiting_slot["find"] = slot
             await event.respond(f"🔎 {_acc_title(slot)} — nimani topay? Yozing: «Ali yuborgan manzilni top», "
                                 "«wifi parolini qidir».")
 
     # ---------- 👥 Guruhlar: tanlangan guruh xabarlarini klonlash ----------
-    @bot.on(events.NewMessage(pattern=r"^/guruhlar(?:@\w+)?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/guruhlar(?:@\w+)?$", func=is_owner))
     async def _groups_cmd(event):
         await _send_groups_panel(event)
 
-    @bot.on(events.CallbackQuery(pattern=rb"^grp:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^grp:", func=is_owner))
     async def _groups_callback(event):
         parts = event.data.decode().split(":")
         action = parts[1]
@@ -2339,13 +2545,12 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         elif action == "html" and len(parts) == 4:
             chat_id, slot = int(parts[2]), int(parts[3])
             await event.answer("⏳ Tayyorlanmoqda...")
-            archive._chat_via[chat_id] = slot          # yozishma shu akkauntdan olinadi
-            await _send_archive_html(chat_id, False)
-            await archive.mark_via(chat_id, slot)
+            with storage.use_slot(slot):                 # guruh — shu akkaunt arxivida, shu akkauntdan olinadi
+                await _send_archive_html(chat_id, False)
         else:
             await event.answer()
 
-    @bot.on(events.CallbackQuery(pattern=rb"^wch:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^wch:", func=is_owner))
     async def _watch_callback(event):
         parts = event.data.decode().split(":")
         action, arg = parts[1], parts[2] if len(parts) > 2 else ""
@@ -2401,9 +2606,24 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         else:
             await event.answer()
 
-    @bot.on(events.CallbackQuery(pattern=rb"^arc:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^arc\d?:", func=is_owner))
     async def _arc_callback(event):
-        parts = event.data.decode().split(":")
+        raw = event.data.decode()
+        head, _, rest = raw.partition(":")
+        slot = int(head[3:]) if head[3:].isdigit() else _arc_view.get(event.sender_id, 1)
+        if slot != 1 and slot not in ctx.users:
+            await event.answer(f"{slot}-akkaunt ulanmagan", alert=True)
+            return
+        if head != "arc":
+            _arc_view[event.sender_id] = slot
+        if slot != 1 and rest.split(":")[0] in ("gone", "gonescan", "weekly", "backup"):
+            await event.answer("Bu bo'lim faqat 1-akkaunt uchun", alert=True)
+            return
+        with storage.use_slot(slot):
+            await _arc_callback_inner(event, "arc:" + rest)
+
+    async def _arc_callback_inner(event, data: str):
+        parts = data.split(":")
         action, arg = parts[1], parts[2] if len(parts) > 2 else ""
         if action == "html":
             await event.answer("Tayyorlanmoqda...")
@@ -2457,7 +2677,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
 
     # incoming=True SHART: busiz botning o'z xabarlari ham (yuborgan media, bildirishnoma) shu yerga tushib,
     # "Bu shaxsiy bot." javobi o'ziga-o'zi cheksiz javob qaytaradi.
-    @bot.on(events.NewMessage(incoming=True, func=lambda e: e.sender_id != owner_id and e.is_private))
+    @_on(events.NewMessage(incoming=True, func=lambda e: not is_allowed(e.sender_id) and e.is_private))
     async def _stranger(event):
         now = time.time()
         if now - _stranger_replied.get(event.sender_id, 0) < STRANGER_REPLY_COOLDOWN:
@@ -2465,17 +2685,17 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         _stranger_replied[event.sender_id] = now
         await event.respond("Bu shaxsiy bot.")
 
-    @bot.on(events.NewMessage(pattern=r"^/on$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/on$", func=is_owner))
     async def _on(event):
         await storage.set_mode("on")
         await event.respond("🟢 Avtojavob doim yoqiq.")
 
-    @bot.on(events.NewMessage(pattern=r"^/off$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/off$", func=is_owner))
     async def _off(event):
         await storage.set_mode("off")
         await event.respond("⚪️ Avtojavob o'chirildi (xabarlar baribir sizga yetkaziladi).")
 
-    @bot.on(events.NewMessage(pattern=r"^/auto$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/auto$", func=is_owner))
     async def _auto(event):
         await storage.set_mode("auto")
         st = await availability.get_status()
@@ -2485,14 +2705,14 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             f"Hozir: {'javob beradi' if st.reply else 'jim turadi'} — {st.reason}"
         )
 
-    @bot.on(events.NewMessage(pattern=r"^/status$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/status$", func=is_owner))
     async def _status(event):
         await _send_panel(event, extra=(
             f"📨 Oxirgi 24 soatda: {await storage.today_count()} ta xabar\n"
             f"📬 Javob kutayotganlar: {len(await storage.pending_inbox())} (/inbox)"
         ))
 
-    @bot.on(events.NewMessage(pattern=r"^/tag\s+(\S+)\s+(\S+)$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/tag\s+(\S+)\s+(\S+)$", func=is_owner))
     async def _tag(event):
         arg, tag = event.pattern_match.group(1), event.pattern_match.group(2).lower()
         tag = TAG_ALIASES.get(tag, tag)
@@ -2510,7 +2730,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         await storage.set_tag(uid, tag, arg)
         await event.respond(f"✅ {arg} — {TAGS[tag]}")
 
-    @bot.on(events.NewMessage(pattern=r"^/tags$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/tags$", func=is_owner))
     async def _tags(event):
         rows = await storage.list_tags()
         if not rows:
@@ -2519,17 +2739,17 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         await event.respond("\n".join(f"• {TAGS.get(r['tag'], r['tag'])}: {html.escape(r['label'])} "
                                       f"<code>{r['user_id']}</code>" for r in rows), parse_mode="html")
 
-    @bot.on(events.NewMessage(pattern=r"^/inbox$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/inbox$", func=is_owner))
     async def _inbox(event):
         if not await _ask_account(event, "inbox"):
             await _inbox_for(event, None)
 
-    @bot.on(events.NewMessage(pattern=r"^/reply\s+(-?\d+)\s+([\s\S]+)", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/reply\s+(-?\d+)\s+([\s\S]+)", func=is_owner))
     async def _reply_cmd(event):
         chat_id = int(event.pattern_match.group(1))
         await _send_as_owner(chat_id, event.pattern_match.group(2), event)
 
-    @bot.on(events.NewMessage(pattern=r"^/lichka(?:@\w+)?(?:\s+(\S+))?\s*$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/lichka(?:@\w+)?(?:\s+(\S+))?\s*$", func=is_owner))
     async def _lichka(event):
         arg = event.pattern_match.group(1)
         if not arg:
@@ -2538,7 +2758,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return
         await _open_dm(event, arg)
 
-    @bot.on(events.NewMessage(pattern=r"^/save(?:\s+([\s\S]+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/save(?:\s+([\s\S]+))?$", func=is_owner))
     async def _save_cmd(event):
         links = saver.parse_links(event.pattern_match.group(1) or "")
         if not links:
@@ -2548,7 +2768,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return
         await _save_links(event, links)
 
-    @bot.on(events.NewMessage(pattern=r"^/find(?:\s+([\s\S]+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/find(?:\s+([\s\S]+))?$", func=is_owner))
     async def _find_cmd(event):
         arg = (event.pattern_match.group(1) or "").strip()
         if not arg:
@@ -2562,7 +2782,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return
         await _run_find(event, arg)
 
-    @bot.on(events.CallbackQuery(pattern=rb"^find:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^find:", func=is_owner))
     async def _find_callback(event):
         _, key, idx = event.data.decode().split(":")
         pending = _find_pending.get(key)
@@ -2574,7 +2794,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         c = cands[int(idx)]
         await _find_in(event, c.id, c.title, c.username, q)
 
-    @bot.on(events.CallbackQuery(pattern=rb"^dmsave:\d+$", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^dmsave:\d+$", func=is_owner))
     async def _dm_save(event):
         uid = int(event.data.decode().split(":", 1)[1])
         if await _mention_in_saved(uid):
@@ -2582,7 +2802,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         else:
             await event.answer("❌ Yuborib bo'lmadi — akkauntingiz bu odamni tanimaydi", alert=True)
 
-    @bot.on(events.CallbackQuery(pattern=rb"^fsave:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^fsave:", func=is_owner))
     async def _find_save(event):
         refs = _find_saved.get(event.data.decode().split(":", 1)[1])
         if not refs:
@@ -2603,7 +2823,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                            + (f", {failed} tasi yuborilmadi (chatda nusxalash taqiqlangan bo'lishi mumkin)"
                               if failed else ""), alert=bool(failed))
 
-    @bot.on(events.NewMessage(pattern=r"^/unmute(?:\s+(\S+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/unmute(?:\s+(\S+))?$", func=is_owner))
     async def _unmute(event):
         arg = event.pattern_match.group(1)
         uid = await _resolve_user_id(arg) if arg else None
@@ -2616,7 +2836,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         await event.respond(f"🔊 <code>{uid}</code> chatida kotiba yana javob beradi."
                             + ("" if was_muted else " (U jim holatda emas edi.)"), parse_mode="html")
 
-    @bot.on(events.NewMessage(pattern=r"^/ignore\s+(\S+)", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/ignore\s+(\S+)", func=is_owner))
     async def _ignore(event):
         arg = event.pattern_match.group(1)
         uid = await _resolve_user_id(arg)
@@ -2626,13 +2846,13 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         await storage.add_ignored(uid, arg)
         await event.respond(f"🚫 {arg} ({uid}) ga endi avtojavob berilmaydi.")
 
-    @bot.on(events.NewMessage(pattern=r"^/unignore\s+(\S+)", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/unignore\s+(\S+)", func=is_owner))
     async def _unignore(event):
         uid = await _resolve_user_id(event.pattern_match.group(1))
         ok = uid is not None and await storage.remove_ignored(uid)
         await event.respond("✅ Istisnodan chiqarildi." if ok else "❌ Ro'yxatda topilmadi.")
 
-    @bot.on(events.NewMessage(pattern=r"^/ignored$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/ignored$", func=is_owner))
     async def _ignored(event):
         rows = await storage.list_ignored()
         if not rows:
@@ -2642,11 +2862,11 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                             parse_mode="html")
 
     # ---------- hisobot va nazorat ----------
-    @bot.on(events.NewMessage(pattern=r"^/report$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/report$", func=is_owner))
     async def _report(event):
         await event.respond(await report.make_report(), parse_mode="html")
 
-    @bot.on(events.NewMessage(pattern=r"^/usage$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/usage$", func=is_owner))
     async def _usage(event):
         st = await storage.get_stats()
         lim = lambda n: str(n) if n else "cheksiz"  # noqa: E731
@@ -2663,7 +2883,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             parse_mode="html",
         )
 
-    @bot.on(events.NewMessage(pattern=r"^/health$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/health$", func=is_owner))
     async def _health(event):
         if ctx.monitor is None:
             await event.respond("Holat nazorati ishlamayapti.")
@@ -2679,7 +2899,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
 
     # ---------- profil: bio, iqtibos, online ----------
     # /bio, /online, /quote — argumentsiz bo'lsa tugmali panel, argument bilan — to'g'ridan-to'g'ri
-    @bot.on(events.NewMessage(pattern=r"^/bio(?:\s+(\S+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/bio(?:\s+(\S+))?$", func=is_owner))
     async def _bio(event):
         arg = (event.pattern_match.group(1) or "").lower()
         if not arg:
@@ -2689,7 +2909,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         else:
             await event.respond("Foydalanish: /bio, /bio on, /bio off, /bio now, /bio restore")
 
-    @bot.on(events.NewMessage(pattern=r"^/quote(?:\s+([\s\S]+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/quote(?:\s+([\s\S]+))?$", func=is_owner))
     async def _quote(event):
         arg = (event.pattern_match.group(1) or "").strip()
         if not arg:
@@ -2705,7 +2925,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
                         "~22 belgigacha tavsiya etiladi.")
             await event.respond(f"✅ Iqtibos: “{arg}”{note}")
 
-    @bot.on(events.NewMessage(pattern=r"^/online(?:\s+(\S+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/online(?:\s+(\S+))?$", func=is_owner))
     async def _online(event):
         arg = (event.pattern_match.group(1) or "").lower()
         if arg in ("on", "off"):
@@ -2714,7 +2934,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await _send_panel(event)
 
     # ---------- 🔑 Telegram akkaunt (tg_login.py) ----------
-    @bot.on(events.NewMessage(pattern=r"^/tglogin(?:@\w+)?(?:\s.*)?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/tglogin(?:@\w+)?(?:\s.*)?$", func=is_owner))
     async def _tg_login(event):
         me = await user.get_me()
         name = html.escape(f"{me.first_name or ''} {me.last_name or ''}".strip())
@@ -2728,7 +2948,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             "terminalda).", parse_mode="html")
 
     # ---------- 📱 2-akkaunt: shu botning o'zida ikkinchi Telegram akkaunt ----------
-    @bot.on(events.NewMessage(pattern=r"^/tglogin2(?:@\w+)?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/tglogin2(?:@\w+)?$", func=is_owner))
     async def _tg_login2(event):
         global _login2_task
         if 2 in ctx.users:
@@ -2741,7 +2961,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return
         _login2_task = asyncio.create_task(_login_second(bot))
 
-    @bot.on(events.CallbackQuery(pattern=rb"^acc:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^acc:", func=is_owner))
     async def _acc_callback(event):
         parts = event.data.decode().split(":")
         action = parts[1]
@@ -2767,12 +2987,12 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         except Exception:
             await event.respond(text, parse_mode="html", buttons=rows)
 
-    @bot.on(events.CallbackQuery(pattern=rb"^tg:logout2_ask$", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^tg:logout2_ask$", func=is_owner))
     async def _tg_logout2_ask(event):
         await event.answer()
         await _tg_logout2(event)
 
-    @bot.on(events.NewMessage(pattern=r"^/tglogout2(?:@\w+)?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/tglogout2(?:@\w+)?$", func=is_owner))
     async def _tg_logout2(event):
         if 2 not in ctx.users:
             await event.respond("2-akkaunt ulanmagan. Ulash: /tglogin2")
@@ -2782,14 +3002,14 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             "asosiy akkaunt ishlashda davom etadi.", parse_mode="html",
             buttons=[[Button.inline("✅ Ha, chiqish", b"tg:logout2_ok"), Button.inline("↩️ Yo'q", b"tg:cancel")]])
 
-    @bot.on(events.NewMessage(pattern=r"^/tglogout(?:@\w+)?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/tglogout(?:@\w+)?$", func=is_owner))
     async def _tg_logout(event):
         await event.respond(
             "⚠️ Telegram akkauntdan chiqilsinmi?\n\nSessiya bekor qilinadi (Telegram → Qurilmalar ro'yxatidan "
             "ham o'chadi), Anna to'xtab qayta ishga tushadi va yangi login so'raydi.",
             buttons=[[Button.inline("✅ Ha, chiqish", b"tg:logout_ok"), Button.inline("↩️ Yo'q", b"tg:cancel")]])
 
-    @bot.on(events.CallbackQuery(pattern=rb"^tg:(logout_ok|logout2_ok|cancel)$", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^tg:(logout_ok|logout2_ok|cancel)$", func=is_owner))
     async def _tg_logout_cb(event):
         if event.data == b"tg:cancel":
             await event.edit("↩️ Bekor qilindi — akkaunt ulangan holda qoldi.")
@@ -2800,7 +3020,41 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         await event.edit("🚪 Akkauntdan chiqilyapti...")
         await tg_logout()
 
-    @bot.on(events.NewMessage(pattern=r"^/yangixabar(?:\s+(\S+))?$", func=is_owner))
+    # ---------- 🔑 /ruxsat: boshqa odamga botdan to'liq foydalanish ruxsati ----------
+    @_on(events.NewMessage(pattern=r"^/ruxsat(?:@\w+)?(?:\s+(\S+))?\s*$", func=is_main))
+    async def _grant(event):
+        arg = event.pattern_match.group(1)
+        if not arg:
+            await event.respond(RUXSAT_HELP, parse_mode="html")
+            return
+        await event.respond(await grant(arg), parse_mode="html")
+
+    @_on(events.NewMessage(pattern=r"^/ruxsat(?:@\w+)?(?:\s.*)?$", func=lambda e: is_allowed(e.sender_id)
+                            and e.sender_id != owner_id))
+    async def _grant_denied(event):
+        await event.respond("🔒 Ruxsat berish/olib tashlashni faqat bot egasi qila oladi.")
+
+    @_on(events.NewMessage(pattern=r"^/ruxsatlar(?:@\w+)?$", func=is_main))
+    async def _grants(event):
+        text, rows = allowed_panel()
+        await event.respond(text, parse_mode="html", buttons=rows)
+
+    @_on(events.NewMessage(pattern=r"^/ruxsat_ol(?:@\w+)?\s+(-?\d+)\s*$", func=is_main))
+    async def _revoke_cmd(event):
+        await event.respond(await revoke(int(event.pattern_match.group(1))), parse_mode="html")
+
+    @_on(events.CallbackQuery(pattern=rb"^rx:del:(\d+)$", func=is_main))
+    async def _revoke_cb(event):
+        uid = int(event.data.decode().split(":")[2])
+        await event.answer("🗑 Ruxsat olib tashlandi")
+        await event.respond(await revoke(uid), parse_mode="html")
+        text, rows = allowed_panel()
+        try:
+            await event.edit(text, parse_mode="html", buttons=rows)
+        except Exception:
+            pass
+
+    @_on(events.NewMessage(pattern=r"^/yangixabar(?:\s+(\S+))?$", func=is_owner))
     async def _new_msg(event):
         arg = (event.pattern_match.group(1) or "").lower()
         if arg in ("on", "off"):
@@ -2808,7 +3062,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         text, buttons = new_msg_panel()
         await event.respond(text, buttons=buttons)
 
-    @bot.on(events.CallbackQuery(pattern=rb"^newmsg:(on|off)$", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^newmsg:(on|off)$", func=is_owner))
     async def _new_msg_cb(event):
         on = event.data == b"newmsg:on"
         await runtime.update(new_msg_alerts=on)
@@ -2818,7 +3072,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
 
     # ---------- shaxsiy buxgalter ----------
     # Egasining ovozli xabari: matnga o'giriladi va kirim-chiqim sifatida yoziladi
-    @bot.on(events.NewMessage(func=lambda e: is_owner(e) and (e.voice or e.audio or e.video_note)))
+    @_on(events.NewMessage(func=lambda e: is_owner(e) and (e.voice or e.audio or e.video_note)))
     async def _fin_voice(event):
         status = await event.respond("🎤 Tinglayapman...")
         try:
@@ -2850,31 +3104,31 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.respond("Bu kirim-chiqimga o'xshamadi. Masalan: «nonga 25 ming ishlatdim» "
                                 "yoki «Alidan 200 ming oldim».")
 
-    @bot.on(events.NewMessage(pattern=r"^/fin$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/fin$", func=is_owner))
     async def _fin(event):
         await event.respond(await finance.make_report("today"), parse_mode="html", buttons=_fin_panel_buttons())
 
-    @bot.on(events.NewMessage(pattern=r"^/(today|days3|week|month)$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/(today|days3|week|month)$", func=is_owner))
     async def _fin_period(event):
         name = FIN_PERIOD_CMDS[event.pattern_match.group(1)]
         await event.respond(await finance.make_report(name), parse_mode="html", buttons=_fin_panel_buttons())
 
-    @bot.on(events.NewMessage(pattern=r"^/balance$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/balance$", func=is_owner))
     async def _fin_balance(event):
         await event.respond(await finance.make_balance(), parse_mode="html")
 
-    @bot.on(events.NewMessage(pattern=r"^/history$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/history$", func=is_owner))
     async def _fin_hist(event):
         text, buttons = await _fin_history()
         await event.respond(text, parse_mode="html", buttons=buttons)
 
-    @bot.on(events.NewMessage(pattern=r"^/undo$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/undo$", func=is_owner))
     async def _fin_undo(event):
         batch = await storage.last_batch()
         n = await storage.delete_batch(batch) if batch else 0
         await event.respond(f"↩️ Oxirgi yozuv bekor qilindi ({n} ta)." if n else "Bekor qiladigan yozuv yo'q.")
 
-    @bot.on(events.NewMessage(pattern=r"^/budget(?:\s+(\S+)(?:\s+(.+))?)?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/budget(?:\s+(\S+)(?:\s+(.+))?)?$", func=is_owner))
     async def _fin_budget(event):
         cat, raw = event.pattern_match.group(1), event.pattern_match.group(2)
         if not cat:
@@ -2896,7 +3150,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         await event.respond(f"🎯 «{cat}» oylik byudjeti: {finance.fmt_sum(amount)}\n\n"
                             + await _fin_budget_text(), parse_mode="html")
 
-    @bot.on(events.NewMessage(pattern=r"^/export(?:\s+(\S+))?$", func=is_owner))
+    @_on(events.NewMessage(pattern=r"^/export(?:\s+(\S+))?$", func=is_owner))
     async def _fin_export_cmd(event):
         name = (event.pattern_match.group(1) or "month").lower()
         name = {"hafta": "7", "week": "7", "oy": "month", "hammasi": "all"}.get(name, name)
@@ -2905,7 +3159,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             return
         await _send_export(name)
 
-    @bot.on(events.CallbackQuery(pattern=rb"^fin:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^fin:", func=is_owner))
     async def _fin_callback(event):
         parts = event.data.decode().split(":")
         action, arg = parts[1], parts[2] if len(parts) > 2 else ""
@@ -2969,7 +3223,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.answer()
 
     # Panel tugmalari: cfg:<amal>
-    @bot.on(events.CallbackQuery(pattern=rb"^cfg:", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^cfg:", func=is_owner))
     async def _cfg_callback(event):
         action = event.data.decode().split(":", 1)[1]
         result = await _do_action(action)
@@ -2981,7 +3235,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             pass  # panel o'zgarmagan bo'lsa Telegram xato qaytaradi — e'tiborsiz
 
     # Oddiy matn: tugma orqali yoki xulosaga reply qilib javob yozish
-    @bot.on(events.NewMessage(func=lambda e: is_owner(e) and e.text and not e.text.startswith("/")
+    @_on(events.NewMessage(func=lambda e: is_owner(e) and e.text and not e.text.startswith("/")
                               and e.raw_text.strip() not in MENU_TEXTS))
     async def _plain(event):
         if tg_login.busy():
@@ -3079,7 +3333,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         _awaiting_reply.pop("chat", None)
         await _send_as_owner(chat_id, event.text, event, slot)
 
-    @bot.on(events.CallbackQuery(pattern=rb"^(reply|done|mute|ignore):", func=is_owner))
+    @_on(events.CallbackQuery(pattern=rb"^(reply|done|mute|ignore):", func=is_owner))
     async def _callback(event):
         action, _, raw = event.data.decode().partition(":")
         raw_id, _, raw_slot = raw.partition(":")

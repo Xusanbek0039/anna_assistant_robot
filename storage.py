@@ -1,5 +1,7 @@
 """MongoDB Atlas saqlash: suhbat tarixi, inbox, sozlamalar, istisnolar va bio holati."""
 import asyncio
+import contextlib
+import contextvars
 import logging
 import sys
 import time
@@ -14,8 +16,50 @@ log = logging.getLogger("storage")
 _client: AsyncMongoClient | None = None
 _db = None
 
+# 🗂 Chat arxivi qaysi akkauntniki: 1 — «archive», «archive_chats»; 2 — «archive2», «archive_chats2».
+# Bir odam ikkala akkauntga yozsa ham xabar raqamlari aralashib ketmaydi. Faqat shu ikki kolleksiya ajraladi.
+ARC_SLOT: contextvars.ContextVar[int] = contextvars.ContextVar("arc_slot", default=1)
+_SLOTTED = ("archive", "archive_chats")
+
+
+def arc_slot() -> int:
+    return ARC_SLOT.get()
+
+
+@contextlib.contextmanager
+def use_slot(slot: int):
+    """with storage.use_slot(2): ... — ichidagi arxiv amallari 2-akkaunt kolleksiyalarida."""
+    token = ARC_SLOT.set(int(slot or 1))
+    try:
+        yield
+    finally:
+        ARC_SLOT.reset(token)
+
+
+class _SlotDB:
+    """Baza o'rami: «archive»/«archive_chats» -> «archive2»/«archive_chats2»; qolganlari o'zgarmaydi."""
+
+    def __init__(self, db, slot: int):
+        self._db, self._slot = db, slot
+
+    def __getattr__(self, name):
+        if name in _SLOTTED:
+            name = f"{name}{self._slot}"
+        return getattr(self._db, name)
+
+    def __getitem__(self, name):
+        if name in _SLOTTED:
+            name = f"{name}{self._slot}"
+        return self._db[name]
+
 
 def _get_db():
+    db = _real_db()
+    slot = ARC_SLOT.get()
+    return db if slot == 1 else _SlotDB(db, slot)
+
+
+def _real_db():
     global _client, _db
     if _db is None:
         if not MONGODB_URI:
@@ -83,6 +127,8 @@ async def _create_indexes(db) -> None:
         ("ig_archive", [("media_state", ASCENDING), ("date", DESCENDING)], {"sparse": True}),
         ("ig_media", [("thread_id", ASCENDING), ("msg_id", ASCENDING)], {}),
     ]
+    # 2-akkaunt arxivi uchun ham xuddi shu indekslar (unique — takrorlanmasin)
+    indexes += [(f"{name}2", keys, opts) for name, keys, opts in indexes if name in _SLOTTED]
     failed = []
     for name, keys, opts in indexes:
         try:
@@ -851,6 +897,22 @@ async def bot_set_session(string: str, bot_id: str) -> None:
 
 async def bot_delete_session() -> None:
     await _get_db().settings.delete_one({"_id": "bot_session"})
+
+
+# ---------- 🔑 botdan foydalanishga ruxsat berilganlar (/ruxsat) ----------
+async def bot_users_list() -> list[dict]:
+    rows = await _get_db().bot_users.find({}).sort("ts", ASCENDING).to_list()
+    return [{"user_id": r["_id"], "label": r.get("label") or str(r["_id"])} for r in rows]
+
+
+async def bot_users_add(user_id: int, label: str) -> None:
+    await _get_db().bot_users.update_one({"_id": int(user_id)}, {"$set": {"label": label, "ts": time.time()}},
+                                         upsert=True)
+
+
+async def bot_users_remove(user_id: int) -> bool:
+    res = await _get_db().bot_users.delete_one({"_id": int(user_id)})
+    return res.deleted_count > 0
 
 
 # ---------- 📸 Instagram (instagram.py) ----------

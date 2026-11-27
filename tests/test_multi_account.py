@@ -126,9 +126,11 @@ def test_feature_panel_and_toggle(two, monkeypatch):
     assert "✅ 🟢 24 soat online" in [b.text for row in control_bot.acc_panel(2)[1] for b in row]
 
 
-def test_autoreply_off_silences_second_account(monkeypatch):
+def test_autoreply_off_still_notifies_second_account(monkeypatch, fake_storage):
+    """2-akkauntda kotiba o'chiq: AI javob bermaydi, lekin kim yozgani 📩 bo'lib keladi va Inbox'ga tushadi."""
     import userbot
-    handlers = []
+    from telethon.tl.types import User as TgUser
+    handlers, notes = [], []
 
     class U:
         def on(self, ev):
@@ -137,16 +139,31 @@ def test_autoreply_off_silences_second_account(monkeypatch):
                 return fn
             return deco
 
+    async def notify(chat_id, name, username, text, summary, urgent, reply, reply_to=None, slot=1):
+        notes.append((chat_id, name, text, reply, slot))
+
+    async def no_ai(*a, **kw):
+        raise AssertionError("kotiba o'chiq — AI chaqirilmasligi kerak")
+
     monkeypatch.setattr(runtime, "_values", dict(runtime.DEFAULTS, acc2_autoreply=False))
+    monkeypatch.setattr(userbot.control_bot, "notify", notify)
+    monkeypatch.setattr(userbot.ai, "generate", no_ai)
     userbot.setup(U(), 99, slot=2)
 
-    class Boom:
+    class Msg:
+        message, media, file = "salom", None, None
+        voice = video_note = photo = video = sticker = audio = document = None
+
+    class Ev:
         chat_id = 5
+        message = Msg()
 
         async def get_sender(self):
-            raise AssertionError("kotiba o'chiq bo'lsa xabar o'qilmasligi kerak")
+            return TgUser(id=5, first_name="Ali", username="ali")
 
-    run(handlers[0](Boom()))    # jim qaytadi
+    run(handlers[0](Ev()))
+    assert notes == [(5, "Ali", "salom", None, 2)]
+    assert fake_storage.d_inbox[5]["slot"] == 2
 
 
 def test_second_bio_uses_its_own_backup(tmp_path, monkeypatch):
@@ -251,3 +268,58 @@ def test_saved_channels_list_per_account(two, monkeypatch):
     labels = [b.text for row in rows for b in row]
     assert any("Ikki · 7" in t for t in labels) and not any("Bir" in t for t in labels)
     assert b"arc:html:-22:a" in _datas({"buttons": rows})
+
+
+def test_second_account_archive_uses_own_collections(monkeypatch):
+    import storage
+
+    class DB:
+        def __getattr__(self, name):
+            return f"col:{name}"
+
+        def __getitem__(self, name):
+            return f"col:{name}"
+
+    monkeypatch.setattr(storage, "_real_db", lambda: DB())
+    assert storage._get_db().archive == "col:archive"
+    with storage.use_slot(2):
+        db = storage._get_db()
+        assert db.archive == "col:archive2" and db.archive_chats == "col:archive_chats2"
+        assert db["archive"] == "col:archive2"
+        assert db.inbox == "col:inbox" and db.settings == "col:settings"   # boshqalari umumiy
+    assert storage.arc_slot() == 1
+
+
+def test_second_account_messages_go_to_its_archive(monkeypatch):
+    import archive
+    import storage
+    seen = []
+
+    async def fake_store(event):
+        seen.append(storage.arc_slot())
+
+    monkeypatch.setattr(archive, "_store", fake_store)
+    monkeypatch.setattr(archive, "_clients", {})
+    monkeypatch.setattr(archive, "_arc_slots", set())
+    c2 = []
+
+    class U:
+        def on(self, ev):
+            def deco(fn):
+                c2.append(fn)
+                return fn
+            return deco
+
+    archive.setup_account(U(), 77, 2)
+    run(c2[0](type("E", (), {})()))
+    assert seen == [2] and archive.arc_slots() == [1, 2] and archive._me_ids[2] == 77
+    archive.forget_client(2)
+    assert archive.arc_slots() == [1]
+
+
+def test_notification_html_button_points_to_right_archive(two):
+    bot, _, _ = two
+    run(control_bot.notify(77, "Ali", None, "salom", "", False, None, slot=2))
+    assert b"arc2:html:77:a" in _datas(bot.sent[-1][1])
+    run(control_bot.notify(78, "Vali", None, "salom", "", False, None))
+    assert b"arc1:html:78:a" in _datas(bot.sent[-1][1])

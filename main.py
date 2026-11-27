@@ -141,6 +141,7 @@ async def main() -> None:
     log.info("Nazorat boti: @%s — botga /start bosishni unutmang", bot_me.username)
 
     control_bot.setup(bot, user, owner_id=me.id)
+    await control_bot.load_allowed()   # 🔑 /ruxsat berilganlar
     await control_bot.set_commands(bot, me.id)  # "/" bosilganda chiqadigan menyu
     userbot.setup(user, me_id=me.id)
     # o'chirilgan / tahrirlangan yozishmalar

@@ -21,6 +21,7 @@ from telethon.tl.types import Message, MessageMediaWebPage, PeerChannel, User
 
 import channels
 import config
+import groups
 import runtime
 import storage
 
@@ -42,6 +43,8 @@ _del_tasks: dict[int, asyncio.Task] = {}
 # 📢 2-akkaunt kanallari: qaysi akkaunt orqali olingan (media/HTML shu akkauntdan yuklanadi)
 _clients: dict[int, object] = {}
 _chat_via: dict[int, int] = {}
+_arc_slots: set[int] = set()      # shaxsiy chatlari ham arxivlanadigan qo'shimcha akkauntlar (2)
+_me_ids: dict[int, int] = {}      # akkaunt -> o'z id si («Saqlangan xabarlar» arxivlanmaydi)
 
 
 # ---------- xabar -> arxiv yozuvi ----------
@@ -181,13 +184,14 @@ async def _eligible(event) -> tuple[object, str] | None:
     if not runtime.get("archive_enabled"):
         return None
     if event.is_private:
-        if event.chat_id in (_me_id, TELEGRAM_SERVICE_ID):
+        if event.chat_id in (_me_ids.get(storage.arc_slot(), _me_id), TELEGRAM_SERVICE_ID):
             return None
         chat = await event.get_chat()
         if isinstance(chat, User) and (chat.bot or chat.is_self):
             return None
         return chat, "user"
-    if event.is_group and runtime.get("archive_groups"):
+    # guruhlar: hammasi (ARCHIVE_GROUPS) yoki 👥 Guruhlar'da yoqilganlari — ular arxivda ham turadi
+    if event.is_group and (runtime.get("archive_groups") or groups.is_enabled(event.chat_id)):
         return await event.get_chat(), "group"
     if channels.is_broadcast(event) and channels.is_enabled(event.chat_id):   # 📢 faqat belgilangan kanallar
         return await event.get_chat(), "channel"
@@ -279,21 +283,22 @@ async def _deleted(chat_id: int | None, ids: list[int]) -> None:
     docs = await storage.archive_mark_deleted(chat_id, ids, time.time())
     now = time.time()
     for d in docs:
-        cid = d["chat_id"]
-        _del_buf.setdefault(cid, []).append(d)
-        _del_last[cid] = now
-        if cid not in _del_tasks:
-            _del_tasks[cid] = asyncio.create_task(_flush(cid))
+        key = (storage.arc_slot(), d["chat_id"])   # ikki akkauntda bir xil chat — alohida ogohlantirish
+        _del_buf.setdefault(key, []).append(d)
+        _del_last[key] = now
+        if key not in _del_tasks:
+            _del_tasks[key] = asyncio.create_task(_flush(key))
 
 
-async def _flush(cid: int) -> None:
+async def _flush(key) -> None:
     """Chat butunlay o'chirilsa Telegram id larni 100 tadan bo'lib yuboradi — tinchigach bitta xabar."""
+    cid = key[1] if isinstance(key, tuple) else key
     try:
-        while time.time() - _del_last.get(cid, 0) < DELETE_GATHER_SECONDS:
+        while time.time() - _del_last.get(key, 0) < DELETE_GATHER_SECONDS:
             await asyncio.sleep(DELETE_GATHER_SECONDS / 3)
     finally:
-        _del_tasks.pop(cid, None)
-        docs = _del_buf.pop(cid, [])
+        _del_tasks.pop(key, None)
+        docs = _del_buf.pop(key, [])
     if docs and runtime.get("archive_alerts") and _on_deleted:
         try:
             await _on_deleted(cid, docs)
@@ -361,8 +366,48 @@ def setup_channels(client, slot: int) -> None:
             log.exception("O'chirilgan kanal postlari belgilanmadi")
 
 
+def setup_account(client, me_id: int, slot: int) -> None:
+    """2-akkaunt shaxsiy chatlari (va yoqilgan guruhlari) — o'z arxiviga («archive2»), 1-akkauntnikidek:
+    o'chirilsa/tahrirlansa xabar beriladi, HTML va Drive'ga ham yuklanadi. Kanallar — setup_channels."""
+    _clients[slot] = client
+    _me_ids[slot] = me_id
+    _arc_slots.add(slot)
+
+    @client.on(events.NewMessage(func=lambda e: not channels.is_broadcast(e)))
+    async def _acc_new(event):
+        with storage.use_slot(slot):
+            try:
+                await _store(event)
+            except Exception:
+                log.exception("Xabar arxivga yozilmadi (%s-akkaunt)", slot)
+
+    @client.on(events.MessageEdited(func=lambda e: not channels.is_broadcast(e)))
+    async def _acc_edited(event):
+        with storage.use_slot(slot):
+            try:
+                await _edited(event)
+            except Exception:
+                log.exception("Tahrir arxivga yozilmadi (%s-akkaunt)", slot)
+
+    @client.on(events.MessageDeleted())
+    async def _acc_deleted(event):
+        if not runtime.get("archive_enabled") or channels.is_enabled(event.chat_id):
+            return   # kanal o'chirishlari — setup_channels'da
+        with storage.use_slot(slot):
+            try:
+                await _deleted(event.chat_id, list(event.deleted_ids or []))
+            except Exception:
+                log.exception("O'chirilgan xabarlar belgilanmadi (%s-akkaunt)", slot)
+
+
+def arc_slots() -> list[int]:
+    """Shaxsiy chatlar arxivi bor akkauntlar: [1, 2]."""
+    return [1] + sorted(_arc_slots)
+
+
 def forget_client(slot: int) -> None:
     _clients.pop(slot, None)
+    _arc_slots.discard(slot)
 
 
 async def mark_via(chat_id: int, slot: int) -> None:
@@ -378,6 +423,8 @@ async def mark_via(chat_id: int, slot: int) -> None:
 
 async def client_for(chat_id: int, default):
     """Chat (kanal) qaysi akkaunt orqali arxivlangan bo'lsa — o'sha akkaunt client'i."""
+    if storage.arc_slot() != 1:   # 2-akkaunt arxivi — doim o'sha akkauntdan
+        return _clients.get(storage.arc_slot(), default)
     slot = _chat_via.get(chat_id)
     if slot is None:
         try:
@@ -543,7 +590,8 @@ drive_state = {"ok": None, "problem": "", "last": 0.0, "files": 0}
 def _drive_base(info: dict) -> str:
     title = info.get("title") or str(info.get("chat_id"))
     user = f" (@{info['username']})" if info.get("username") else ""
-    return f"{_safe(title)}{user} [{info.get('chat_id')}]"
+    acc = f" [{storage.arc_slot()}-akk]" if storage.arc_slot() != 1 else ""   # 2-akkaunt papkasi alohida
+    return f"{_safe(title)}{user} [{info.get('chat_id')}]{acc}"
 
 
 def _drive_name(info: dict) -> str:
@@ -758,7 +806,10 @@ async def drive_media_loop(user, alert) -> None:
     while True:
         wait = 120
         try:
-            n = await drive_media_pending(user)
+            n = 0
+            for slot in arc_slots():   # har bir akkaunt arxivi
+                with storage.use_slot(slot):
+                    n += await drive_media_pending(user)
             media_state.update(ok=True, problem="")
             if n:
                 log.info("Google Drive: %d ta media yuklandi", n)
@@ -826,7 +877,10 @@ async def drive_loop(alert) -> None:
     alerted = ""
     while True:
         try:
-            n = await drive_sync_pending()
+            n = 0
+            for slot in arc_slots():
+                with storage.use_slot(slot):
+                    n += await drive_sync_pending()
             drive_state.update(ok=True, problem="", last=time.time())
             drive_state["files"] += n
             if n:
