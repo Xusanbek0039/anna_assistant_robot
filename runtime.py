@@ -16,6 +16,8 @@ DEFAULTS = {
     "quote_mode": "auto",   # auto — quotes.txt dan har kuni; fixed — quote_text; off — iqtibossiz
     "quote_text": "",
     "online": config.KEEP_ONLINE,
+    # «📩 Yangi xabar» bildirishnomalari (🔴 SHOSHILINCH va 📞 chaqiruv doim keladi)
+    "new_msg_alerts": config.NEW_MSG_ALERTS,
     "archive_enabled": config.ARCHIVE_ENABLED,
     "archive_groups": config.ARCHIVE_GROUPS,
     "archive_alerts": config.ARCHIVE_ALERTS,

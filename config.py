@@ -78,6 +78,9 @@ USER_SESSION = _path(_str("USER_SESSION", "anna"))
 # Server (Render va h.k.) uchun: terminal yo'q, kod kiritib bo'lmaydi — session matn ko'rinishida beriladi.
 # Olish: kompyuterda `python export_session.py`. MAXFIY — akkauntga to'liq kirish beradi!
 SESSION_STRING = _str("SESSION_STRING")
+# Ixtiyoriy: akkaunt egasining Telegram ID si. Bot orqali login (/tglogin) faqat shu odamga ruxsat etiladi.
+# Bo'sh bo'lsa — bazadagi oxirgi egasi; u ham bo'lmasa, logda chiqadigan bir martalik kod so'raladi
+OWNER_ID = _int("OWNER_ID", 0)
 
 # --- Nazorat boti va AI (faqat main.py / kotiba rejimi uchun) ---
 BOT_TOKEN = _str("BOT_TOKEN")
@@ -134,6 +137,8 @@ MAX_REPLIES_PER_MINUTE = _int("MAX_REPLIES_PER_MINUTE", 4)
 REPLY_DELAY_SECONDS = _float("REPLY_DELAY_SECONDS", 3)
 # Kotiba javobni suhbatdoshning aynan o'sha xabariga "reply" qilib yozadi
 REPLY_QUOTE = _bool("REPLY_QUOTE", True)
+# «📩 Yangi xabar» bildirishnomalari (botdan: /yangixabar on|off). SHOSHILINCH va chaqiruv doim keladi
+NEW_MSG_ALERTS = _bool("NEW_MSG_ALERTS", True)
 MAX_MEDIA_MB = _int("MAX_MEDIA_MB", 50)  # bundan katta media yuklab olinmaydi (egasiga ham yuborilmaydi)
 SAVE_MAX_MB = _int("SAVE_MAX_MB", 2000)  # havola orqali saqlashda (/save) eng katta fayl hajmi
 # --- Chat arxivi: suhbatdosh yozishmani o'chirsa ham, bot orqali HTML qilib qayta olish ---

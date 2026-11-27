@@ -4,6 +4,8 @@ Loyiha shaxsiy Telegram akkauntingizda (bot emas, **userbot** — Telethon orqal
 
 1. **Avtojavob kotiba** — band bo'lganingizda shaxsiy yozganlarga AI (OpenAI) javob beradi:
    "Husan Suyunov hozirda band, xabaringizni yozib qoldiring, men unga yetkazaman". Xulosa alohida nazorat boti orqali sizga keladi.
+   «📩 Yangi xabar» bildirishnomalarini o'chirish: botda `/yangixabar off` yoki bildirishnoma tagidagi
+   «🔕 «Yangi xabar» kelmasin» tugmasi (🔴 SHOSHILINCH va 📞 chaqiruv baribir keladi).
 2. **Avtomatik bio** — profil bio'si muntazam yangilanadi:
 
    ```
@@ -19,6 +21,7 @@ Ma'lumotlar **MongoDB Atlas**da saqlanadi.
 | `main.py` | Hammasini birga ishga tushiradi: kotiba + nazorat boti + bio |
 | `bio_updater.py` | Avtomatik bio (alohida ham ishga tushirsa bo'ladi) |
 | `tg_client.py` | Telegram login va maxfiy ma'lumotlarni yashiradigan logging |
+| `tg_login.py` | 🔑 Telegram akkauntni nazorat boti orqali ulash (telefon → kod → 2FA parol), sessiya MongoDB'da; `/tglogin`, `/tglogout` |
 | `userbot.py`, `control_bot.py`, `ai.py` | Avtojavob kotiba |
 | `voicelab.py` | VoiceLab (voicelab.uz): ovozli xabarlarni matnga o'girish va o'zbekcha ayol ovozida javob (Madina) — ovozli javob faqat VoiceLab |
 | `finder.py` | Chatlardan aqlli qidirish: «Ali yuborgan manzilni top», «wifi parolini qidir» — matn, username, raqam, havola, rasm, fayl, lokatsiya (ism aytilmasa — barcha chatlardan) |
@@ -528,8 +531,16 @@ Har bir o'zgarishdan keyin ishga tushiring — eski funksiyalar buzilmaganini ko
 
 Muhim nuqtalar:
 
-- **`SESSION_STRING`** to'ldirilgan bo'lishi kerak: serverda terminal yo'q, Telegram kodini kiritib bo'lmaydi.
-  Kompyuterda `python export_session.py` ni ishga tushirib, chiqqan matnni Render → *Environment* ga qo'ying.
+- **Telegram akkaunt bot orqali ulanadi** — serverda terminal yo'q, shuning uchun sessiya topilmasa Anna nazorat
+  botini ishga tushiradi va **botda** so'raydi: telefon raqam → Telegram kodi → (yoqilgan bo'lsa) 2FA parol.
+  - Kodni **bo'sh joy bilan** yuboring: `1 2 3 4 5` — bo'sh joysiz yozilsa, Telegram kodni darhol bekor qiladi.
+  - Kod va parolli xabarlar botda darhol o'chiriladi. Kirilgach sessiya MongoDB'da saqlanadi — keyingi
+    ishga tushishlarda so'ralmaydi.
+  - Login faqat akkaunt egasiga ruxsat: `OWNER_ID` (.env) yoki bazadagi oxirgi egasi. Birinchi marta (ikkalasi ham
+    bo'lmasa) logda `/tglogin 123456` ko'rinishidagi bir martalik kod chiqadi — shuni botga yuborasiz.
+  - `/tglogin` — qaysi akkaunt ulanganini ko'rsatadi; `/tglogout` — akkauntdan chiqadi (boshqa akkaunt ulash
+    uchun): Anna qayta ishga tushadi va yangi login so'raydi.
+  - Xohlasangiz eski usul ham ishlaydi: kompyuterda `python export_session.py` → chiqqan matn → `SESSION_STRING`.
 - **MongoDB Atlas → Network Access** da `0.0.0.0/0` ruxsat etilgan bo'lsin (Render IP'si o'zgarib turadi).
 - Environment o'zgaruvchisini saqlaganingizda Render servisni **qayta ishga tushiradi** — logda ketma-ket
   `Instance restarted` ko'rinsa, odatda sababi shu (xato emas).

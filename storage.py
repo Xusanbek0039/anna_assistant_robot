@@ -833,6 +833,32 @@ async def watch_delete(watch_id: str) -> bool:
     return res.deleted_count > 0
 
 
+# ---------- 🔑 Telegram akkaunt sessiyasi (bot orqali login, tg_login.py) ----------
+async def tg_get_session() -> dict | None:
+    """Bot orqali kirilgan akkaunt sessiyasi: {"string": ..., "user_id": ...}. MAXFIY — to'liq kirish beradi."""
+    return await _get_db().settings.find_one({"_id": "tg_session"})
+
+
+async def tg_set_session(string: str, user_id: int) -> None:
+    await _get_db().settings.update_one({"_id": "tg_session"},
+                                        {"$set": {"string": string, "user_id": user_id, "ts": time.time()}},
+                                        upsert=True)
+
+
+async def tg_delete_session() -> None:
+    await _get_db().settings.delete_one({"_id": "tg_session"})
+
+
+async def tg_get_owner() -> int | None:
+    """Oxirgi marta ulangan akkaunt egasi (nazorat botidan faqat u login qila oladi)."""
+    doc = await _get_db().settings.find_one({"_id": "tg_owner"})
+    return int(doc["user_id"]) if doc and doc.get("user_id") else None
+
+
+async def tg_set_owner(user_id: int) -> None:
+    await _get_db().settings.update_one({"_id": "tg_owner"}, {"$set": {"user_id": int(user_id)}}, upsert=True)
+
+
 # ---------- 📸 Instagram (instagram.py) ----------
 def _ig_session_id(slot: str = "1") -> str:
     """1-akkaunt — «session» (eski yozuv o'zgarmaydi), 2-akkaunt — «session2»."""

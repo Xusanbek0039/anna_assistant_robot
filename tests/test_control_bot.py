@@ -271,3 +271,31 @@ def test_open_dm_profile_rejected_falls_back_to_url(monkeypatch):
     assert ev.sent[0][1]["buttons"][0][0].type.url == "tg://user?id=123456789"
     assert ev.sent[0][1]["buttons"][1][0].type.data == b"dmsave:123456789"
 
+
+
+class _SendBot:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, chat_id, text, **kw):
+        self.sent.append((text, kw))
+        return type("M", (), {"id": len(self.sent)})()
+
+
+def test_new_msg_alerts_can_be_turned_off(monkeypatch, fake_storage, fresh_runtime):
+    bot = _SendBot()
+    monkeypatch.setattr(control_bot.ctx, "bot", bot, raising=False)
+    monkeypatch.setattr(control_bot.ctx, "owner_id", 1, raising=False)
+    monkeypatch.setattr(control_bot, "_notif_map", {})
+
+    run(control_bot.notify(5, "Ali", None, "salom", "", False, None))
+    assert "Yangi xabar" in bot.sent[-1][0]
+    datas = [getattr(b, "data", None) or b.type.data for row in bot.sent[-1][1]["buttons"] for b in row]
+    assert b"newmsg:off" in datas
+
+    run(runtime.update(new_msg_alerts=False))
+    run(control_bot.notify(5, "Ali", None, "salom", "", False, None))
+    assert len(bot.sent) == 1                     # «Yangi xabar» kelmadi
+    run(control_bot.notify(5, "Ali", None, "tez!", "", True, None))
+    assert "SHOSHILINCH" in bot.sent[-1][0]       # shoshilinch baribir keladi
+    assert "o'chiq" in control_bot.new_msg_panel()[0]

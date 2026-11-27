@@ -93,7 +93,9 @@ HELP = (
     "/bio — joriy bio va holat\n"
     "/bio on | off | now | restore — yoqish, to'xtatish, hozir yangilash, asl bio'ni qaytarish\n"
     "/quote &lt;matn&gt; — doimiy iqtibos, /quote auto — har kuni almashadi, /quote off — iqtibossiz\n"
-    "/online on | off — akkauntni online ko'rsatish\n\n"
+    "/online on | off — akkauntni online ko'rsatish\n"
+    "/tglogin — ulangan Telegram akkaunt; /tglogout — chiqish (keyin botda yangi akkaunt ulanadi)\n"
+    "/yangixabar on | off — «📩 Yangi xabar» bildirishnomalari (SHOSHILINCH va chaqiruv doim keladi)\n\n"
     "<b>💰 Shaxsiy buxgalter</b>\n"
     "Botga oddiy yozing yoki <b>ovozli xabar</b> yuboring: «bugun nonga 25 ming, zapravkaga 30 ming "
     "ishlatdim», «Alidan 200 ming oldim», «Valiga 100 ming qarz berdim» — kirim/chiqim avtomatik yoziladi.\n"
@@ -293,10 +295,55 @@ def _buttons(chat_id: int):
     ]
 
 
+def _notify_buttons(chat_id: int):
+    """«📩 Yangi xabar» tugmalari: odatdagilar + bildirishnomani o'chirish."""
+    return _buttons(chat_id) + [[Button.inline("🔕 «Yangi xabar» kelmasin", b"newmsg:off")]]
+
+
+def new_msg_panel() -> tuple[str, list]:
+    if runtime.get("new_msg_alerts"):
+        return ("📩 «Yangi xabar» bildirishnomalari: 🟢 yoqiq",
+                [[Button.inline("🔕 O'chirish", b"newmsg:off")]])
+    return ("📩 «Yangi xabar» bildirishnomalari: ⚪️ o'chiq\n"
+            "Kotiba javob berishda davom etadi; 🔴 SHOSHILINCH, 📞 chaqiruv va media baribir keladi. "
+            "Javob kutayotganlar: /inbox",
+            [[Button.inline("🔔 Yoqish", b"newmsg:on")]])
+
+
+async def tg_logout(exit_after: float = 2.0) -> None:
+    """Telegram akkauntdan chiqadi (sessiya bekor), bazadagi sessiyani o'chiradi va dasturni to'xtatadi —
+    run.bat / server qayta ishga tushiradi va yangi akkaunt uchun login so'raladi."""
+    import os
+    import instance
+    try:
+        await storage.tg_delete_session()
+    except Exception as e:
+        log.warning("Bazadagi Telegram sessiyasi o'chirilmadi (%s)", type(e).__name__)
+    try:
+        await ctx.user.log_out()   # fayl sessiyasini ham o'chiradi
+    except Exception as e:
+        log.warning("Telegram'dan chiqishda xato (%s)", type(e).__name__)
+    if config.SESSION_STRING:
+        log.warning("SESSION_STRING endi yaroqsiz — server sozlamalaridan o'chirib qo'ying")
+    try:
+        await ctx.bot.send_message(
+            ctx.owner_id, "✅ Akkauntdan chiqildi. Anna qayta ishga tushgach, shu botda yangi akkaunt uchun "
+                          "telefon raqam so'raladi." + ("\n⚠️ SESSION_STRING endi yaroqsiz — serverdagi sozlamadan "
+                                                       "o'chirib qo'ying." if config.SESSION_STRING else ""))
+    except Exception:
+        pass
+    log.warning("Telegram akkauntdan chiqildi — dastur qayta ishga tushish uchun to'xtaydi")
+    if config.SINGLE_INSTANCE:
+        await instance.release()
+    asyncio.get_running_loop().call_later(exit_after, os._exit, 0)
+
+
 async def notify(chat_id: int, name: str, username: str | None, text: str,
                  summary: str, urgent: bool, ai_reply: str | None, reply_to: int | None = None) -> None:
     """reply_to: shu xabar bilan kelgan media (bot xabari) id si — bildirishnoma uning tagiga bog'lanadi."""
-    head = "🔴 <b>SHOSHILINCH</b>\n" if urgent else "📩 <b>Yangi xabar</b>\n"
+    if not urgent and not runtime.get("new_msg_alerts"):
+        return  # egasi «📩 Yangi xabar»ni o'chirgan (/yangixabar); xabar /inbox ga baribir yoziladi
+    head ="🔴 <b>SHOSHILINCH</b>\n" if urgent else "📩 <b>Yangi xabar</b>\n"
     body = (
         f"{head}👤 {_who(name, username, chat_id)}\n\n"
         f"💬 <i>{html.escape(text[:1000])}</i>\n"
@@ -307,7 +354,8 @@ async def notify(chat_id: int, name: str, username: str | None, text: str,
         body += f"\n🤖 <b>Anna javobi:</b> {html.escape(ai_reply)}"
     try:
         msg = await ctx.bot.send_message(ctx.owner_id, body, parse_mode="html",
-                                         buttons=_buttons(chat_id), reply_to=reply_to)
+                                         buttons=_buttons(chat_id) if urgent else _notify_buttons(chat_id),
+                                         reply_to=reply_to)
         _notif_map[msg.id] = chat_id
     except Exception:
         log.exception("Egasiga xabar yuborilmadi (botga /start bosganmisiz?)")
@@ -699,6 +747,7 @@ BOT_COMMANDS = [
     ("vadalar", "📌 Bergan va'dalaringiz ro'yxati"),
     ("eslatma", "🔔 Eslatmalar: raqam tg ga qo'shilsa / odam online bo'lsa"),
     ("ig", "📸 Instagram: bir martalik media, avtojavob, arxiv"),
+    ("tglogin", "🔑 Telegram akkaunt: holati va boshqasini ulash"),
     ("iglogin", "🔑 Instagram'ni ulash: /iglogin username parol"),
     ("korganlar", "👀 Storis'ni kim ko'rdi, havola orqali kim keldi"),
     ("igyukla", "📥 Instagram post/reels/storis mediasini yuklash"),
@@ -707,6 +756,7 @@ BOT_COMMANDS = [
     ("bio", "🕒 Bio, iqtibos va online — tugmali panel"),
     ("quote", "💬 Iqtibos: /quote matn | auto | off"),
     ("online", "🟢 Online ko'rinish: on | off"),
+    ("yangixabar", "📩 «Yangi xabar» bildirishnomalari: on | off"),
     ("usage", "💸 Bugungi AI sarfi va limitlar"),
     ("health", "🩺 MongoDB, OpenAI, Telegram holati"),
     ("tags", "🏷 Kontakt turlari ro'yxati"),
@@ -2226,6 +2276,50 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             await event.respond(await _do_action(f"online_{arg}"))
         else:
             await _send_panel(event)
+
+    # ---------- 🔑 Telegram akkaunt (tg_login.py) ----------
+    @bot.on(events.NewMessage(pattern=r"^/tglogin(?:@\w+)?(?:\s.*)?$", func=is_owner))
+    async def _tg_login(event):
+        me = await user.get_me()
+        name = html.escape(f"{me.first_name or ''} {me.last_name or ''}".strip())
+        await event.respond(
+            f"✅ Telegram akkaunt ulangan: <b>{name}</b>"
+            + (f" (@{html.escape(me.username)})" if me.username else "")
+            + f", id <code>{me.id}</code>\n\n"
+            "Boshqa akkaunt ulash uchun avval chiqing: /tglogout — Anna qayta ishga tushadi va yangi akkaunt "
+            "uchun telefon, kod va parolni shu botda so'raydi (kompyuterda terminal oynasida ishlasa — "
+            "terminalda).", parse_mode="html")
+
+    @bot.on(events.NewMessage(pattern=r"^/tglogout(?:@\w+)?$", func=is_owner))
+    async def _tg_logout(event):
+        await event.respond(
+            "⚠️ Telegram akkauntdan chiqilsinmi?\n\nSessiya bekor qilinadi (Telegram → Qurilmalar ro'yxatidan "
+            "ham o'chadi), Anna to'xtab qayta ishga tushadi va yangi login so'raydi.",
+            buttons=[[Button.inline("✅ Ha, chiqish", b"tg:logout_ok"), Button.inline("↩️ Yo'q", b"tg:cancel")]])
+
+    @bot.on(events.CallbackQuery(pattern=rb"^tg:(logout_ok|cancel)$", func=is_owner))
+    async def _tg_logout_cb(event):
+        if event.data == b"tg:cancel":
+            await event.edit("↩️ Bekor qilindi — akkaunt ulangan holda qoldi.")
+            return
+        await event.edit("🚪 Akkauntdan chiqilyapti...")
+        await tg_logout()
+
+    @bot.on(events.NewMessage(pattern=r"^/yangixabar(?:\s+(\S+))?$", func=is_owner))
+    async def _new_msg(event):
+        arg = (event.pattern_match.group(1) or "").lower()
+        if arg in ("on", "off"):
+            await runtime.update(new_msg_alerts=arg == "on")
+        text, buttons = new_msg_panel()
+        await event.respond(text, buttons=buttons)
+
+    @bot.on(events.CallbackQuery(pattern=rb"^newmsg:(on|off)$", func=is_owner))
+    async def _new_msg_cb(event):
+        on = event.data == b"newmsg:on"
+        await runtime.update(new_msg_alerts=on)
+        await event.answer("📩 «Yangi xabar» yoqildi" if on else "🔕 «Yangi xabar» endi kelmaydi")
+        text, buttons = new_msg_panel()
+        await event.respond(text, buttons=buttons)
 
     # ---------- shaxsiy buxgalter ----------
     # Egasining ovozli xabari: matnga o'giriladi va kirim-chiqim sifatida yoziladi

@@ -19,6 +19,7 @@ import promises
 import report
 import runtime
 import storage
+import tg_login
 import userbot
 import viewers
 import voicelab
@@ -26,7 +27,7 @@ import watchers
 import weekly
 from bio_updater import BioUpdater, validate_settings
 from presence import keep_online
-from tg_client import create_user_client, login, setup_logging, start_bot
+from tg_client import login, setup_logging, start_bot
 
 log = logging.getLogger("main")
 
@@ -97,14 +98,26 @@ async def main() -> None:
         log.error(voicelab.audio_tools_problem())
 
     log.info("4/6 Shaxsiy akkauntga (userbot) ulanyapti (xotira %s)", health.memory_note())
-    user = create_user_client()
-    # Birinchi ishga tushishda telefon raqam, Telegram kodi (va 2FA parol) terminalda so'raladi
-    await login(user)
+    # Sessiya: SESSION_STRING -> anna.session -> bazadagi (bot orqali kirilgan) sessiya
+    user = await tg_login.open_client()
+    try:
+        # Birinchi ishga tushishda telefon raqam, Telegram kodi (va 2FA parol) terminalda so'raladi;
+        # terminal yo'q bo'lsa (server) — nazorat botida so'raladi
+        await login(user, via_bot=True)
+        bot = None
+    except tg_login.NeedsBotLogin:
+        log.info("5/6 Nazorat botiga ulanyapti — Telegram akkaunt bot orqali ulanadi (xotira %s)",
+                 health.memory_note())
+        bot, bot_me = await start_bot()
+        await tg_login.via_bot(bot, user)
+        await login(user)
     me = await user.get_me()
     log.info("Akkaunt: %s (id %s)", me.first_name, me.id)
+    await tg_login.remember_owner(me.id)
 
-    log.info("5/6 Nazorat botiga ulanyapti (BOT_TOKEN) (xotira %s)", health.memory_note())
-    bot, bot_me = await start_bot()
+    if bot is None:
+        log.info("5/6 Nazorat botiga ulanyapti (BOT_TOKEN) (xotira %s)", health.memory_note())
+        bot, bot_me = await start_bot()
     log.info("Nazorat boti: @%s — botga /start bosishni unutmang", bot_me.username)
 
     control_bot.setup(bot, user, owner_id=me.id)

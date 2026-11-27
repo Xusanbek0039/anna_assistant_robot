@@ -65,8 +65,14 @@ def setup_logging() -> None:
             "Ortiqchasini o'chiring.", key, len(lines), ", ".join(map(str, lines)), lines[-1])
 
 
-def create_user_client() -> TelegramClient:
-    session = StringSession(config.SESSION_STRING) if config.SESSION_STRING else config.USER_SESSION
+class NeedsBotLogin(Exception):
+    """Akkauntga kirilmagan va terminal yo'q — login nazorat boti orqali (tg_login.via_bot)."""
+
+
+def create_user_client(session=None) -> TelegramClient:
+    """session: fayl nomi yoki StringSession. Berilmasa — SESSION_STRING, u ham bo'lmasa anna.session."""
+    if session is None:
+        session = StringSession(config.SESSION_STRING) if config.SESSION_STRING else config.USER_SESSION
     return TelegramClient(
         session, config.API_ID, config.API_HASH,
         connection_retries=10, retry_delay=10, auto_reconnect=True,
@@ -77,18 +83,26 @@ def _ask_phone() -> str:
     return input("Telegram telefon raqamingiz (+998...): ").strip()
 
 
-async def login(client: TelegramClient) -> None:
+async def login(client: TelegramClient, via_bot: bool = False) -> None:
     """Telethon'ning standart login jarayoni: telefon -> SMS/Telegram kodi -> (bo'lsa) 2FA parol.
 
     Kod va parol faqat terminalda so'raladi, hech qayerga yozilmaydi va logga chiqmaydi.
+    via_bot=True: terminal yo'q va akkauntga kirilmagan bo'lsa — NeedsBotLogin (login botda so'raladi).
     """
     if not sys.stdin or not sys.stdin.isatty():
         # Serverda (Render) kodni kiritadigan terminal yo'q — kod so'rash befoyda va FloodWait'ga olib keladi
-        await client.connect()
+        if not client.is_connected():
+            try:
+                await client.connect()
+            except (ConnectionError, OSError) as e:
+                sys.exit(f"[telegram] Telegram serveriga ulanib bo'lmadi ({type(e).__name__}). "
+                         "Internetni tekshirib, qayta ishga tushiring.")
         if not await client.is_user_authorized():
-            sys.exit("[telegram] Akkauntga kirilmagan va terminal yo'q (server). Kompyuterda "
-                     "`python export_session.py` ni ishga tushirib, chiqqan matnni serverda "
-                     "SESSION_STRING o'zgaruvchisiga qo'ying.")
+            if via_bot:
+                raise NeedsBotLogin()
+            sys.exit("[telegram] Akkauntga kirilmagan va terminal yo'q (server). `python main.py` ni "
+                     "ishga tushiring — u nazorat botida login so'raydi (/tglogin). Yoki kompyuterda "
+                     "`python export_session.py` chiqargan matnni SESSION_STRING ga qo'ying.")
     try:
         await client.start(phone=config.PHONE or _ask_phone)
     except errors.ApiIdInvalidError:
