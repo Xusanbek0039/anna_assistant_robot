@@ -131,6 +131,7 @@ async def main() -> None:
     instagram.setup(control_bot.alert, control_bot.send_ig_media, control_bot.ig_notify)
     # 👥 tanlangan guruhlarga kelgan xabarlar botga nusxalanadi (/guruhlar)
     groups.setup(user, control_bot.group_clone_text, control_bot.send_media)
+    await control_bot.restore_second()  # 📱 2-akkaunt (bazada sessiyasi bo'lsa) — /tglogin2
     gdrive.set_auth_hook(control_bot.drive_auth_alert)  # token o'lsa — bitta xabar + qayta ulash tugmasi
     monitor = health.Monitor(user, control_bot.alert)
     control_bot.ctx.monitor = monitor

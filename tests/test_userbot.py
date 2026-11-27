@@ -85,10 +85,10 @@ def env(fake_storage, fast_sleep, monkeypatch):
 
     bot_msgs = []
 
-    async def notify(chat_id, name, username, text, summary, urgent, reply, reply_to=None):
+    async def notify(chat_id, name, username, text, summary, urgent, reply, reply_to=None, slot=1):
         bot_msgs.append(("notify", chat_id, name))
 
-    async def call_owner(chat_id, name, *a):
+    async def call_owner(chat_id, name, *a, **kw):
         bot_msgs.append(("call", chat_id, name))
 
     async def alert(text):

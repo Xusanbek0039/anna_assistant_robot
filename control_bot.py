@@ -98,6 +98,7 @@ HELP = (
     "/quote &lt;matn&gt; — doimiy iqtibos, /quote auto — har kuni almashadi, /quote off — iqtibossiz\n"
     "/online on | off — akkauntni online ko'rsatish\n"
     "/tglogin — ulangan Telegram akkaunt; /tglogout — chiqish (keyin botda yangi akkaunt ulanadi)\n"
+    "/tglogin2 — 2-Telegram akkauntni ham ulash (kotiba va guruhlar ikkalasida); /tglogout2 — undan chiqish\n"
     "/yangixabar on | off — «📩 Yangi xabar» bildirishnomalari (SHOSHILINCH va chaqiruv doim keladi)\n\n"
     "<b>💰 Shaxsiy buxgalter</b>\n"
     "Botga oddiy yozing yoki <b>ovozli xabar</b> yuboring: «bugun nonga 25 ming, zapravkaga 30 ming "
@@ -318,7 +319,7 @@ def _acc_head(slot: int) -> str:
     return f"📱 <b>{slot}-akkaunt</b>: {html.escape(ctx.names.get(slot, ''))}\n"
 
 
-def _remember(msg_id: int, chat_id: int, slot: int) -> None:
+def _remember_notif(msg_id: int, chat_id: int, slot: int) -> None:
     _notif_map[msg_id] = chat_id
     if slot != 1:
         _notif_slot[msg_id] = slot
@@ -332,6 +333,105 @@ def new_msg_panel() -> tuple[str, list]:
             "Kotiba javob berishda davom etadi; 🔴 SHOSHILINCH, 📞 chaqiruv va media baribir keladi. "
             "Javob kutayotganlar: /inbox",
             [[Button.inline("🔔 Yoqish", b"newmsg:on")]])
+
+
+# ---------- 📱 2-akkaunt ----------
+_login2_task: asyncio.Task | None = None
+
+
+def _second_status() -> str:
+    if 2 in ctx.users:
+        return f"📱 2-akkaunt: <b>{html.escape(ctx.names.get(2, ''))}</b> — ulangan (chiqish: /tglogout2)"
+    return "📱 2-akkaunt ulanmagan — ulash: /tglogin2"
+
+
+async def connect_second(client, slot: int = 2) -> str | None:
+    """Kirilgan 2-akkauntni ishga tushiradi: kotiba (avtojavob, bildirishnomalar) va guruh klonlash.
+    Xato bo'lsa — sababi (matn), bo'lmasa None."""
+    import userbot   # userbot control_bot'ni import qiladi — aylanma importdan qochish uchun shu yerda
+    me = await client.get_me()
+    if me is None or getattr(me, "bot", False):
+        return "bu shaxsiy akkaunt emas"
+    if me.id == ctx.owner_id or any(getattr(c, "_anna_me_id", None) == me.id
+                                    for s, c in ctx.users.items() if s != slot):
+        await client.disconnect()
+        return "bu akkaunt allaqachon ulangan (asosiy akkaunt)"
+    client._anna_me_id = me.id
+    ctx.users[slot] = client
+    ctx.names[slot] = " ".join(p for p in (me.first_name, me.last_name) if p) + (
+        f" (@{me.username})" if me.username else "")
+    userbot.setup(client, me.id, slot=slot)
+    groups.setup(client, group_clone_text, send_media, slot=slot)
+    log.info("%d-akkaunt ulandi: %s (id %s)", slot, me.first_name, me.id)
+    return None
+
+
+async def restore_second() -> None:
+    """Ishga tushishda bazadagi 2-akkaunt sessiyasi bilan ulanadi (login so'ralmaydi)."""
+    try:
+        had = await storage.tg_get_session(2)
+    except Exception:
+        had = None
+    if not had:
+        return
+    try:
+        client = await tg_login.connect_saved(2)
+    except Exception as e:
+        log.warning("2-akkauntga ulanib bo'lmadi (%s)", type(e).__name__)
+        return
+    if client is None:
+        await alert("⚠️ 2-akkaunt sessiyasi bekor qilingan (Telegram → Qurilmalar'dan chiqarilgan bo'lishi "
+                    "mumkin). Qayta ulash: /tglogin2")
+        return
+    problem = await connect_second(client)
+    if problem:
+        await alert(f"⚠️ 2-akkaunt ulanmadi: {problem}")
+
+
+async def _login_second(bot) -> None:
+    """/tglogin2: telefon -> kod -> parol shu botda; kirilgach darhol ishga tushadi (qayta ishga tushirmasdan)."""
+    from telethon.sessions import StringSession
+    from tg_client import create_user_client
+    client = create_user_client(StringSession())
+    try:
+        await client.connect()
+        await tg_login.via_bot(bot, client, slot=2, owner=ctx.owner_id)
+    except tg_login.LoginCancelled:
+        await client.disconnect()
+        await alert("❌ 2-akkaunt ulanishi bekor qilindi.")
+        return
+    except Exception as e:
+        log.exception("2-akkaunt loginida xato")
+        await client.disconnect()
+        await alert(f"❌ 2-akkaunt ulanmadi: {type(e).__name__}")
+        return
+    problem = await connect_second(client)
+    if problem:
+        try:
+            await storage.tg_delete_session(2)
+        except Exception:
+            pass
+        await alert(f"❌ 2-akkaunt ulanmadi: {problem}")
+        return
+    await alert(f"✅ 2-akkaunt ulandi: {ctx.names.get(2, '')}\n"
+                "Endi unga yozganlarga ham kotiba javob beradi, bildirishnomalar «📱 2-akkaunt» belgisi bilan "
+                "keladi, «✍️ Javob berish» shu akkauntdan yuboradi. Guruhlari: 👥 Guruhlar.")
+
+
+async def logout_second(slot: int = 2) -> str:
+    client = ctx.users.pop(slot, None)
+    name = ctx.names.pop(slot, "")
+    groups.forget_client(slot)
+    try:
+        await storage.tg_delete_session(slot)
+    except Exception as e:
+        log.warning("2-akkaunt sessiyasi bazadan o'chirilmadi (%s)", type(e).__name__)
+    if client is not None:
+        try:
+            await client.log_out()
+        except Exception as e:
+            log.warning("2-akkauntdan chiqishda xato (%s)", type(e).__name__)
+    return f"✅ 2-akkauntdan chiqildi{': ' + name if name else ''}. Qayta ulash: /tglogin2"
 
 
 async def tg_logout(exit_after: float = 2.0) -> None:
@@ -381,7 +481,7 @@ async def notify(chat_id: int, name: str, username: str | None, text: str,
         msg = await ctx.bot.send_message(ctx.owner_id, body, parse_mode="html",
                                          buttons=_buttons(chat_id, slot) if urgent
                                          else _notify_buttons(chat_id, slot), reply_to=reply_to)
-        _remember(msg.id, chat_id, slot)
+        _remember_notif(msg.id, chat_id, slot)
     except Exception:
         log.exception("Egasiga xabar yuborilmadi (botga /start bosganmisiz?)")
 
@@ -399,7 +499,7 @@ async def call_owner(chat_id: int, name: str, username: str | None, text: str, s
     try:
         msg = await ctx.bot.send_message(ctx.owner_id, body, parse_mode="html",
                                          buttons=_buttons(chat_id, slot))
-        _remember(msg.id, chat_id, slot)
+        _remember_notif(msg.id, chat_id, slot)
     except Exception:
         log.exception("Chaqiruv xabari yuborilmadi (botga /start bosganmisiz?)")
 
@@ -483,11 +583,11 @@ async def send_media(chat_id: int, name: str, data: bytes, filename: str | None 
             msg = await ctx.bot.send_file(ctx.owner_id, _file(), caption=None if is_round else cap,
                                           parse_mode="html", force_document=True)
         if link_reply:  # guruh nusxasiga reply qilinsa, javob guruhga ketmasin (link_reply=False)
-            _remember(msg.id, chat_id, slot)
+            _remember_notif(msg.id, chat_id, slot)
         if is_round:  # dumaloq videoga izoh yozib bo'lmaydi — alohida xabar
             note = await ctx.bot.send_message(ctx.owner_id, cap, parse_mode="html", reply_to=msg.id)
             if link_reply:
-                _remember(note.id, chat_id, slot)
+                _remember_notif(note.id, chat_id, slot)
         return msg.id
     except Exception:
         log.exception("Media botga yuborilmadi")
@@ -581,7 +681,7 @@ async def _send_ig_panel(event, extra: str = "", edit: bool = False) -> None:
 
 async def _send_groups_panel(event, page: int = 0, edit: bool = False, refresh: bool = False) -> None:
     try:
-        text, rows = groups.panel(await groups.my_groups(ctx.user, refresh=refresh), page)
+        text, rows = groups.panel(await groups.my_groups(refresh=refresh), page)
     except Exception as e:
         log.exception("Guruhlar ro'yxati olinmadi")
         text, rows = f"❌ Guruhlar ro'yxatini olib bo'lmadi: {type(e).__name__}", None
@@ -883,6 +983,7 @@ BOT_COMMANDS = [
     ("eslatma", "🔔 Eslatmalar: raqam tg ga qo'shilsa / odam online bo'lsa"),
     ("ig", "📸 Instagram: bir martalik media, avtojavob, arxiv"),
     ("tglogin", "🔑 Telegram akkaunt: holati va boshqasini ulash"),
+    ("tglogin2", "📱 2-Telegram akkauntni ham ulash"),
     ("iglogin", "🔑 Instagram'ni ulash: /iglogin username parol"),
     ("drive", "☁️ Google Drive holati va qayta ulash"),
     ("guruhlar","👥 Guruhlar: tanlangan guruh xabarlarini botga nusxalash"),
@@ -1704,6 +1805,8 @@ def _parse_budget_amount(raw: str) -> int:
 
 def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     ctx.bot, ctx.user, ctx.owner_id = bot, user, owner_id
+    ctx.users = {1: user}
+    ctx.names = {1: ""}
     is_owner = lambda e: e.sender_id == owner_id  # noqa: E731
 
     @bot.on(events.NewMessage(pattern=r"^/(start|help)", func=is_owner))
@@ -1952,7 +2055,7 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         action = parts[1]
         if action == "t" and len(parts) == 4:
             chat_id, page = int(parts[2]), int(parts[3])
-            title = next((g["title"] for g in await groups.my_groups(user) if g["id"] == chat_id), "")
+            title = next((g["title"] for g in await groups.my_groups() if g["id"] == chat_id), "")
             on = await groups.toggle(chat_id, title)
             await event.answer(("✅ Klonlash yoqildi: " if on else "⏸ Klonlash o'chirildi: ") + title[:150])
             await _send_groups_panel(event, page, edit=True)
@@ -2386,9 +2489,33 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             f"✅ Telegram akkaunt ulangan: <b>{name}</b>"
             + (f" (@{html.escape(me.username)})" if me.username else "")
             + f", id <code>{me.id}</code>\n\n"
-            "Boshqa akkaunt ulash uchun avval chiqing: /tglogout — Anna qayta ishga tushadi va yangi akkaunt "
+            + _second_status() + "\n\n"
+            "Asosiy akkauntni almashtirish: /tglogout — Anna qayta ishga tushadi va yangi akkaunt "
             "uchun telefon, kod va parolni shu botda so'raydi (kompyuterda terminal oynasida ishlasa — "
             "terminalda).", parse_mode="html")
+
+    # ---------- 📱 2-akkaunt: shu botning o'zida ikkinchi Telegram akkaunt ----------
+    @bot.on(events.NewMessage(pattern=r"^/tglogin2(?:@\w+)?$", func=is_owner))
+    async def _tg_login2(event):
+        global _login2_task
+        if 2 in ctx.users:
+            await event.respond(_second_status() + "\n\nChiqish: /tglogout2", parse_mode="html")
+            return
+        if _login2_task and not _login2_task.done():
+            await event.respond("⏳ 2-akkaunt ulanishi davom etyapti — so'ralgan ma'lumotni yuboring "
+                                "(to'xtatish: «bekor»).")
+            return
+        _login2_task = asyncio.create_task(_login_second(bot))
+
+    @bot.on(events.NewMessage(pattern=r"^/tglogout2(?:@\w+)?$", func=is_owner))
+    async def _tg_logout2(event):
+        if 2 not in ctx.users:
+            await event.respond("2-akkaunt ulanmagan. Ulash: /tglogin2")
+            return
+        await event.respond(
+            f"⚠️ 2-akkauntdan (<b>{html.escape(ctx.names.get(2, ''))}</b>) chiqilsinmi? Sessiya bekor qilinadi, "
+            "asosiy akkaunt ishlashda davom etadi.", parse_mode="html",
+            buttons=[[Button.inline("✅ Ha, chiqish", b"tg:logout2_ok"), Button.inline("↩️ Yo'q", b"tg:cancel")]])
 
     @bot.on(events.NewMessage(pattern=r"^/tglogout(?:@\w+)?$", func=is_owner))
     async def _tg_logout(event):
@@ -2397,10 +2524,13 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
             "ham o'chadi), Anna to'xtab qayta ishga tushadi va yangi login so'raydi.",
             buttons=[[Button.inline("✅ Ha, chiqish", b"tg:logout_ok"), Button.inline("↩️ Yo'q", b"tg:cancel")]])
 
-    @bot.on(events.CallbackQuery(pattern=rb"^tg:(logout_ok|cancel)$", func=is_owner))
+    @bot.on(events.CallbackQuery(pattern=rb"^tg:(logout_ok|logout2_ok|cancel)$", func=is_owner))
     async def _tg_logout_cb(event):
         if event.data == b"tg:cancel":
             await event.edit("↩️ Bekor qilindi — akkaunt ulangan holda qoldi.")
+            return
+        if event.data == b"tg:logout2_ok":
+            await event.edit(await logout_second())
             return
         await event.edit("🚪 Akkauntdan chiqilyapti...")
         await tg_logout()

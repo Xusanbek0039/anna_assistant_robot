@@ -31,6 +31,9 @@ _queue: asyncio.Queue | None = None
 _dropped = 0
 _send_text = None
 _send_media = None
+_clients: dict[int, TelegramClient] = {}   # akkaunt raqami -> client (guruhlar ikkala akkauntdan)
+_seen: dict[tuple[int, int], None] = {}    # (guruh, xabar) — ikkala akkaunt bir guruhda bo'lsa, bir marta
+SEEN_MAX = 2000
 
 
 def _q() -> asyncio.Queue:
@@ -73,19 +76,32 @@ async def toggle(chat_id: int, title: str = "") -> bool:
     return True
 
 
-async def my_groups(user: TelegramClient, refresh: bool = False) -> list[dict]:
-    """Akkauntingiz a'zo bo'lgan guruhlar (kanallarsiz): [{"id", "title", "username"}]."""
+async def my_groups(refresh: bool = False) -> list[dict]:
+    """Akkaunt(lar)ingiz a'zo bo'lgan guruhlar (kanallarsiz): [{"id", "title", "username", "slots"}].
+    Faqat 2-akkauntdagi guruh nomi yonida «· 2-akk» turadi."""
     global _cache
     ts, cached = _cache
     if cached and not refresh and time.time() - ts < CACHE_SECONDS:
         return cached
-    groups = []
-    async for d in user.iter_dialogs():
-        if d.is_group:
-            groups.append({"id": d.id, "title": d.name or str(d.id),
-                           "username": getattr(d.entity, "username", None)})
-    _cache = (time.time(), groups)
-    return groups
+    groups: dict[int, dict] = {}
+    for slot, client in sorted(_clients.items()):
+        try:
+            async for d in client.iter_dialogs():
+                if not d.is_group:
+                    continue
+                if d.id in groups:
+                    groups[d.id]["slots"].append(slot)
+                else:
+                    groups[d.id] = {"id": d.id, "title": d.name or str(d.id), "slots": [slot],
+                                    "username": getattr(d.entity, "username", None)}
+        except Exception as e:
+            log.warning("%d-akkaunt guruhlari olinmadi (%s)", slot, type(e).__name__)
+    for g in groups.values():
+        if 1 not in g["slots"] and len(_clients) > 1:
+            g["title"] += f" · {g['slots'][0]}-akk"
+    result = list(groups.values())
+    _cache = (time.time(), result)
+    return result
 
 
 def panel(groups: list[dict], page: int = 0) -> tuple[str, list]:
@@ -121,6 +137,13 @@ def panel(groups: list[dict], page: int = 0) -> tuple[str, list]:
     return "\n".join(lines), rows
 
 
+def forget_client(slot: int) -> None:
+    """Akkauntdan chiqilganda — uning guruhlari ro'yxatdan olib tashlanadi."""
+    global _cache
+    _clients.pop(slot, None)
+    _cache = (0.0, [])
+
+
 def message_link(chat, msg_id: int) -> str | None:
     """Guruhdagi xabarga havola: ochiq guruh — t.me/<username>/<id>, yopiq superguruh — t.me/c/<id>/<id>."""
     username = getattr(chat, "username", None)
@@ -139,14 +162,23 @@ def _sender_name(sender) -> tuple[str, str | None]:
     return name, getattr(sender, "username", None)
 
 
-def setup(user: TelegramClient, send_text, send_media) -> None:
-    """send_text(text_html, link) va send_media(...) — control_bot'dagi yuboruvchilar."""
-    global _send_text, _send_media
+def setup(user: TelegramClient, send_text, send_media, slot: int = 1) -> None:
+    """send_text(text_html, link) va send_media(...) — control_bot'dagi yuboruvchilar.
+    Har bir akkaunt uchun alohida chaqiriladi (slot 1, 2)."""
+    global _send_text, _send_media, _cache
     _send_text, _send_media = send_text, send_media
+    _clients[slot] = user
+    _cache = (0.0, [])
 
     @user.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and e.chat_id in _enabled))
     async def _on_group_message(event):
         global _dropped
+        key = (event.chat_id, event.message.id)
+        if key in _seen:
+            return   # ikkinchi akkaunt ham shu guruhda — xabar allaqachon navbatda
+        _seen[key] = None
+        while len(_seen) > SEEN_MAX:
+            _seen.pop(next(iter(_seen)))
         try:
             _q().put_nowait(event)
         except asyncio.QueueFull:

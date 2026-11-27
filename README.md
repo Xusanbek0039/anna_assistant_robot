@@ -485,6 +485,29 @@ emas). Guruhni bosing — **✅** bo'ladi va shu guruhga kelgan har bir yangi xa
 
 Yana bosilsa — o'chadi. Tanlov bazada saqlanadi. Yoqilganlar ro'yxat tepasida turadi; yangi qo'shilgan guruh
 ko'rinmasa — **🔄 Yangilash**. Nusxaga reply qilib yozsangiz, javob guruhga **ketmaydi**.
+2-akkaunt ulangan bo'lsa, uning guruhlari ham ro'yxatda (faqat unda bo'lsa — nomi yonida «· 2-akk»);
+ikkala akkaunt bir guruhda bo'lsa, xabar bir marta keladi.
+
+## 6.5. 📱 2-Telegram akkaunt (bitta botda ikkita akkaunt)
+
+Botga `/tglogin2` yuboring — telefon raqam → kod (**bo'sh joy bilan**: `1 2 3 4 5`) → 2FA parol shu botda
+so'raladi. Kirilgach darhol ishlaydi (qayta ishga tushirish shart emas), sessiya bazada saqlanadi.
+To'xtatish: «bekor». Chiqish: `/tglogout2` (asosiy akkaunt ishlashda davom etadi).
+
+2-akkauntda ishlaydi: **kotiba** (avtojavob, 📩/🔴/📞 bildirishnomalar — boshida «📱 2-akkaunt» belgisi),
+**«✍️ Javob berish» / reply** — javob aynan **shu akkauntdan** ketadi, **👥 guruh klonlash**.
+Faqat asosiy akkauntda: avtomatik bio, chat arxivi va Drive, eslatmalar, qidirish, online holat.
+
+> Bitta odam ikkala akkauntingizga yozsa, AI suhbat tarixi, istisno va «AI jim» holati ular uchun umumiy.
+
+## ☁️ Google Drive ruxsati eskirsa (`refresh token yaroqsiz`)
+
+Terminal kerak emas: bot bitta xabar yuboradi — **🔑 Google Drive'ni qayta ulash** tugmasi (yoki `/drive`).
+Havolani oching → ruxsat bering → brauzer «sahifa ochilmadi» deydi (normal) → manzil qatoridagi
+`http://127.0.0.1:8765/?state=…&code=…` havolani botga yuboring. Yangi token bazada saqlanadi, yuklash davom etadi.
+
+Token har 7 kunda o'chmasligi uchun **bir marta**: Google Cloud → *OAuth consent screen* → *Publishing status* →
+**In production** (Testing holatida Google tokenni 7 kunda bekor qiladi).
 
 ## 7. Ishga tushirish va to'xtatish
 
