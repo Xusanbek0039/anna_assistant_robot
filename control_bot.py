@@ -86,6 +86,8 @@ HELP = (
     "Instagram bildirishnomasiga reply qilib yozsangiz — javob Instagram'ga ketadi.\n"
     "📥 <b>Havoladan yuklash:</b> post, reels yoki storis havolasini botga tashlang — rasm/videoni yuklab "
     "beradi (albom bo'lsa hammasini). Buyruq bilan: /igyukla &lt;havola&gt;\n\n"
+    "<b>☁️ Google Drive</b>\n"
+    "/drive — holati; Google ruxsati eskirsa «🔑 Qayta ulash» (terminal kerak emas)\n\n"
     "<b>👥 Guruhlar</b>\n"
     "/guruhlar — akkauntingizdagi guruhlar ro'yxati. Guruhni yoqsangiz, unga kelgan har bir xabar "
     "(matn, rasm, video, ovozli xabar, fayl) botga nusxalanib keladi.\n\n"
@@ -569,6 +571,96 @@ async def _send_groups_panel(event, page: int = 0, edit: bool = False, refresh: 
     await event.respond(text, parse_mode="html", buttons=_inline(rows))
 
 
+# ---------- ☁️ Google Drive'ni botdan qayta ulash ----------
+_drive_state: dict[str, float] = {}   # OAuth «state» -> yaratilgan vaqt (begona havolani qabul qilmaslik)
+DRIVE_AUTH_TTL = 30 * 60
+
+DRIVE_AUTH_BUTTON = [[Button.inline("🔑 Google Drive'ni qayta ulash", b"gd:auth")]]
+
+
+async def drive_auth_alert() -> None:
+    """gdrive: refresh token o'ldi — arxiv, media, Instagram va zaxira uchun BITTA xabar."""
+    await ctx.bot.send_message(
+        ctx.owner_id,
+        "☁️❌ <b>Google Drive ulanishi uzildi</b> — Google ruxsati (refresh token) eskirgan.\n"
+        "Chat arxivi, rasm/videolar, Instagram arxivi va zaxira Drive'ga yuklanmayapti "
+        "(bazada saqlanib turibdi, ulangach hammasi yuklanadi).\n\n"
+        "Pastdagi tugmani bosing — 1 daqiqalik ish.",
+        parse_mode="html", buttons=DRIVE_AUTH_BUTTON)
+
+
+async def _drive_panel(event) -> None:
+    problem = await gdrive.check() if gdrive.enabled() else "ulanmagan"
+    text = "☁️ <b>Google Drive</b>: " + ("🟢 ishlayapti" if not problem else f"❌ {html.escape(problem)}")
+    buttons = [[Button.inline("🔑 Qayta ulash", b"gd:auth"), Button.inline("🔄 Tekshirish", b"gd:check")]]
+    if not gdrive.can_authorize():
+        text += ("\n\n.env da GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET va GOOGLE_DRIVE_ROOT_FOLDER_ID "
+                 "to'ldirilishi kerak (README → Google Drive).")
+        buttons = None
+    await event.respond(text, parse_mode="html", buttons=buttons)
+
+
+async def _drive_start_auth(event) -> None:
+    if not gdrive.can_authorize():
+        await event.respond("❌ .env da GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET / "
+                            "GOOGLE_DRIVE_ROOT_FOLDER_ID yo'q.")
+        return
+    import secrets
+    now = time.time()
+    for k in [k for k, t in _drive_state.items() if now - t > DRIVE_AUTH_TTL]:
+        _drive_state.pop(k, None)
+    state = secrets.token_urlsafe(16)
+    _drive_state[state] = now
+    await event.respond(
+        "🔑 <b>Google Drive'ni qayta ulash</b>\n\n"
+        "1️⃣ Pastdagi tugmani bosing va Drive ulangan Google akkauntni tanlab <b>ruxsat bering</b> "
+        "(«Google hasn't verified this app» chiqsa: <i>Advanced → Go to ... (unsafe)</i>).\n"
+        "2️⃣ Oxirida brauzer <b>«Sahifa ochilmadi / This site can't be reached»</b> deydi — bu normal.\n"
+        "3️⃣ Brauzerning <b>manzil qatoridagi butun havolani</b> (<code>http://127.0.0.1:8765/?state=…&amp;code=…</code>) "
+        "nusxalab shu yerga yuboring.\n\n"
+        "⚠️ Token 7 kunda yana o'chmasligi uchun: Google Cloud → <i>OAuth consent screen</i> → "
+        "Publishing status → <b>In production</b>.",
+        parse_mode="html", link_preview=False,
+        buttons=[[Button.url("🔐 Google'da ruxsat berish", gdrive.auth_url(state))]])
+
+
+async def _drive_finish(event) -> None:
+    state, code = gdrive.parse_redirect(event.text)
+    try:
+        await event.delete()   # havolada bir martalik kod bor
+    except Exception:
+        pass
+    if state not in _drive_state or time.time() - _drive_state[state] > DRIVE_AUTH_TTL:
+        await event.respond("❌ Bu havola eskirgan yoki boshqa so'rovdan. Qaytadan bosing:",
+                            buttons=DRIVE_AUTH_BUTTON)
+        return
+    _drive_state.pop(state, None)
+    status = await event.respond("⏳ Google bilan tekshirilmoqda...")
+    was_enabled = gdrive.enabled()
+    try:
+        await gdrive.authorize(code)
+        problem = await gdrive.check()
+    except Exception as e:
+        await status.edit(f"❌ Ulanmadi: {gdrive.explain(e)}", buttons=DRIVE_AUTH_BUTTON)
+        return
+    if problem:
+        await status.edit(f"⚠️ Token olindi, lekin: {problem}")
+        return
+    archive.drive_wake()
+    archive.media_wake()
+    instagram.drive_wake()
+    instagram.media_wake()
+    if was_enabled:
+        await status.edit("✅ Google Drive qayta ulandi — arxiv, media va zaxira yana yuklanmoqda.")
+    else:   # Drive siklari ishga tushganda yoqilmagan edi — qayta ishga tushirib yoqamiz
+        import os
+        await status.edit("✅ Google Drive ulandi. Anna qayta ishga tushyapti (Drive qismlari yoqiladi)...")
+        if config.SINGLE_INSTANCE:
+            import instance
+            await instance.release()
+        asyncio.get_running_loop().call_later(2, os._exit, 0)
+
+
 async def group_clone_text(text: str, link: str | None) -> None:
     """👥 Guruhdan nusxalangan matnli xabar (groups.py)."""
     buttons = [[Button.url("🔗 Guruhda ochish", link)]] if link else None
@@ -763,7 +855,8 @@ BOT_COMMANDS = [
     ("ig", "📸 Instagram: bir martalik media, avtojavob, arxiv"),
     ("tglogin", "🔑 Telegram akkaunt: holati va boshqasini ulash"),
     ("iglogin", "🔑 Instagram'ni ulash: /iglogin username parol"),
-    ("guruhlar", "👥 Guruhlar: tanlangan guruh xabarlarini botga nusxalash"),
+    ("drive", "☁️ Google Drive holati va qayta ulash"),
+    ("guruhlar","👥 Guruhlar: tanlangan guruh xabarlarini botga nusxalash"),
     ("igyukla", "📥 Instagram post/reels/storis mediasini yuklash"),
     ("find", "🔎 Chatlardan istalgan narsani topish"),
     ("save", "💾 Havoladagi mediani Saqlangan xabarlarga joylash"),
@@ -1806,6 +1899,19 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
         else:
             await event.answer()
 
+    # ---------- ☁️ Google Drive: holat va botdan qayta ulash ----------
+    @bot.on(events.NewMessage(pattern=r"^/drive(?:@\w+)?$", func=is_owner))
+    async def _drive_cmd(event):
+        await _drive_panel(event)
+
+    @bot.on(events.CallbackQuery(pattern=rb"^gd:(auth|check)$", func=is_owner))
+    async def _drive_cb(event):
+        await event.answer()
+        if event.data == b"gd:auth":
+            await _drive_start_auth(event)
+        else:
+            await _drive_panel(event)
+
     # ---------- 👥 Guruhlar: tanlangan guruh xabarlarini klonlash ----------
     @bot.on(events.NewMessage(pattern=r"^/guruhlar(?:@\w+)?$", func=is_owner))
     async def _groups_cmd(event):
@@ -2454,6 +2560,10 @@ def setup(bot: TelegramClient, user: TelegramClient, owner_id: int) -> None:
     @bot.on(events.NewMessage(func=lambda e: is_owner(e) and e.text and not e.text.startswith("/")
                               and e.raw_text.strip() not in MENU_TEXTS))
     async def _plain(event):
+        # ☁️ Google Drive'ni qayta ulash: brauzer manzil qatoridagi http://127.0.0.1:8765/?...code=...
+        if gdrive.parse_redirect(event.text):
+            await _drive_finish(event)
+            return
         # Instagram login paytida tasdiqlash kodi kutilmoqda
         if instagram.waiting_code():
             if instagram.submit_code(event.text):

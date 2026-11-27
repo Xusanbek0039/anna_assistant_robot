@@ -1524,7 +1524,8 @@ async def drive_loop(alert) -> None:
                 log.warning("Instagram arxivi Drive'ga yuklanmadi: %s", reason)
                 if reason != alerted:
                     alerted = reason
-                    await alert(f"☁️❌ Instagram arxivi Drive'ga yuklanmadi: {reason}")
+                    if not gdrive.is_auth_error(e):
+                        await alert(f"☁️❌ Instagram arxivi Drive'ga yuklanmadi: {reason}")
         try:
             await asyncio.wait_for(_drive_wake.wait(), timeout=config.DRIVE_SYNC_MINUTES * 60)
         except asyncio.TimeoutError:

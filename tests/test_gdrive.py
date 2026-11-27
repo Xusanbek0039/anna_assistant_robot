@@ -134,7 +134,58 @@ def test_bad_refresh_token_is_explained(google):
     google.token_error = "invalid_grant"
     with pytest.raises(gdrive.DriveError) as e:
         run(gdrive.upload("a.html", b"x"))
-    assert "drive_auth.py" in gdrive.explain(e.value)
+    assert "/drive" in gdrive.explain(e.value) and gdrive.is_auth_error(e.value)
+
+
+def test_dead_token_alerts_once_and_bot_reauth(google, monkeypatch):
+    """Token o'lsa — barcha qismlar uchun BITTA xabar; botdan olingan yangi token bazaga yoziladi."""
+    import storage
+    saved = []
+
+    async def set_token(t):
+        saved.append(t)
+
+    monkeypatch.setattr(storage, "drive_set_token", set_token, raising=False)
+    monkeypatch.setattr(gdrive, "_auth_alerted", "")
+    monkeypatch.setattr(gdrive, "_saved_refresh", "")
+    calls = []
+
+    async def hook():
+        calls.append(1)
+
+    gdrive.set_auth_hook(hook)
+    google.token_error = "invalid_grant"
+    for _ in range(3):   # arxiv, media, Instagram — har biri urinadi
+        with pytest.raises(gdrive.DriveError):
+            run(gdrive.upload("a.html", b"x"))
+    assert calls == [1]
+
+    url = "http://127.0.0.1:8765/?state=abc&code=4/0AXyz&scope=drive"
+    assert gdrive.parse_redirect("mana: " + url) == ("abc", "4/0AXyz")
+    assert gdrive.parse_redirect("https://example.com/?code=1") is None
+    assert "redirect_uri=http" in gdrive.auth_url("abc") and "state=abc" in gdrive.auth_url("abc")
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"refresh_token": "NEW", "access_token": "a", "expires_in": 3600}
+
+    class C:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+        async def post(self, url, data=None):
+            assert data["code"] == "4/0AXyz" and data["grant_type"] == "authorization_code"
+            return Resp()
+
+    monkeypatch.setattr(gdrive, "_client", lambda: C())
+    run(gdrive.authorize("4/0AXyz"))
+    assert saved == ["NEW"] and gdrive.refresh_token() == "NEW"
+    gdrive.set_auth_hook(None)
 
 
 def test_sync_pending_uploads_changed_chats(google, monkeypatch):

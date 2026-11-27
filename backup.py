@@ -112,7 +112,8 @@ async def run(alert) -> None:
             await backup_now()
         except Exception as e:
             log.exception("Zaxira olinmadi")
-            await alert(f"💾❌ Bazani Drive'ga zaxiralab bo'lmadi: {gdrive.explain(e)}")
+            if not gdrive.is_auth_error(e):
+                await alert(f"💾❌ Bazani Drive'ga zaxiralab bo'lmadi: {gdrive.explain(e)}")
 
     await schedule.daily("Bazani zaxiralash", config.BACKUP_TIME, "last_backup", job,
                          enabled=lambda: runtime.get("drive_backup") and gdrive.enabled())

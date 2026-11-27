@@ -703,7 +703,8 @@ async def drive_media_loop(user, alert) -> None:
             wait = 600
             if reason != alerted:
                 alerted = reason
-                await alert(f"☁️❌ Rasm/videolar Google Drive'ga yuklanmadi: {reason}")
+                if not gdrive.is_auth_error(e):   # token o'lgan bo'lsa — gdrive bitta umumiy xabar beradi
+                    await alert(f"☁️❌ Rasm/videolar Google Drive'ga yuklanmadi: {reason}")
         try:
             await asyncio.wait_for(_media_wake.wait(), timeout=wait)
         except asyncio.TimeoutError:
@@ -736,6 +737,11 @@ async def drive_sync_pending() -> int:
     return done
 
 
+def media_wake() -> None:
+    """Drive media siklini darhol uyg'otadi (masalan, Drive qayta ulanganda)."""
+    _media_wake.set()
+
+
 def drive_wake() -> None:
     """Drive siklini darhol ishga tushirish (masalan, botdagi «Hozir yuklash» tugmasi)."""
     _drive_wake.set()
@@ -765,7 +771,8 @@ async def drive_loop(alert) -> None:
             log.warning("Google Drive: %s", reason)
             if reason != alerted:   # bir xil xato haqida bir marta
                 alerted = reason
-                await alert(f"☁️❌ Chat arxivi Google Drive'ga yuklanmadi: {reason}")
+                if not gdrive.is_auth_error(e):
+                    await alert(f"☁️❌ Chat arxivi Google Drive'ga yuklanmadi: {reason}")
         try:
             await asyncio.wait_for(_drive_wake.wait(), timeout=config.DRIVE_SYNC_MINUTES * 60)
         except asyncio.TimeoutError:

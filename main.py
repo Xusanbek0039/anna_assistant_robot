@@ -86,6 +86,7 @@ async def main() -> None:
         log.info("3/6 Nusxa qulfi olinyapti (xotira %s)", health.memory_note())
         await instance.wait_until_only()  # boshqa nusxa ishlayotgan bo'lsa, Telegram'ga ulanmasdan kutadi
     await runtime.load()
+    await gdrive.load_token()   # botdan (/drive) qayta ulangan bo'lsa — yangi token bazada
 
     problem = await ai.check_key()
     if problem:
@@ -130,6 +131,7 @@ async def main() -> None:
     instagram.setup(control_bot.alert, control_bot.send_ig_media, control_bot.ig_notify)
     # 👥 tanlangan guruhlarga kelgan xabarlar botga nusxalanadi (/guruhlar)
     groups.setup(user, control_bot.group_clone_text, control_bot.send_media)
+    gdrive.set_auth_hook(control_bot.drive_auth_alert)  # token o'lsa — bitta xabar + qayta ulash tugmasi
     monitor = health.Monitor(user, control_bot.alert)
     control_bot.ctx.monitor = monitor
 

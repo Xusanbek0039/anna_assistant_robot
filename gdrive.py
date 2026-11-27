@@ -24,6 +24,12 @@ SCOPE = "https://www.googleapis.com/auth/drive"
 FIELDS = "id,webViewLink"
 
 _token: tuple[str, float] = ("", 0.0)
+# Botdan qayta ulanganda (/drive) olingan refresh token — MongoDB'da saqlanadi va .env dagidan ustun turadi
+_saved_refresh = ""
+_auth_hook = None        # token o'lganda egasiga BITTA xabar (control_bot.drive_auth_alert)
+_auth_alerted = ""       # qaysi token uchun xabar berilgan (har qism alohida xabar yubormasin)
+REDIRECT = "http://127.0.0.1:8765/"   # «Desktop app» OAuth client loopback manzilni ruxsat etadi
+AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 
 
 class DriveError(Exception):
@@ -32,15 +38,80 @@ class DriveError(Exception):
         self.status, self.reason = status, reason
 
 
-def enabled() -> bool:
+def refresh_token() -> str:
+    return _saved_refresh or config.GOOGLE_OAUTH_REFRESH_TOKEN
+
+
+def can_authorize() -> bool:
+    """Botdan qayta ulash mumkinmi (client id/secret va papka bor)."""
     return bool(config.GOOGLE_OAUTH_CLIENT_ID and config.GOOGLE_OAUTH_CLIENT_SECRET
-                and config.GOOGLE_OAUTH_REFRESH_TOKEN and config.GOOGLE_DRIVE_ROOT_FOLDER_ID)
+                and config.GOOGLE_DRIVE_ROOT_FOLDER_ID)
+
+
+def enabled() -> bool:
+    return can_authorize() and bool(refresh_token())
 
 
 def missing() -> list[str]:
     names = ("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REFRESH_TOKEN",
              "GOOGLE_DRIVE_ROOT_FOLDER_ID")
-    return [n for n in names if not getattr(config, n)]
+    return [n for n in names if not (refresh_token() if n == "GOOGLE_OAUTH_REFRESH_TOKEN" else getattr(config, n))]
+
+
+def set_auth_hook(hook) -> None:
+    global _auth_hook
+    _auth_hook = hook
+
+
+def is_auth_error(e: BaseException) -> bool:
+    """Refresh token o'lgan — qayta ulash kerak (vaqtinchalik xato emas)."""
+    return isinstance(e, DriveError) and "invalid_grant" in e.reason
+
+
+async def load_token() -> None:
+    """Botdan olingan tokenni bazadan o'qiydi (ishga tushishda)."""
+    global _saved_refresh
+    import storage
+    try:
+        _saved_refresh = await storage.drive_get_token() or ""
+    except Exception as e:
+        log.warning("Drive tokeni bazadan o'qilmadi (%s)", type(e).__name__)
+
+
+def auth_url(state: str) -> str:
+    import urllib.parse
+    return AUTH_URL + "?" + urllib.parse.urlencode({
+        "client_id": config.GOOGLE_OAUTH_CLIENT_ID, "redirect_uri": REDIRECT, "response_type": "code",
+        "scope": SCOPE, "access_type": "offline", "prompt": "consent", "state": state})
+
+
+def parse_redirect(text: str) -> tuple[str, str] | None:
+    """Brauzer manzil qatoridagi «http://127.0.0.1:8765/?state=..&code=..» -> (state, code)."""
+    import re
+    import urllib.parse
+    m = re.search(r"https?://(?:127\.0\.0\.1|localhost)(?::\d+)?/?\?\S+", text or "")
+    if not m:
+        return None
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(m.group(0)).query))
+    return (q.get("state", ""), q["code"]) if q.get("code") else None
+
+
+async def authorize(code: str) -> None:
+    """Google bergan kodni refresh tokenga almashtiradi va bazaga saqlaydi."""
+    global _saved_refresh, _token, _auth_alerted
+    import storage
+    async with _client() as c:
+        r = await c.post(TOKEN_URL, data={
+            "code": code, "client_id": config.GOOGLE_OAUTH_CLIENT_ID,
+            "client_secret": config.GOOGLE_OAUTH_CLIENT_SECRET, "redirect_uri": REDIRECT,
+            "grant_type": "authorization_code"})
+    if r.status_code != 200:
+        raise DriveError(r.status_code, _reason(r))
+    token = r.json().get("refresh_token")
+    if not token:
+        raise DriveError(400, "Google refresh token bermadi — qaytadan urinib ko'ring")
+    await storage.drive_set_token(token)
+    _saved_refresh, _token, _auth_alerted = token, ("", 0.0), ""
 
 
 def _reason(r: httpx.Response) -> str:
@@ -58,9 +129,8 @@ def explain(e: Exception) -> str:
     """Egasiga tushunarli sabab."""
     if isinstance(e, DriveError):
         if "invalid_grant" in e.reason:
-            return ("refresh token yaroqsiz yoki muddati o'tgan — `python drive_auth.py` ni qayta ishga "
-                    "tushiring. (OAuth ilovasi «Testing» holatida bo'lsa token 7 kunda o'chadi — "
-                    "«In production» ga o'tkazing)")
+            return ("Google ruxsati (refresh token) eskirgan — botda /drive → «🔑 Qayta ulash». "
+                    "(OAuth ilovasi «Testing» holatida bo'lsa token 7 kunda o'chadi — «In production» ga o'tkazing)")
         if "invalid_client" in e.reason:
             return "GOOGLE_OAUTH_CLIENT_ID yoki GOOGLE_OAUTH_CLIENT_SECRET noto'g'ri"
         if e.status == 404:
@@ -77,12 +147,26 @@ async def _access_token(client: httpx.AsyncClient) -> str:
         return _token[0]
     r = await client.post(TOKEN_URL, data={
         "client_id": config.GOOGLE_OAUTH_CLIENT_ID, "client_secret": config.GOOGLE_OAUTH_CLIENT_SECRET,
-        "refresh_token": config.GOOGLE_OAUTH_REFRESH_TOKEN, "grant_type": "refresh_token"})
+        "refresh_token": refresh_token(), "grant_type": "refresh_token"})
     if r.status_code != 200:
-        raise DriveError(r.status_code, _reason(r))
+        err = DriveError(r.status_code, _reason(r))
+        await _notify_auth(err)
+        raise err
     body = r.json()
     _token = (body["access_token"], time.time() + int(body.get("expires_in", 3600)))
     return _token[0]
+
+
+async def _notify_auth(err: DriveError) -> None:
+    """Token o'lganda egasiga faqat BITTA xabar (arxiv, media, Instagram, zaxira — har biri alohida emas)."""
+    global _auth_alerted
+    if not is_auth_error(err) or _auth_hook is None or _auth_alerted == refresh_token():
+        return
+    _auth_alerted = refresh_token()
+    try:
+        await _auth_hook()
+    except Exception:
+        log.warning("Drive qayta ulash xabari yuborilmadi")
 
 
 def _client() -> httpx.AsyncClient:

@@ -834,19 +834,24 @@ async def watch_delete(watch_id: str) -> bool:
 
 
 # ---------- 🔑 Telegram akkaunt sessiyasi (bot orqali login, tg_login.py) ----------
-async def tg_get_session() -> dict | None:
+def _tg_session_id(slot: int = 1) -> str:
+    """1-akkaunt — «tg_session», 2-akkaunt — «tg_session2»."""
+    return "tg_session" if int(slot) == 1 else f"tg_session{int(slot)}"
+
+
+async def tg_get_session(slot: int = 1) -> dict | None:
     """Bot orqali kirilgan akkaunt sessiyasi: {"string": ..., "user_id": ...}. MAXFIY — to'liq kirish beradi."""
-    return await _get_db().settings.find_one({"_id": "tg_session"})
+    return await _get_db().settings.find_one({"_id": _tg_session_id(slot)})
 
 
-async def tg_set_session(string: str, user_id: int) -> None:
-    await _get_db().settings.update_one({"_id": "tg_session"},
+async def tg_set_session(string: str, user_id: int, slot: int = 1) -> None:
+    await _get_db().settings.update_one({"_id": _tg_session_id(slot)},
                                         {"$set": {"string": string, "user_id": user_id, "ts": time.time()}},
                                         upsert=True)
 
 
-async def tg_delete_session() -> None:
-    await _get_db().settings.delete_one({"_id": "tg_session"})
+async def tg_delete_session(slot: int = 1) -> None:
+    await _get_db().settings.delete_one({"_id": _tg_session_id(slot)})
 
 
 async def tg_get_owner() -> int | None:
@@ -857,6 +862,17 @@ async def tg_get_owner() -> int | None:
 
 async def tg_set_owner(user_id: int) -> None:
     await _get_db().settings.update_one({"_id": "tg_owner"}, {"$set": {"user_id": int(user_id)}}, upsert=True)
+
+
+# ---------- ☁️ Google Drive tokeni (botdan /drive bilan qayta ulanganda) ----------
+async def drive_get_token() -> str | None:
+    doc = await _get_db().settings.find_one({"_id": "gdrive_token"})
+    return (doc or {}).get("refresh_token") or None
+
+
+async def drive_set_token(token: str) -> None:
+    await _get_db().settings.update_one({"_id": "gdrive_token"},
+                                        {"$set": {"refresh_token": token, "ts": time.time()}}, upsert=True)
 
 
 # ---------- 📸 Instagram (instagram.py) ----------
