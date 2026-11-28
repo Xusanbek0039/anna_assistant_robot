@@ -190,10 +190,16 @@ def _is(e: BaseException, name: str) -> bool:
     return name in _names(e)
 
 
+def logged_out(e: BaseException) -> bool:
+    """Instagram sessiyani server tomonida bekor qilgan (user_has_logged_out) — qayta urinish befoyda."""
+    low = str(e).lower()
+    return "user_has_logged_out" in low or "logout_reason" in low
+
+
 def error_kind(e: BaseException) -> str:
     """auth — qayta login kerak; throttle — Instagram cheklovi; other — vaqtinchalik xato."""
     names = _names(e)
-    if names & _AUTH_ERRORS:
+    if names & _AUTH_ERRORS or logged_out(e):
         return "auth"
     if names & _THROTTLE_ERRORS:
         return "throttle"
@@ -221,6 +227,9 @@ def explain(e: BaseException) -> str:
     low = str(e).lower()
     if needs_upgrade(e):
         return NEEDS_UPGRADE_HELP
+    if logged_out(e):
+        return ("Instagram sessiyani bekor qildi (akkauntdan chiqarilgan: parol o'zgargan, «barcha "
+                "qurilmalardan chiqish» bosilgan yoki Instagram shubhali kirish deb topgan) — qayta ulaning")
     if names & {"BadPassword", "BadCredentials"}:
         return "login yoki parol noto'g'ri"
     if "TwoFactorRequired" in names:
@@ -2098,7 +2107,7 @@ async def _on_error(e: Exception, acc: _State | None = None) -> None:
     kind = error_kind(e)
     who = f" ({acc.slot}-akkaunt {acc.name()})" if acc.slot != "1" or multi() else ""
     suffix = "" if acc.slot == "1" else acc.slot
-    if kind == "auth" and await _auth_grace(e, acc, who):
+    if kind == "auth" and not logged_out(e) and await _auth_grace(e, acc, who):
         return
     if kind == "auth":
         log.warning("Instagram sessiyasi yaroqsiz (%s-akkaunt, %s)", acc.slot, type(e).__name__)
